@@ -1,0 +1,41 @@
+"""Shared fixtures: tiny MONAI MAISI components on CPU (no GPU, no real data).
+
+Mirrors hope's test style — tiny tensors and tiny/mock networks — so the four
+components are exercised in isolation. The tiny config is verified to construct
+and forward on CPU: a 2-level VAE (latent divisor 2) and a 2-level UNet (one
+downsample, mid block at spatial 2 so GroupNorm never collapses to size 1).
+"""
+
+from __future__ import annotations
+
+import pytest
+import torch
+
+from manifold import (
+    AutoencoderKL,
+    FlowMatchHeunDiscreteScheduler,
+    LatentFlowPipeline,
+    UNet3DConditionModel,
+)
+
+
+@pytest.fixture
+def vae() -> AutoencoderKL:
+    torch.manual_seed(0)
+    return AutoencoderKL(scaling_factor=0.5)
+
+
+@pytest.fixture
+def unet() -> UNet3DConditionModel:
+    torch.manual_seed(0)
+    return UNet3DConditionModel(num_class_embeds=4, include_spacing_input=True)
+
+
+@pytest.fixture
+def scheduler() -> FlowMatchHeunDiscreteScheduler:
+    return FlowMatchHeunDiscreteScheduler()
+
+
+@pytest.fixture
+def pipeline(unet, vae, scheduler) -> LatentFlowPipeline:
+    return LatentFlowPipeline(unet, vae, scheduler)

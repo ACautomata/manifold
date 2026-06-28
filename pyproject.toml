@@ -21,7 +21,12 @@ classifiers = [
 ]
 dependencies = [
     "stable-pretraining",
-    "monai",
+    # `einops` is an optional MONAI extra that the wrapped MONAI MAISI UNet
+    # structurally requires (its attention blocks use `einops.Rearrange`). We
+    # surface it as part of the `monai` dependency rather than a separate
+    # package, so the install surface stays "monai" rather than gaining a new
+    # framework dependency.
+    "monai[einops]",
 ]
 
 [project.optional-dependencies]
