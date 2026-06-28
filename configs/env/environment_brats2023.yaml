@@ -1,0 +1,26 @@
+# BraTS2023 env profile (gauss operational profile — concrete absolute paths;
+# override any via CLI/dotlist). gauss conventions: source at
+# /data72/junran/manifold, runtime at /data72/junran/manifold-runtime (see the
+# gauss-deploy skill). Dataset + VAE weights are shared read-only under /data72.
+#
+# Complete BraTS2023 dataset = all 5 cohorts (GLI/MEN/MET/PED/SSA), each with
+# TrainingData + ValidationData. train + val point at manifests listing the 4 MR
+# contrasts (t1n/t1c/t2w/t2f -> labels 34/35/36/37); *-seg masks are dropped by
+# detect_brats_contrast returning None. If a manifest is absent the data stack
+# falls back to a recursive scan of data_base_dir (masks dropped the same way).
+data_base_dir: /data72/dataset/ASNR-MICCAI-BraTS2023
+json_data_list: /data72/junran/manifold-runtime/run_configs/brats_all_train.json
+val_data_base_dir: /data72/junran/manifold-runtime/run_configs/brats_all_val.json
+val_subset_size: 32
+model_dir: /data72/junran/manifold-runtime/brats2023_jit
+# NOTE: the JiT/x0 checkpoint name is ambiguous on gauss (a velocity finetune and
+# a from-scratch JiT run both write `diff_unet_3d_rflow-brats2023.pt`). Confirm
+# the actual JiT path before the Slice-D numerical validation (issue #18).
+model_filename: diff_unet_3d_rflow-brats2023.pt
+output_dir: /data72/junran/manifold-runtime/brats2023_jit
+output_prefix: unet_3d_brats2023
+trained_autoencoder_path: /data72/junran/manifold-runtime/models/autoencoder_v1.pt
+existing_ckpt_filepath: null
+modality_mapping_path: /data72/junran/manifold/configs/modality_mapping.json
+dataset_type: brats
+latent_cache_dir: /data72/junran/manifold-runtime/brats2023_jit/latent_cache

@@ -27,6 +27,10 @@ dependencies = [
     # package, so the install surface stays "monai" rather than gaining a new
     # framework dependency.
     "monai[einops]",
+    # The OmegaConf *experiment-config* layer (env -> train -> network
+    # composition) reads/writes YAML at launch (ADR-0004). It builds components
+    # but never persists them — component config stays JSON via ConfigMixin.
+    "omegaconf",
 ]
 
 [project.optional-dependencies]

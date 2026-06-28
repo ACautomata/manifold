@@ -31,6 +31,28 @@ def test_encode_returns_scaled_latent(vae):
     assert torch.allclose(z_scaled, z_raw * vae.scaling_factor)
 
 
+def test_encode_raw_returns_unscaled_latent(vae):
+    """encode_raw is the unscaled affordance; encode is encode_raw * scaling_factor.
+
+    The data stack warms its cache of unscaled latents via encode_raw and
+    estimates scaling_factor over it (ADR-0003 addendum, issue #16); encode keeps
+    the public scaled-latent contract.
+    """
+    img = torch.randn(*IMAGE_SHAPE)
+    torch.manual_seed(7)
+    z_raw = vae.encode_raw(img)
+    torch.manual_seed(7)
+    z_stage2 = vae.autoencoder.encode_stage_2_inputs(img)
+    assert torch.allclose(z_raw, z_stage2)  # no scaling applied
+    # encode composes from encode_raw (the scale-on-read contract). encode and
+    # encode_raw each draw a fresh reparameterization eps, so reset the seed
+    # before each to compare identical draws (mirrors test_encode_returns_scaled_latent).
+    torch.manual_seed(7)
+    encoded = vae.encode(img)
+    torch.manual_seed(7)
+    assert torch.allclose(encoded, vae.encode_raw(img) * vae.scaling_factor)
+
+
 def test_decode_undoes_scaling_internally(vae):
     """decode(z * sf) == decode_stage_2_outputs(z): the scaling cancels."""
     z = torch.randn(*LATENT_SHAPE)
@@ -69,3 +91,29 @@ def test_decode_undoes_scaling_for_any_factor(scaling_factor):
     decoded_scaled = vae.decode(z * scaling_factor)
     decoded_raw = vae.autoencoder.decode_stage_2_outputs(z.to(vae._backbone_dtype))
     assert torch.allclose(decoded_scaled, decoded_raw, atol=1e-5)
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"norm_float16": True, "num_splits": 4, "dim_split": 1},
+        {"norm_float16": False, "num_splits": 1, "dim_split": 0},
+        {"norm_float16": False, "num_splits": 2, "dim_split": 1},
+        {"with_encoder_nonlocal_attn": False, "include_fc": False, "use_convtranspose": False},
+    ],
+)
+def test_widened_knobs_accepted_and_captured(kwargs):
+    """The widened VAE construction surface is accepted and round-trips via config.
+
+    These are GPU / memory knobs (``norm_float16`` runs the backbone in half;
+    ``num_splits`` / ``dim_split`` chunk encode/decode) whose forward behaviour
+    cannot be exercised on tiny CPU tensors, so the assertion is construction +
+    config capture — that a hope checkpoint's construction kwargs load without a
+    TypeError and persist identically (mirrors the scale-cancellation parametrize
+    varying a knob; defaults preserved so the tiny fixtures stay green).
+    """
+    from manifold import AutoencoderKL
+
+    vae = AutoencoderKL(**kwargs)
+    for key, value in kwargs.items():
+        assert vae.config[key] == value

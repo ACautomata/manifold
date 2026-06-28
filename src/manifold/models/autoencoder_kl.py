@@ -9,9 +9,14 @@ undoes the scaling internally, so the training Module and inference Pipeline
 never reference it. This absorbs hope's scattered ``latent * scale_factor``
 (module) and ``z / scale_factor`` (decode) into one place.
 
-In this slice ``scaling_factor`` is supplied from a converted checkpoint or a
-test value; its data-driven estimation (``1/std(z)`` over a cache) ships with the
-(deferred) data stack.
+The wrapper is a thin adapter over the MAISI autoencoder's full construction
+surface (ADR-0001): every MAISI construction knob — architectural
+(``with_*_nonlocal_attn``, ``include_fc``, ``use_convtranspose``) and numerical
+(``norm_float16``, ``num_splits`` / ``dim_split``, ``norm_eps``) — is passed
+through so a hope checkpoint loads strictly and a converted pipeline decodes
+identically. :meth:`encode_raw` returns the **unscaled** latent and is the
+estimation affordance the data stack warms its cache with (ADR-0003 addendum);
+the public :meth:`encode` contract (returns scaled latents) is unchanged.
 """
 
 from __future__ import annotations
@@ -48,18 +53,30 @@ class AutoencoderKL(ModelMixin):
         attention_levels: Sequence[bool] = (False, False),
         latent_channels: int = 4,
         norm_num_groups: int = 8,
+        norm_eps: float = 1e-6,
+        with_encoder_nonlocal_attn: bool = False,
+        with_decoder_nonlocal_attn: bool = False,
+        include_fc: bool = False,
+        use_checkpointing: bool = False,
+        use_convtranspose: bool = False,
         scaling_factor: float = 1.0,
         num_splits: int = 1,
+        dim_split: int = 0,
+        norm_float16: bool = False,
         save_mem: bool = False,
     ):
         """Args:
         scaling_factor: latent normalization scalar (``1/std(z)``); owned here
-            as a buffer. ``encode`` multiplies by it, ``decode`` divides by it.
-        num_splits / save_mem: MAISI's internal encoder/decoder block-split
-            memory knob. Defaults disable it (``num_splits=1``) so tiny CPU
-            tensors do not trip the split logic; production decode uses
+            as a buffer. :meth:`encode` multiplies by it, :meth:`decode` divides,
+            and :meth:`encode_raw` returns the latent without it (the data-stack
+            estimation affordance).
+        num_splits / dim_split / save_mem: MAISI's internal encoder/decoder
+            block-split memory knob. Defaults disable it (``num_splits=1``) so
+            tiny CPU tensors do not trip the split logic; production decode uses
             sliding window (see :meth:`decode`).
-        Remaining args are the MAISI autoencoder's construction config.
+        Remaining args are the MAISI autoencoder's construction config, passed
+        through verbatim so a hope checkpoint loads strictly and decodes
+        identically (defaults are MAISI's, so the tiny-CPU fixtures are unchanged).
         """
         super().__init__()
         self.autoencoder = AutoencoderKlMaisi(
@@ -71,7 +88,15 @@ class AutoencoderKL(ModelMixin):
             attention_levels=tuple(attention_levels),
             latent_channels=latent_channels,
             norm_num_groups=norm_num_groups,
+            norm_eps=norm_eps,
+            with_encoder_nonlocal_attn=with_encoder_nonlocal_attn,
+            with_decoder_nonlocal_attn=with_decoder_nonlocal_attn,
+            include_fc=include_fc,
+            use_checkpointing=use_checkpointing,
+            use_convtranspose=use_convtranspose,
             num_splits=num_splits,
+            dim_split=dim_split,
+            norm_float16=norm_float16,
             save_mem=save_mem,
         )
         self.register_buffer(
@@ -82,9 +107,19 @@ class AutoencoderKL(ModelMixin):
     def _backbone_dtype(self) -> torch.dtype:
         return next(self.autoencoder.parameters()).dtype
 
+    def encode_raw(self, images: Tensor) -> Tensor:
+        """Image → **unscaled** latent (``encode_stage_2_inputs(x)``).
+
+        The reparameterized latent with no ``scaling_factor`` applied. The data
+        stack warms its cache of unscaled latents through this and estimates
+        ``scaling_factor = 1/std(z)`` over it (ADR-0003 addendum); the public
+        :meth:`encode` is just this times ``scaling_factor``.
+        """
+        return self.autoencoder.encode_stage_2_inputs(images)
+
     def encode(self, images: Tensor) -> Tensor:
-        """Image → **scaled** latent (``encode_stage_2_inputs(x) * scaling_factor``)."""
-        z = self.autoencoder.encode_stage_2_inputs(images)
+        """Image → **scaled** latent (``encode_raw(x) * scaling_factor``)."""
+        z = self.encode_raw(images)
         return z * self.scaling_factor.to(z.dtype)
 
     def decode(
