@@ -7,10 +7,11 @@ Heun (:meth:`manifold.schedulers.FlowMatchHeunDiscreteScheduler.euler_step` /
 ``scale_factor`` — the VAE does (ADR-0003): the rollout operates on already-
 scaled latents and ``vae.decode`` undoes the scaling.
 
-This slice (#4, the tracer bullet) runs a single conditional UNet forward per
-evaluation point — no classifier-free guidance. ``guidance_scale`` /
-``cfg_interval`` are accepted (reserving the seam) but fixed at the no-CFG path;
-CFG lands in #5.
+Denoising-interval classifier-free guidance (issue #5) wraps the UNet calls
+*inside* the pipeline: per Heun evaluation point the conditional (spacing +
+class label) and unconditional (label dropped) outputs are combined as
+``uncond + guidance_scale·(cond − uncond)``, but only for flow-times ``t`` inside
+``cfg_interval``. The scheduler stays pure (Heun on velocities).
 """
 
 from __future__ import annotations
@@ -58,16 +59,18 @@ class LatentFlowPipeline(DiffusionPipeline):
             spacing: raw voxel spacing ``[3]`` (or ``[B, 3]``).
             modality: the integer class label (modality) for conditioning.
             num_inference_steps: number of Heun integration steps over ``t: 0 → 1``.
-            guidance_scale: reserved for CFG (#5); ``1.0`` (the default and only
-                supported value in this slice) runs the no-CFG path.
-            cfg_interval: reserved for CFG (#5); ignored in this slice.
+            guidance_scale: classifier-free guidance strength. ``1.0`` (the
+                default) runs the no-CFG path (a single conditional forward).
+                Values ``!= 1.0`` apply CFG inside ``cfg_interval`` only.
+            cfg_interval: ``(low, high)`` — guidance is active for flow-times
+                ``t`` with ``low < t < high``. ``None`` (the default) disables
+                CFG entirely; a degenerate interval covering no timestep also
+                reproduces the no-CFG path exactly.
             generator: optional :class:`torch.Generator` for the starting noise.
 
         Returns:
             The decoded volume ``[B, C_image, D·, H·, W·]`` with a finite range.
         """
-        del guidance_scale, cfg_interval  # reserved for CFG (issue #5)
-
         device = next(self.unet.parameters()).device
         dtype = next(self.unet.parameters()).dtype
         batch_size = int(target_shape[0])
@@ -76,10 +79,29 @@ class LatentFlowPipeline(DiffusionPipeline):
         class_labels = torch.full((batch_size,), int(modality), dtype=torch.long, device=device)
 
         def unet_call(z: Tensor, t: float) -> Tensor:
-            # No CFG in this slice: a single conditional forward per eval point.
-            return self.unet(
+            """One (possibly CFG-combined) UNet evaluation at flow-time ``t``.
+
+            ``guidance_scale == 1.0`` short-circuits to the conditional output —
+            no unconditional forward, so the ``= 1`` path is bit-identical to the
+            no-CFG path. With an active interval the label is dropped for the
+            unconditional pass and the two are combined; outside the interval the
+            conditional output is used directly.
+            """
+            cond = self.unet(
                 sample=z, timestep=float(t), spacing=spacing, class_labels=class_labels
             )
+            if guidance_scale == 1.0 or cfg_interval is None:
+                return cond
+            low, high = cfg_interval
+            if not (low < t < high):
+                return cond
+            uncond = self.unet(
+                sample=z,
+                timestep=float(t),
+                spacing=spacing,
+                class_labels=torch.zeros_like(class_labels),
+            )
+            return uncond + guidance_scale * (cond - uncond)
 
         z = torch.randn(target_shape, generator=generator, device=device, dtype=dtype)
         nodes = self.scheduler.set_timesteps(num_inference_steps, device=device)
