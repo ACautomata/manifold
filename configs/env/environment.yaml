@@ -1,0 +1,23 @@
+# Generic environment template (ADR-0004). Per-run paths are `???` (REQUIRED —
+# `manifold.config.require_paths` fails fast until set) or `null` (OPTIONAL,
+# meaning "off / unused"). Override on the CLI with either `--<key> <value>` or
+# Hydra-style dotlist: `model_dir=/x data_base_dir=/y`. Machine-specific profiles
+# (environment_<machine>.yaml) carry concrete paths.
+data_base_dir: ???            # REQUIRED: dataset root — a DIR of NIfTIs (scanned
+                              # recursively) or a manifest JSON. A manifest's
+                              # RELATIVE image paths resolve against its own
+                              # directory; set json_data_list to keep data_base_dir
+                              # as the resolution directory instead.
+json_data_list: null          # optional: MONAI manifest JSON ({"training":[...]}) —
+                              # overrides the data_base_dir scan when present.
+val_data_base_dir: null       # optional: held-out validation manifest/dir.
+val_subset_size: 32
+model_dir: ???                # REQUIRED: checkpoint / log output dir.
+model_filename: diff_unet_3d_rflow-brats2023.pt
+output_dir: null              # optional: infer/eval output dir (defaults vary).
+output_prefix: unet_3d
+trained_autoencoder_path: ??? # REQUIRED: frozen VAE weights (.pt).
+existing_ckpt_filepath: null  # optional: warm-start UNet checkpoint (None = scratch).
+modality_mapping_path: configs/modality_mapping.json  # repo-relative resource.
+dataset_type: fixed           # "brats" (filename contrast detection) | "fixed".
+latent_cache_dir: null        # optional: VAE latent cache (defaults to <model_dir>/latent_cache).

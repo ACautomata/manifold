@@ -51,10 +51,11 @@ forward process the Scheduler and the Module must agree on.
 _Avoid_: forward process, noise schedule, corruption.
 
 **scale_factor**:
-The latent normalization scalar `1/std(z)` estimated from VAE latents. Owned by the
-VAE wrapper — `encode` returns scaled latents, `decode` undoes the scaling — so the
-Module and Pipeline never reference it (ADR-0003). A domain property: identical
-across ranks.
+The latent normalization scalar `1/std(z)` estimated from VAE latents by the data
+stack (over an unscaled cache; ADR-0003) — at inference it comes from the converted
+checkpoint instead. Owned by the VAE wrapper — `encode` returns scaled latents,
+`decode` undoes the scaling — so the Module and Pipeline never reference it. A
+domain property: identical across ranks.
 _Avoid_: latent scale, norm factor.
 
 **conditioning**:
@@ -70,3 +71,19 @@ A per-component manifold checkpoint, read/written by
 (`{unet_state_dict, scale_factor, ema}`) are not read directly — they pass through a
 one-shot converter (ADR-0003).
 _Avoid_: weights file, model file.
+
+### Configuration
+
+**Experiment config**:
+The OmegaConf run-driver — env (paths) → train/inference recipe → network-
+construction kwargs, composed top-level (later files replace earlier whole, with
+`_base_` inheritance), required paths as `???` (fail-fast) and CLI/dotlist
+overrides. Builds components at launch; never persists them (ADR-0004).
+_Avoid_: run config, hydra config, "the config".
+
+**Component config**:
+The JSON `config.json` a component writes via `register_to_config` / `ConfigMixin`
+and `from_pretrained` / `save_pretrained` round-trips — the diffusers-style
+persistence contract for a trained component, independent of how it was launched
+(ADR-0004).
+_Avoid_: model config, "the config" (say which — Experiment or Component).

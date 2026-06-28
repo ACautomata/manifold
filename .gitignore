@@ -99,9 +99,11 @@ celerybeat.pid
 # Environments
 .env
 .venv
-env/
-venv/
-ENV/
+# Anchored to repo root so the bare name does NOT shadow `configs/env/` (the
+# migrated experiment-config profiles must stay tracked).
+/env/
+/venv/
+/ENV/
 env.bak/
 venv.bak/
 

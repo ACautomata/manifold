@@ -1,0 +1,60 @@
+# Manifold network construction (plain-kwarg OmegaConf YAML — ADR-0004). Each
+# block is the EXACT kwargs of the manifold Model wrapper it builds (no MONAI
+# `_target_` / `@name` / `ConfigParser`: a MONAI parser would instantiate MAISI
+# directly and bypass the wrappers' timestep-scaling / spacing×1e2 / scale_factor
+# logic, ADR-0001). `${...}` interpolates the shared spatial_dims /
+# image_channels / latent_channels declared at the top of this file against the
+# composed root.
+#
+# Values are hope's BraTS2023 MAISI architecture (config_network_rflow.yaml),
+# expressed as wrapper kwargs. The wrappers pass every knob through to MONAI
+# MAISI, so a converted JiT checkpoint loads with strict=True and decodes
+# identically (issue #15). For CPU tests, override num_channels / norm_num_groups
+# to the tiny fixture values via dotlist (see tests/test_config.py).
+spatial_dims: 3
+image_channels: 1
+latent_channels: 4
+
+autoencoder:
+  spatial_dims: ${spatial_dims}
+  in_channels: ${image_channels}
+  out_channels: ${image_channels}
+  latent_channels: ${latent_channels}
+  num_channels: [64, 128, 256]
+  num_res_blocks: [2, 2, 2]
+  norm_num_groups: 32
+  norm_eps: 1.0e-6
+  attention_levels: [false, false, false]
+  with_encoder_nonlocal_attn: false
+  with_decoder_nonlocal_attn: false
+  include_fc: false
+  use_checkpointing: false
+  use_convtranspose: false
+  norm_float16: true
+  num_splits: 4
+  dim_split: 1
+  save_mem: true
+  scaling_factor: 1.0   # placeholder — estimated by the data stack (#16) or baked
+                        # from the hope checkpoint by the converter (#17).
+
+diffusion_unet:
+  spatial_dims: ${spatial_dims}
+  in_channels: ${latent_channels}
+  out_channels: ${latent_channels}
+  num_channels: [64, 128, 256, 512]
+  attention_levels: [false, false, true, true]
+  num_head_channels: [0, 0, 32, 32]
+  num_res_blocks: 2          # scalar -> broadcast across all levels (MAISI)
+  norm_num_groups: 32
+  resblock_updown: true
+  include_fc: true
+  use_flash_attention: true
+  include_spacing_input: true
+  include_top_region_index_input: false
+  include_bottom_region_index_input: false
+  num_class_embeds: 128
+  num_train_timesteps: 1000
+
+scheduler:
+  num_train_timesteps: 1000
+  t_eps: 0.05

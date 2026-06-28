@@ -42,16 +42,19 @@ class UNet3DConditionModel(ModelMixin):
         in_channels: int = 4,
         out_channels: int = 4,
         num_channels: Sequence[int] = (8, 8),
-        num_res_blocks: Sequence[int] = (1, 1),
+        num_res_blocks: int | Sequence[int] = (1, 1),
         attention_levels: Sequence[bool] = (False, False),
         norm_num_groups: int = 8,
-        num_head_channels: int = 4,
+        num_head_channels: int | Sequence[int] = 4,
         with_conditioning: bool = False,
         cross_attention_dim: int | None = None,
         num_class_embeds: int | None = None,
         include_spacing_input: bool = True,
         include_top_region_index_input: bool = False,
         include_bottom_region_index_input: bool = False,
+        resblock_updown: bool = False,
+        include_fc: bool = False,
+        use_flash_attention: bool = False,
         num_train_timesteps: int = 1000,
     ):
         """Construct the wrapper.
@@ -60,16 +63,21 @@ class UNet3DConditionModel(ModelMixin):
             num_train_timesteps: the MAISI UNet time-embedding scale; ``timestep``
                 passed to :meth:`forward` (a flow-time ``t ∈ [0, 1]``) is
                 multiplied by it before the backbone forward.
-            Remaining args are the MAISI diffusion UNet's construction config.
+            Remaining args are the MAISI diffusion UNet's construction config; the
+            new knobs default to MAISI's values so the tiny-CPU fixtures are unchanged.
         """
         super().__init__()
         self.num_train_timesteps = int(num_train_timesteps)
+        # MAISI accepts a scalar (broadcast across levels) or a per-level
+        # sequence for ``num_res_blocks``; pass a scalar through unchanged and
+        # tuple a sequence (current behaviour).
+        nr_blocks = num_res_blocks if isinstance(num_res_blocks, int) else tuple(num_res_blocks)
         self.unet = DiffusionModelUNetMaisi(
             spatial_dims=spatial_dims,
             in_channels=in_channels,
             out_channels=out_channels,
             num_channels=tuple(num_channels),
-            num_res_blocks=tuple(num_res_blocks),
+            num_res_blocks=nr_blocks,
             attention_levels=tuple(attention_levels),
             norm_num_groups=norm_num_groups,
             num_head_channels=num_head_channels,
@@ -79,6 +87,9 @@ class UNet3DConditionModel(ModelMixin):
             include_spacing_input=include_spacing_input,
             include_top_region_index_input=include_top_region_index_input,
             include_bottom_region_index_input=include_bottom_region_index_input,
+            resblock_updown=resblock_updown,
+            include_fc=include_fc,
+            use_flash_attention=use_flash_attention,
         )
 
     def _scaled_timesteps(self, timestep, batch_size: int, device, dtype) -> Tensor:
