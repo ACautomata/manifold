@@ -31,6 +31,10 @@ dependencies = [
     # composition) reads/writes YAML at launch (ADR-0004). It builds components
     # but never persists them — component config stays JSON via ConfigMixin.
     "omegaconf",
+    # The BraTS latent-prep data stack (#16) loads NIfTI volumes (nibabel) and
+    # warms a frozen-VAE latent cache (progress via tqdm).
+    "nibabel",
+    "tqdm",
 ]
 
 [project.optional-dependencies]
