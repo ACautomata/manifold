@@ -16,7 +16,9 @@ class label) and unconditional (label dropped) outputs are combined as
 
 from __future__ import annotations
 
-from typing import Sequence
+import json
+import os
+from typing import Any, Sequence
 
 import torch
 from torch import Tensor
@@ -25,6 +27,9 @@ from ..models.autoencoder_kl import AutoencoderKL
 from ..models.unet_3d_condition import UNet3DConditionModel
 from ..schedulers.scheduling_flow_match_heun import FlowMatchHeunDiscreteScheduler
 from .pipeline_utils import DiffusionPipeline
+
+#: Top-level index naming the pipeline and its per-component layout.
+_MODEL_INDEX_FILE = "model_index.json"
 
 
 class LatentFlowPipeline(DiffusionPipeline):
@@ -39,7 +44,59 @@ class LatentFlowPipeline(DiffusionPipeline):
         self.unet = unet
         self.vae = vae
         self.scheduler = scheduler
+        # No serializable ctor args (the components are objects, not config);
+        # persistence enumerates them in model_index.json (issue #7).
         self._internal_dict: dict = {}
+
+    # -- persistence (native per-component format; ADR-0003) -----------------
+
+    def save_pretrained(self, save_directory: str) -> None:
+        """Write the pipeline as a per-component directory layout.
+
+        ``model_index.json`` identifies the pipeline; each component writes its
+        own ``config.json`` (and, for models, ``diffusion_pytorch_model.pt``)
+        into its subdirectory.
+        """
+        os.makedirs(save_directory, exist_ok=True)
+        index = {
+            "format": "manifold",
+            "pipeline_class": type(self).__name__,
+            "components": {
+                "unet": _qualname(self.unet),
+                "vae": _qualname(self.vae),
+                "scheduler": _qualname(self.scheduler),
+            },
+        }
+        with open(os.path.join(save_directory, _MODEL_INDEX_FILE), "w") as f:
+            json.dump(index, f, indent=2, sort_keys=True)
+        self.unet.save_pretrained(os.path.join(save_directory, "unet"))
+        self.vae.save_pretrained(os.path.join(save_directory, "vae"))
+        # The scheduler is stateless (config only — no weights).
+        self.scheduler.to_json_file(
+            os.path.join(save_directory, "scheduler", self.scheduler.config_name)
+        )
+
+    @classmethod
+    def from_pretrained(cls, save_directory: str) -> LatentFlowPipeline:
+        """Load a pipeline written by :meth:`save_pretrained`.
+
+        Reads only the native per-component format. A hope flat checkpoint
+        (``{unet_state_dict, scale_factor, ema}``) is **not** accepted — convert
+        it first with :func:`convert_hope_checkpoint` (ADR-0003).
+        """
+        index_path = os.path.join(save_directory, _MODEL_INDEX_FILE)
+        if not os.path.isdir(save_directory) or not os.path.isfile(index_path):
+            _reject_if_hope_flat(save_directory)  # raises a helpful error
+            raise FileNotFoundError(
+                f"{save_directory!r} is not a manifold pipeline directory "
+                f"(missing {_MODEL_INDEX_FILE})."
+            )
+        unet = UNet3DConditionModel.from_pretrained(os.path.join(save_directory, "unet"))
+        vae = AutoencoderKL.from_pretrained(os.path.join(save_directory, "vae"))
+        scheduler = FlowMatchHeunDiscreteScheduler.from_json_file(
+            os.path.join(save_directory, "scheduler", FlowMatchHeunDiscreteScheduler.config_name)
+        )
+        return cls(unet, vae, scheduler)
 
     def __call__(
         self,
@@ -124,3 +181,96 @@ class LatentFlowPipeline(DiffusionPipeline):
                     z = self.scheduler.heun_correct(x0_2, z, z_euler, v1, t, t_next)
             volume = self.vae.decode(z)
         return volume
+
+
+# -- checkpoint conversion: hope flat format -> native (ADR-0003) ------------
+
+
+def _qualname(component: Any) -> str:
+    """``module.ClassName`` for a component (written to model_index.json)."""
+    return f"{type(component).__module__}.{type(component).__name__}"
+
+
+def _reject_if_hope_flat(path: str) -> None:
+    """Raise a clear error if *path* is a hope flat checkpoint, else return.
+
+    hope flat checkpoints are a single dict ``{unet_state_dict, scale_factor,
+    ema}``; ``from_pretrained`` must refuse them so the converter stays the sole
+    migration path in.
+    """
+    if os.path.isfile(path):
+        try:
+            payload = torch.load(path, map_location="cpu", weights_only=True)
+        except Exception:  # not a torch checkpoint (or unsafe pickle) — fall through
+            return
+        if isinstance(payload, dict) and "unet_state_dict" in payload:
+            raise ValueError(
+                f"{path!r} is a hope flat checkpoint (has 'unet_state_dict'), not a "
+                "manifold pipeline directory. Convert it first with "
+                "`manifold.pipelines.latent_flow.convert_hope_checkpoint` (or the "
+                "scripts/convert_hope_checkpoint.py CLI)."
+            )
+
+
+def _select_inference_weights(hope: dict, *, prefer_ema: bool) -> tuple[dict, str]:
+    """Pick the inference UNet weights from a hope flat checkpoint.
+
+    hope's inference samples the EMA copy: when EMA shadows are present (and not
+    disabled), the slowest shadow (largest decay) is the published model and is
+    baked as the inference weights; otherwise the raw ``unet_state_dict``.
+    Returns ``(state_dict, source)`` where *source* names which was used.
+    """
+    ema = hope.get("ema")
+    if prefer_ema and isinstance(ema, dict):
+        shadows = ema.get("shadows") or []
+        if shadows:
+            decays = ema.get("decays") or []
+            idx = max(range(len(shadows)), key=lambda i: decays[i]) if decays else len(shadows) - 1
+            return shadows[idx], f"ema[decay={decays[idx]}]" if decays else "ema[last]"
+    if "unet_state_dict" not in hope:
+        raise KeyError("hope checkpoint has no 'unet_state_dict' (and no usable EMA shadow).")
+    return hope["unet_state_dict"], "unet_state_dict"
+
+
+def convert_hope_checkpoint(
+    hope_checkpoint: str | dict,
+    output_directory: str,
+    unet: UNet3DConditionModel,
+    vae: AutoencoderKL,
+    scheduler: FlowMatchHeunDiscreteScheduler,
+    *,
+    prefer_ema: bool = True,
+) -> str:
+    """Convert a hope flat checkpoint to manifold's native per-component format.
+
+    Maps ``unet_state_dict → unet`` (or, by default, the **slowest EMA shadow** —
+    hope's inference copy — baked as the UNet weights), and
+    ``scale_factor → vae.scaling_factor``. The provided ``unet``/``vae``/
+    ``scheduler`` carry the target component configs; their weights/scale are set
+    from the checkpoint, then the pipeline is written via
+    :meth:`LatentFlowPipeline.save_pretrained`. Returns *output_directory*.
+    """
+    hope = (
+        # hope flat checkpoints hold only tensors + simple containers (state
+        # dicts, the scale_factor tensor, and an {shadows, decays} EMA dict), so
+        # weights_only=True loads them safely without unpickling arbitrary code.
+        torch.load(hope_checkpoint, map_location="cpu", weights_only=True)
+        if isinstance(hope_checkpoint, str)
+        else hope_checkpoint
+    )
+    if not isinstance(hope, dict) or "unet_state_dict" not in hope:
+        raise KeyError("Not a hope flat checkpoint: expected a dict with 'unet_state_dict'.")
+
+    weights, source = _select_inference_weights(hope, prefer_ema=prefer_ema)
+    # hope's ``unet_state_dict`` (and EMA shadows) are the RAW MAISI UNet's state
+    # dict — no wrapper prefix — so they load into the wrapped backbone directly.
+    unet.unet.load_state_dict(weights, strict=True)  # bake inference weights into the UNet
+
+    scale_factor = hope.get("scale_factor")
+    if scale_factor is None:
+        raise KeyError("hope checkpoint has no 'scale_factor' to map onto vae.scaling_factor.")
+    with torch.no_grad():
+        vae.scaling_factor.fill_(float(scale_factor))
+
+    LatentFlowPipeline(unet, vae, scheduler).save_pretrained(output_directory)
+    return output_directory
