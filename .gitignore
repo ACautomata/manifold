@@ -141,11 +141,12 @@ cython_debug/
 .DS_Store
 Thumbs.db
 
-# Data / model artifacts (project-specific)
-data/
-runs/
-outputs/
-checkpoints/
+# Data / model artifacts (project-specific). Anchored to repo root so the bare
+# names do NOT shadow source packages (e.g. ``src/manifold/data/``).
+/data/
+/runs/
+/outputs/
+/checkpoints/
 *.ckpt
 *.pth
 *.pt

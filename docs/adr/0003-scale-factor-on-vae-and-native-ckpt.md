@@ -26,3 +26,19 @@ come over through a one-shot converter script
   of a clean native format + explicit converter: keeps the load path honest about
   what manifold's component structure is, and isolates hope-specific shape quirks in
   one script instead of inside the Pipeline.
+
+## Data-stack estimation (addendum)
+
+The data stack derives `scaling_factor` for from-scratch training: it warms a cache
+of **unscaled** latents via `AutoencoderKL.encode_raw` (the unscaled affordance),
+estimates `1/std(z)` over the full cache, sets `vae.scaling_factor`, and multiplies
+by it at `LatentDataset.__getitem__` so the Module receives scaled latents. The
+Module and Pipeline still never reference `scaling_factor`; only the data stack
+reads the VAE's own property. The public `encode` contract (returns scaled latents)
+is unchanged — `encode_raw` is an internal affordance for estimation. At inference,
+`scaling_factor` comes from the converted checkpoint, not re-estimated.
+
+Considered: estimate-then-encode-scaled (estimate from a subset, then re-encode the
+full cache scaled — fully clean but two encode passes, deviation from hope's
+over-full-cache estimate) and config-supplied (no estimation — rejected: abandons
+the latent-prep flow and gives no derivation for a new dataset).
