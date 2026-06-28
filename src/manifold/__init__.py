@@ -1,13 +1,14 @@
 """Manifold: pretraining & medical-imaging experiments.
 
 Built on top of :mod:`stable_pretraining` and :mod:`monai`. The package mirrors
-the diffusers four-component layout (models / schedulers / pipeline) with
-manifold-defined lightweight base classes — it does **not** subclass the
-``diffusers`` library (ADR-0001).
+the diffusers four-component layout (models / schedulers / training module /
+pipeline) with manifold-defined lightweight base classes — it does **not**
+subclass the ``diffusers`` library (ADR-0001).
 """
 
 from .configuration import ConfigMixin
 from .models import AutoencoderKL, ModelMixin, UNet3DConditionModel
+from .modules import LatentFlowModule
 from .pipelines import DiffusionPipeline, LatentFlowPipeline
 from .schedulers import FlowMatchHeunDiscreteScheduler, SchedulerMixin
 
@@ -18,6 +19,7 @@ __all__ = [
     "ConfigMixin",
     "DiffusionPipeline",
     "FlowMatchHeunDiscreteScheduler",
+    "LatentFlowModule",
     "LatentFlowPipeline",
     "ModelMixin",
     "SchedulerMixin",
