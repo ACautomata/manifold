@@ -167,18 +167,23 @@ class LatentFlowPipeline(DiffusionPipeline):
         self.unet.eval()
         self.vae.eval()
         with torch.inference_mode():
-            for i in range(n):
-                t = float(nodes[i])
-                t_next = float(nodes[i + 1])
-                x0_1 = unet_call(z, t)
-                z_euler, v1 = self.scheduler.euler_step(x0_1, z, t, t_next)
-                if i == n - 1:
-                    # Final step is Euler: at t_next = 1 the denominator 1 − t_next
-                    # vanishes, so the second Heun evaluation is undefined.
-                    z = z_euler
-                else:
-                    x0_2 = unet_call(z_euler, t_next)
-                    z = self.scheduler.heun_correct(x0_2, z, z_euler, v1, t, t_next)
+            # Autocast the Heun rollout on cuda (matches hope's ``sample_x0``) so
+            # the latent-trajectory tolerance for numerical validation is
+            # achievable; disabled off-cuda, so CPU tests are bit-identical to the
+            # no-autocast path. The decode stays outside the autocast region.
+            with torch.autocast(device_type=device.type, enabled=device.type == "cuda"):
+                for i in range(n):
+                    t = float(nodes[i])
+                    t_next = float(nodes[i + 1])
+                    x0_1 = unet_call(z, t)
+                    z_euler, v1 = self.scheduler.euler_step(x0_1, z, t, t_next)
+                    if i == n - 1:
+                        # Final step is Euler: at t_next = 1 the denominator 1 − t_next
+                        # vanishes, so the second Heun evaluation is undefined.
+                        z = z_euler
+                    else:
+                        x0_2 = unet_call(z_euler, t_next)
+                        z = self.scheduler.heun_correct(x0_2, z, z_euler, v1, t, t_next)
             volume = self.vae.decode(z)
         return volume
 
@@ -232,6 +237,25 @@ def _select_inference_weights(hope: dict, *, prefer_ema: bool) -> tuple[dict, st
     return hope["unet_state_dict"], "unet_state_dict"
 
 
+def _load_vae_weights(vae: AutoencoderKL, vae_checkpoint: str | dict) -> None:
+    """Load a hope VAE checkpoint into ``vae.autoencoder`` before save.
+
+    Handles both checkpoint forms — a bare ``state_dict`` and the MAISI
+    ``{"unet_state_dict": ...}`` wrapper (the MAISI AE's internal field is named
+    ``unet``) — loading the bare autoencoder keys (no wrapper prefix), like
+    hope's ``load_vae``. Required so the converted checkpoint's VAE actually
+    decodes instead of producing random-init noise.
+    """
+    ckpt = (
+        torch.load(vae_checkpoint, map_location="cpu", weights_only=True)
+        if isinstance(vae_checkpoint, str)
+        else vae_checkpoint
+    )
+    if isinstance(ckpt, dict) and "unet_state_dict" in ckpt:
+        ckpt = ckpt["unet_state_dict"]
+    vae.autoencoder.load_state_dict(ckpt)
+
+
 def convert_hope_checkpoint(
     hope_checkpoint: str | dict,
     output_directory: str,
@@ -240,6 +264,7 @@ def convert_hope_checkpoint(
     scheduler: FlowMatchHeunDiscreteScheduler,
     *,
     prefer_ema: bool = True,
+    vae_checkpoint: str | dict | None = None,
 ) -> str:
     """Convert a hope flat checkpoint to manifold's native per-component format.
 
@@ -249,6 +274,14 @@ def convert_hope_checkpoint(
     ``scheduler`` carry the target component configs; their weights/scale are set
     from the checkpoint, then the pipeline is written via
     :meth:`LatentFlowPipeline.save_pretrained`. Returns *output_directory*.
+
+    Args:
+        vae_checkpoint: optional path/dict to the trained VAE weights
+            (``autoencoder_v1.pt``). When given, the (possibly
+            ``{unet_state_dict}``-wrapped) autoencoder state dict is loaded into
+            ``vae.autoencoder`` **before** save, so the converted checkpoint's VAE
+            decodes. Without it the VAE keeps its construction (random-init)
+            weights — the old behaviour, retained for back-compat.
     """
     hope = (
         # hope flat checkpoints hold only tensors + simple containers (state
@@ -271,6 +304,9 @@ def convert_hope_checkpoint(
         raise KeyError("hope checkpoint has no 'scale_factor' to map onto vae.scaling_factor.")
     with torch.no_grad():
         vae.scaling_factor.fill_(float(scale_factor))
+
+    if vae_checkpoint is not None:
+        _load_vae_weights(vae, vae_checkpoint)
 
     LatentFlowPipeline(unet, vae, scheduler).save_pretrained(output_directory)
     return output_directory
