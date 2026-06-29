@@ -5,10 +5,8 @@
 # network config (the architecture and transport are unchanged from velocity
 # RFlow — only the prediction target, loss, sampler, and EMA differ).
 #
-# The trainer is deliberately deferred (issue #14 keeps this migration scoped to
-# data + config + converter + validation); this recipe is consumed by the
-# converter (#17) and the numerical-validation script (#18), and will be the
-# deferred trainer's config when it lands.
+# Consumed by manifold-train (#28), the converter (#17), and the numerical-
+# validation script (#18).
 
 diffusion_unet_train:
   batch_size: 8
@@ -31,6 +29,23 @@ formulation:
   # Double EMA (JiT): shadows at 0.9999 (slow, used for sampling/eval) + 0.9996.
   ema: true
   ema_decays: [0.9999, 0.9996]
+
+# Generative validation (issue #27): per-epoch unbiased 2.5D FID on a fixed
+# sample set. All optional — manifold-train falls back to sensible defaults;
+# each knob is overridable via dotlist (e.g. `fid_eval.num_synth=32`).
+fid_eval:
+  num_synth: 16            # unconditional volumes generated per epoch (re-seeded)
+  every_n_epochs: 1        # cadence (1 = every validation epoch)
+  center_slices_ratio: 0.5 # 2.5D: fraction of each axis's center slices sampled
+  cov_ridge: 1.0e-6        # covariance ridge before the Fréchet matrix square root
+
+# Stock Lightning ModelCheckpoint (ADR-0006). Single-GPU monitors val/fid_avg
+# (top-3, last, full state); under DDP (FID is rank-0-only) manifold-train falls
+# back to save_last + every_n_epochs with no monitor.
+checkpoint:
+  save_top_k: 3
+  save_last: true
+  every_n_epochs: 1        # DDP fallback cadence (no monitor)
 
 diffusion_unet_inference:
   dim: [256, 256, 128]          # latent target shape [C, D, H, W] (B prepended)

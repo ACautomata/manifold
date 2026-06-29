@@ -6,5 +6,6 @@ scheduler (ADR-0001).
 """
 
 from .latent_flow import LatentFlowModule, SampleDict
+from .sampler import sample_latent_flow
 
-__all__ = ["LatentFlowModule", "SampleDict"]
+__all__ = ["LatentFlowModule", "SampleDict", "sample_latent_flow"]

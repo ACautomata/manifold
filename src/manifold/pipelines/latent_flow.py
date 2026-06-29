@@ -25,6 +25,7 @@ from torch import Tensor
 
 from ..models.autoencoder_kl import AutoencoderKL
 from ..models.unet_3d_condition import UNet3DConditionModel
+from ..modules.sampler import sample_latent_flow
 from ..schedulers.scheduling_flow_match_heun import FlowMatchHeunDiscreteScheduler
 from .pipeline_utils import DiffusionPipeline
 
@@ -110,66 +111,27 @@ class LatentFlowPipeline(DiffusionPipeline):
     ) -> Tensor:
         """Run the Heun rollout and return the final latent ``[B, C_latent, D, H, W]``.
 
-        The pure-noise start → Heun integration under cuda autocast (matching
-        hope's ``sample_x0``); no VAE decode. Exposed so numerical validation can
-        compare the latent trajectory directly against hope's sampler (issue #18).
+        Thin delegate over the shared :func:`~manifold.modules.sample_latent_flow`
+        primitive (ADR-0005) — inference is packaging over the same rollout the
+        Module's ``sample()`` uses, so the two paths cannot drift. The
+        pure-noise start is built from *generator* here; the rollout itself runs
+        under cuda autocast (matching hope's ``sample_x0``). No VAE decode.
+        Exposed so numerical validation can compare the latent trajectory
+        directly against hope's sampler (issue #18).
         """
         device = next(self.unet.parameters()).device
         dtype = next(self.unet.parameters()).dtype
-        batch_size = int(target_shape[0])
-
-        spacing = torch.as_tensor(spacing, device=device)
-        class_labels = torch.full((batch_size,), int(modality), dtype=torch.long, device=device)
-
-        def unet_call(z: Tensor, t: float) -> Tensor:
-            """One (possibly CFG-combined) UNet evaluation at flow-time ``t``.
-
-            ``guidance_scale == 1.0`` short-circuits to the conditional output —
-            no unconditional forward, so the ``= 1`` path is bit-identical to the
-            no-CFG path. With an active interval the label is dropped for the
-            unconditional pass and the two are combined; outside the interval the
-            conditional output is used directly.
-            """
-            cond = self.unet(
-                sample=z, timestep=float(t), spacing=spacing, class_labels=class_labels
-            )
-            if guidance_scale == 1.0 or cfg_interval is None:
-                return cond
-            low, high = cfg_interval
-            if not (low < t < high):
-                return cond
-            uncond = self.unet(
-                sample=z,
-                timestep=float(t),
-                spacing=spacing,
-                class_labels=torch.zeros_like(class_labels),
-            )
-            return uncond + guidance_scale * (cond - uncond)
-
-        z = torch.randn(target_shape, generator=generator, device=device, dtype=dtype)
-        nodes = self.scheduler.set_timesteps(num_inference_steps, device=device)
-        n = int(num_inference_steps)
-
-        self.unet.eval()
-        with torch.inference_mode():
-            # Autocast the Heun rollout on cuda (matches hope's ``sample_x0``) so
-            # the latent-trajectory tolerance for numerical validation is
-            # achievable; disabled off-cuda, so CPU results are bit-identical to
-            # the no-autocast path.
-            with torch.autocast(device_type=device.type, enabled=device.type == "cuda"):
-                for i in range(n):
-                    t = float(nodes[i])
-                    t_next = float(nodes[i + 1])
-                    x0_1 = unet_call(z, t)
-                    z_euler, v1 = self.scheduler.euler_step(x0_1, z, t, t_next)
-                    if i == n - 1:
-                        # Final step is Euler: at t_next = 1 the denominator 1 − t_next
-                        # vanishes, so the second Heun evaluation is undefined.
-                        z = z_euler
-                    else:
-                        x0_2 = unet_call(z_euler, t_next)
-                        z = self.scheduler.heun_correct(x0_2, z, z_euler, v1, t, t_next)
-        return z
+        noise = torch.randn(target_shape, generator=generator, device=device, dtype=dtype)
+        return sample_latent_flow(
+            self.unet,
+            self.scheduler,
+            noise,
+            spacing,
+            modality,
+            num_inference_steps=num_inference_steps,
+            guidance_scale=guidance_scale,
+            cfg_interval=cfg_interval,
+        )
 
     def __call__(
         self,
