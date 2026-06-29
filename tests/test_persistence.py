@@ -314,9 +314,11 @@ def test_converter_without_vae_checkpoint_keeps_construction_vae(tmp_path):
 
 
 def test_pipeline_runs_rollout_under_autocast(pipeline, monkeypatch):
-    """The Heun rollout runs under torch.autocast, enabled only on cuda (issue #17).
+    """The rollout AND the VAE decode run under torch.autocast, cuda-only (issues #17/#18).
 
-    Matches hope's ``sample_x0``; disabled off-cuda so CPU results are unchanged.
+    The rollout matches hope's ``sample_x0``; the decode matches hope's autocast-
+    wrapped ReconModel decode (the migrated VAE carries norm_float16). Both are
+    disabled off-cuda so CPU results are unchanged.
     """
     import manifold.pipelines.latent_flow as lf
 
@@ -338,10 +340,12 @@ def test_pipeline_runs_rollout_under_autocast(pipeline, monkeypatch):
         generator=torch.Generator().manual_seed(0),
     )
     assert calls, "torch.autocast was never entered"
-    # Exactly one autocast region (the rollout); enabled tracks cuda presence.
-    assert len(calls) == 1
-    assert calls[0]["device_type"] == "cpu"
-    assert calls[0]["enabled"] is False  # disabled off-cuda
+    # Two autocast regions: the Heun rollout AND the VAE decode. The migrated VAE
+    # carries norm_float16, so the decode must run under autocast too (issue #18);
+    # both are enabled only on cuda.
+    assert len(calls) == 2
+    assert [c["device_type"] for c in calls] == ["cpu", "cpu"]
+    assert all(c["enabled"] is False for c in calls)  # both disabled off-cuda
 
 
 def test_from_pretrained_rejects_hope_flat(tmp_path):
