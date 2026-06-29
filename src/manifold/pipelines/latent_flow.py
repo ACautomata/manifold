@@ -98,7 +98,7 @@ class LatentFlowPipeline(DiffusionPipeline):
         )
         return cls(unet, vae, scheduler)
 
-    def __call__(
+    def sample_latent(
         self,
         target_shape: Sequence[int],
         spacing: Tensor | Sequence[float],
@@ -108,25 +108,11 @@ class LatentFlowPipeline(DiffusionPipeline):
         cfg_interval: tuple[float, float] | None = None,
         generator: torch.Generator | None = None,
     ) -> Tensor:
-        """Generate a decoded volume ``[B, C, D, H, W]`` from pure noise.
+        """Run the Heun rollout and return the final latent ``[B, C_latent, D, H, W]``.
 
-        Args:
-            target_shape: the latent shape ``[B, C_latent, D, H, W]`` to generate;
-                the returned image volume is the VAE upsample of this latent.
-            spacing: raw voxel spacing ``[3]`` (or ``[B, 3]``).
-            modality: the integer class label (modality) for conditioning.
-            num_inference_steps: number of Heun integration steps over ``t: 0 → 1``.
-            guidance_scale: classifier-free guidance strength. ``1.0`` (the
-                default) runs the no-CFG path (a single conditional forward).
-                Values ``!= 1.0`` apply CFG inside ``cfg_interval`` only.
-            cfg_interval: ``(low, high)`` — guidance is active for flow-times
-                ``t`` with ``low < t < high``. ``None`` (the default) disables
-                CFG entirely; a degenerate interval covering no timestep also
-                reproduces the no-CFG path exactly.
-            generator: optional :class:`torch.Generator` for the starting noise.
-
-        Returns:
-            The decoded volume ``[B, C_image, D·, H·, W·]`` with a finite range.
+        The pure-noise start → Heun integration under cuda autocast (matching
+        hope's ``sample_x0``); no VAE decode. Exposed so numerical validation can
+        compare the latent trajectory directly against hope's sampler (issue #18).
         """
         device = next(self.unet.parameters()).device
         dtype = next(self.unet.parameters()).dtype
@@ -165,12 +151,11 @@ class LatentFlowPipeline(DiffusionPipeline):
         n = int(num_inference_steps)
 
         self.unet.eval()
-        self.vae.eval()
         with torch.inference_mode():
             # Autocast the Heun rollout on cuda (matches hope's ``sample_x0``) so
             # the latent-trajectory tolerance for numerical validation is
-            # achievable; disabled off-cuda, so CPU tests are bit-identical to the
-            # no-autocast path. The decode stays outside the autocast region.
+            # achievable; disabled off-cuda, so CPU results are bit-identical to
+            # the no-autocast path.
             with torch.autocast(device_type=device.type, enabled=device.type == "cuda"):
                 for i in range(n):
                     t = float(nodes[i])
@@ -184,8 +169,60 @@ class LatentFlowPipeline(DiffusionPipeline):
                     else:
                         x0_2 = unet_call(z_euler, t_next)
                         z = self.scheduler.heun_correct(x0_2, z, z_euler, v1, t, t_next)
-            volume = self.vae.decode(z)
-        return volume
+        return z
+
+    def __call__(
+        self,
+        target_shape: Sequence[int],
+        spacing: Tensor | Sequence[float],
+        modality: int,
+        num_inference_steps: int,
+        guidance_scale: float = 1.0,
+        cfg_interval: tuple[float, float] | None = None,
+        generator: torch.Generator | None = None,
+    ) -> Tensor:
+        """Generate a decoded volume ``[B, C, D, H, W]`` from pure noise.
+
+        Equivalent to ``self.vae.decode(self.sample_latent(...))``. Args mirror
+        :meth:`sample_latent`:
+
+        Args:
+            target_shape: the latent shape ``[B, C_latent, D, H, W]`` to generate;
+                the returned image volume is the VAE upsample of this latent.
+            spacing: raw voxel spacing ``[3]`` (or ``[B, 3]``).
+            modality: the integer class label (modality) for conditioning.
+            num_inference_steps: number of Heun integration steps over ``t: 0 → 1``.
+            guidance_scale: classifier-free guidance strength. ``1.0`` (the
+                default) runs the no-CFG path (a single conditional forward).
+                Values ``!= 1.0`` apply CFG inside ``cfg_interval`` only.
+            cfg_interval: ``(low, high)`` — guidance is active for flow-times
+                ``t`` with ``low < t < high``. ``None`` (the default) disables
+                CFG entirely; a degenerate interval covering no timestep also
+                reproduces the no-CFG path exactly.
+            generator: optional :class:`torch.Generator` for the starting noise.
+
+        Returns:
+            The decoded volume ``[B, C_image, D·, H·, W·]`` with a finite range.
+        """
+        latent = self.sample_latent(
+            target_shape,
+            spacing,
+            modality,
+            num_inference_steps,
+            guidance_scale=guidance_scale,
+            cfg_interval=cfg_interval,
+            generator=generator,
+        )
+        self.vae.eval()
+        # Decode under cuda autocast: the migrated VAE carries ``norm_float16``
+        # (half-precision norms, matching hope), so a float32 decode path hits a
+        # Half/float dtype mismatch. hope decodes under autocast too (its infer
+        # CLI wraps the ReconModel decode in torch.amp.autocast). Disabled off-cuda.
+        with (
+            torch.inference_mode(),
+            torch.autocast(device_type=latent.device.type, enabled=latent.device.type == "cuda"),
+        ):
+            return self.vae.decode(latent)
 
 
 # -- checkpoint conversion: hope flat format -> native (ADR-0003) ------------
