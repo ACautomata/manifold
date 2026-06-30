@@ -197,3 +197,104 @@ def test_fid_callback_same_seed_reproduces(latent_module):
         assert torch.equal(a, b)
     # The real arm is cached identically across calls too.
     assert all(torch.equal(a, b) for a, b in zip(cb._real_features(), cb._real_features()))
+
+
+# --- Offline RadImageNet loader (issue #32) -------------------------------------
+# The factory's ``torch.hub.load`` path is offline-broken on gauss (wrong repo
+# name + ``source='local'`` branch fragility), so the FID backbone is built from
+# the cached ``RadImageNet-ResNet50_notop.pth`` state_dict directly. These tests
+# pin the loader's contract with a *synthetic* state_dict — no torch.hub, no
+# network, no real RadImageNet weights (CI has neither the repo nor the ckpt).
+
+
+def test_radimagenet_checkpoint_path_honours_torch_home(monkeypatch, tmp_path):
+    """Checkpoint path resolves under ``$TORCH_HOME/checkpoints/``."""
+    from manifold.metrics.fid import _radimagenet_checkpoint_path
+
+    monkeypatch.setenv("TORCH_HOME", str(tmp_path))
+    assert _radimagenet_checkpoint_path() == str(
+        tmp_path / "checkpoints" / "RadImageNet-ResNet50_notop.pth"
+    )
+
+
+def test_load_radimagenet_resnet50_keeps_conv_bias_and_strips_head(tmp_path):
+    """The offline loader builds a bias-True resnet50 and strict-loads the full
+    ``_notop`` state_dict without dropping the 53 conv biases a naive
+    ``strict=False`` would silently discard (those biases shift features by ~3%
+    in cosine — too much for a metric backbone). ``fc``/``avgpool`` become
+    Identity so the model returns the post-layer4 spatial map (penultimate
+    features), matching ``torch.hub.load(..., 'radimagenet_resnet50')``.
+    """
+    from torchvision.models import resnet50
+
+    from manifold.metrics.fid import _load_radimagenet_resnet50, _match_radimagenet_arch
+
+    # Synthesise a state_dict in the exact RadImageNet `_notop` format: bias on
+    # every conv, no fc head, BN eps=1.001e-5.
+    ref = resnet50(weights=None)
+    _match_radimagenet_arch(ref)
+    ref_state = {k: v.clone() for k, v in ref.state_dict().items() if not k.startswith("fc.")}
+    assert "conv1.bias" in ref_state  # biases present
+    assert not any(k.startswith("fc.") for k in ref_state)  # `_notop`: no head
+    ckpt = tmp_path / "RadImageNet-ResNet50_notop.pth"
+    torch.save(ref_state, ckpt)
+
+    model = _load_radimagenet_resnet50(str(ckpt))
+    model.eval()
+    out = model(torch.randn(1, 3, 224, 224))
+    assert out.shape == (1, 2048 * 7 * 7)  # spatial penultimate features (flattened)
+    # The bias params survived the strict load (not silently dropped).
+    assert model.conv1.bias is not None
+    assert torch.equal(model.conv1.bias, ref_state["conv1.bias"])
+    assert isinstance(model.fc, nn.Identity)
+    assert isinstance(model.avgpool, nn.Identity)
+
+
+def test_match_radimagenet_arch_moves_stride_and_eps():
+    """All three RadImageNet adaptations are pinned (a silent refactor of any one
+    corrupts features despite matching keys/shapes):
+
+    * conv bias=True (the 53 trained bias keys load at all);
+    * bottleneck stride on conv1 (1×1), NOT torchvision's default conv2 (3×3);
+    * BN eps = 1.001e-5.
+    """
+    from torchvision.models import resnet50
+    from torchvision.models.resnet import Bottleneck
+
+    from manifold.metrics.fid import _match_radimagenet_arch
+
+    model = resnet50(weights=None)
+    # torchvision default: stride on conv2, no conv bias, eps=1e-5.
+    b = model.layer2[0]
+    assert b.conv1.stride == (1, 1) and b.conv2.stride == (2, 2)
+    assert model.conv1.bias is None
+    assert any(isinstance(m, nn.BatchNorm2d) and m.eps == 1e-5 for m in model.modules())
+
+    _match_radimagenet_arch(model)
+
+    # Stride moved to conv1 on every downsampling bottleneck.
+    for block in [*model.layer2, *model.layer3, *model.layer4]:
+        first = block
+        if isinstance(first, Bottleneck) and first.downsample is not None:
+            assert first.conv1.stride == (2, 2)
+            assert first.conv2.stride == (1, 1)
+    # Every conv now carries bias.
+    assert model.conv1.bias is not None
+    assert all(
+        m.bias is not None for m in model.modules() if isinstance(m, nn.Conv2d)
+    )
+    # BN eps matched.
+    assert all(
+        m.eps == 1.001e-5 for m in model.modules() if isinstance(m, nn.BatchNorm2d)
+    )
+
+
+def test_load_radimagenet_resnet50_rejects_mismatched_state(tmp_path):
+    """A state_dict missing keys the bias-True model expects must raise (strict),
+    not silently load a partial backbone."""
+    from manifold.metrics.fid import _load_radimagenet_resnet50
+
+    # An empty dict is missing every param → strict load must fail loudly.
+    torch.save({}, tmp_path / "RadImageNet-ResNet50_notop.pth")
+    with pytest.raises(Exception):
+        _load_radimagenet_resnet50(str(tmp_path / "RadImageNet-ResNet50_notop.pth"))
