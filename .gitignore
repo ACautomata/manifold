@@ -150,3 +150,12 @@ Thumbs.db
 *.ckpt
 *.pth
 *.pt
+
+# Local agent tooling + local-only uv lockfile.
+# - ``.claude/`` is per-machine Claude Code config (skills, settings, local
+#   state) — never shared across machines.
+# - ``uv.lock`` is excluded because this repo is conda + pip (see the README
+#   install steps); ``uv`` is used only for local dev, so its lockfile is not
+#   part of the shared install surface.
+.claude/
+uv.lock
