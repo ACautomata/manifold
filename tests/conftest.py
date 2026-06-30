@@ -14,6 +14,7 @@ import torch
 from manifold import (
     AutoencoderKL,
     FlowMatchHeunDiscreteScheduler,
+    LatentFlowModule,
     LatentFlowPipeline,
     UNet3DConditionModel,
 )
@@ -39,3 +40,19 @@ def scheduler() -> FlowMatchHeunDiscreteScheduler:
 @pytest.fixture
 def pipeline(unet, vae, scheduler) -> LatentFlowPipeline:
     return LatentFlowPipeline(unet, vae, scheduler)
+
+
+@pytest.fixture
+def latent_module() -> LatentFlowModule:
+    """A tiny trainable module for trainer / FID tests (lr sized for descent)."""
+    torch.manual_seed(0)
+    unet = UNet3DConditionModel(num_class_embeds=4, include_spacing_input=True)
+    return LatentFlowModule(
+        unet,
+        FlowMatchHeunDiscreteScheduler(),
+        lr=1e-2,
+        lr_warmup_steps=0,
+        num_train_examples=6,
+        train_batch_size=2,
+        n_epochs=2,
+    )

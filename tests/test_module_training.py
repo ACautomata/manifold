@@ -136,3 +136,155 @@ def test_loss_is_inverse_t_weighted_mse(monkeypatch):
     weight = max(1.0 - t, 0.1)
     expected = ((latent.float() - 0.0) / weight).pow(2).mean()
     assert torch.allclose(loss, expected)
+
+
+# -- Slice A (issue #24): the shared x0 Heun rollout -------------------------
+# Module.sample == Pipeline.sample_latent under the same generator (parity), and
+# the Module's generation never imports/instantiates the inference Pipeline.
+
+
+def test_module_sample_equals_pipeline_sample_latent(unet, scheduler):
+    """Module.sample and Pipeline.sample_latent delegate to one primitive (ADR-0005).
+
+    Sharing the SAME unet + scheduler between the module and the pipeline, the
+    two generation paths produce a bit-identical latent under the same generator.
+    """
+    from manifold import AutoencoderKL, LatentFlowPipeline, LatentFlowModule
+
+    vae = AutoencoderKL(scaling_factor=0.5)  # the decode half; not used by sample_latent
+    module = LatentFlowModule(unet, scheduler)
+    pipeline = LatentFlowPipeline(unet, vae, scheduler)  # shares unet + scheduler
+
+    args = dict(
+        target_shape=(1, 4, 4, 4, 4),
+        spacing=[1.0, 1.0, 1.0],
+        modality=2,
+        num_inference_steps=4,
+        guidance_scale=1.5,
+        cfg_interval=(0.1, 1.0),
+    )
+    latent_module = module.sample(generator=torch.Generator().manual_seed(7), **args)
+    latent_pipe = pipeline.sample_latent(generator=torch.Generator().manual_seed(7), **args)
+    assert latent_module.shape == (1, 4, 4, 4, 4)
+    assert torch.equal(latent_module, latent_pipe)
+
+
+def test_module_sample_finite_and_no_cfg_path(unet, scheduler):
+    """Module.sample returns a finite latent; the no-CFG path (scale=1.0) runs."""
+    from manifold import LatentFlowModule
+
+    module = LatentFlowModule(unet, scheduler)
+    latent = module.sample(
+        (1, 4, 4, 4, 4),
+        spacing=[1.0, 1.0, 1.0],
+        modality=1,
+        num_inference_steps=3,
+        generator=torch.Generator().manual_seed(0),
+    )
+    assert latent.shape == (1, 4, 4, 4, 4)
+    assert torch.isfinite(latent).all()
+
+
+def test_module_sample_never_reaches_pipeline(unet, scheduler):
+    """In-training generation never imports or instantiates LatentFlowPipeline (ADR-0005)."""
+    import sys
+
+    from manifold import LatentFlowModule
+
+    module = LatentFlowModule(unet, scheduler)
+    # Drop any cached pipeline module so the assertion below is meaningful.
+    sys.modules.pop("manifold.pipelines.latent_flow", None)
+    module.sample(
+        (1, 4, 4, 4, 4),
+        spacing=[1.0, 1.0, 1.0],
+        modality=0,
+        num_inference_steps=2,
+        generator=torch.Generator().manual_seed(0),
+    )
+    assert "manifold.pipelines.latent_flow" not in sys.modules
+
+
+# -- Slice B (issue #25): optimizer + grad-norm + LR-schedule wiring ----------
+
+
+def test_configure_optimizers_is_adam_plus_cosine_step(unet_trainable):
+    """Adam over all UNet params + a step-interval cosine-with-warmup scheduler."""
+    from manifold import LatentFlowModule
+
+    module = LatentFlowModule(
+        unet_trainable,
+        FlowMatchHeunDiscreteScheduler(),
+        lr=1e-4,
+        lr_warmup_steps=2,
+        num_train_examples=8,
+        train_batch_size=2,
+        n_epochs=3,
+    )
+    config = module.configure_optimizers()
+    assert isinstance(config["optimizer"], torch.optim.Adam)
+    # All UNet params are in the optimizer's param groups.
+    opt_params = {p for group in config["optimizer"].param_groups for p in group["params"]}
+    assert opt_params == set(unet_trainable.parameters())
+    sched_cfg = config["lr_scheduler"]
+    assert sched_cfg["interval"] == "step"
+    # 8 examples / (2 batch * 1 world) = 4 steps/epoch * 3 epochs = 12 total.
+    assert module._total_optimizer_steps() == 12
+
+
+def test_optimizer_step_descends_loss_and_updates_params(unet_trainable, monkeypatch):
+    """A manual forward -> backward -> step reduces loss and updates UNet params.
+
+    ``t`` (and the add-noise RNG) are pinned so two forwards at the same weights
+    are comparable — otherwise the logit-normal ``t`` resample makes loss0/loss1
+    measure different points and a one-step descent is unobservable.
+    """
+    from manifold import LatentFlowModule
+
+    fresh = LatentFlowModule(
+        unet_trainable, FlowMatchHeunDiscreteScheduler(), lr=1e-2, lr_warmup_steps=0
+    )
+    fresh._sample_timesteps = lambda bs, dev: torch.full(  # pin t
+        (bs,), 0.5, device=dev
+    )
+    optimizer = fresh.configure_optimizers()["optimizer"]
+    batch = {
+        "latent": torch.randn(1, 4, 4, 4, 4),
+        "spacing": torch.tensor([1.0, 1.0, 1.0]),
+        "label": torch.tensor([2]),
+    }
+
+    def loss_at():
+        torch.manual_seed(123)  # fix the add_noise sample so forwards are comparable
+        return fresh(batch, "fit")["loss"].item()
+
+    before = [p.detach().clone() for p in unet_trainable.parameters()]
+    loss0 = loss_at()
+    for _ in range(5):
+        torch.manual_seed(123)
+        loss = fresh(batch, "fit")["loss"]
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+    loss1 = loss_at()
+
+    after = list(unet_trainable.parameters())
+    assert any(not torch.equal(b, a) for b, a in zip(before, after))
+    assert loss1 < loss0
+
+
+def test_grad_norm_hook_stashes_amp_corrected_value(module, batch):
+    """after_manual_backward stashes the grad norm; off-GPU scale is 1.0."""
+    out = module(batch, "fit")
+    out["loss"].backward()
+    assert module._last_grad_norm is None  # not set until the hook runs
+    module.after_manual_backward()
+
+    expected = torch.sqrt(
+        sum((p.grad.detach().float() ** 2).sum() for p in module.unet.parameters())
+    )
+    assert module._last_grad_norm is not None
+    assert module._last_grad_norm == pytest.approx(float(expected))
+    # No Trainer / off-GPU → the AMP scale is exactly 1.0.
+    assert module._amp_scale() == 1.0
+
+

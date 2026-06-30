@@ -35,6 +35,11 @@ dependencies = [
     # warms a frozen-VAE latent cache (progress via tqdm).
     "nibabel",
     "tqdm",
+    # The unbiased 2.5D FID validation callback (#27): scipy for the principal
+    # matrix square-root in the Fréchet distance, torchvision for the RadImageNet
+    # ResNet50 backbone factory.
+    "scipy",
+    "torchvision",
 ]
 
 [project.optional-dependencies]
@@ -42,6 +47,11 @@ dev = [
     "pytest",
     "ruff",
 ]
+
+[project.scripts]
+# The JiT training launcher (issue #28): compose config -> warm cache -> fit.
+# `python -m` parity for the export bridge is scripts/export_checkpoint.py.
+manifold-train = "manifold.training.cli:main"
 
 [project.urls]
 Homepage = "https://github.com/junran/manifold"

@@ -26,8 +26,11 @@ _Avoid_: noise scheduler (MONAI-flavored), sampler.
 
 **Module** (training Module):
 The `spt.Module` under `modules/` owning training-only concerns: logit-normal
-timestep sampling, the `(1−t)⁻²` loss weight, and the MSE on the clean-latent
-prediction. The stable-pretraining training interface.
+timestep sampling, the `(1−t)⁻²` loss weight, the MSE on the clean-latent
+prediction, the optimizer/LR-schedule/grad-norm wiring, and the x0 Heun
+`sample()` it delivers for in-training generation (the same rollout primitive the
+inference Pipeline delegates to — ADR-0005). The stable-pretraining training
+interface.
 _Avoid_: trainer, Lightning module.
 
 **Pipeline**:
@@ -71,6 +74,41 @@ A per-component manifold checkpoint, read/written by
 (`{unet_state_dict, scale_factor, ema}`) are not read directly — they pass through a
 one-shot converter (ADR-0003).
 _Avoid_: weights file, model file.
+
+### Training
+
+**Training pipeline**:
+The `manifold-train` console entry + Lightning `Trainer` + `spt.Module` + callbacks that turn
+warmed latents into a trained checkpoint. Built on `spt.Module` (manual
+optimization), never a hand-rolled loop. Owned under the `training/` package
+(cli + trainer + EMA + train-metrics callbacks + export) and `metrics/` (the FID).
+_Avoid_: train script, run script.
+
+**Training checkpoint** (.ckpt):
+The Lightning `ModelCheckpoint` artifact — full training state (UNet + optimizer +
+LR-schedule + EMA callback state + epoch); the resume and best-by-FID medium.
+Distinct from the **native** checkpoint: training writes `.ckpt`, the inference
+Pipeline reads the native per-component dir (reached via export; ADR-0006).
+_Avoid_: weights file (say training-ckpt or native).
+
+**Export**:
+The one-shot `.ckpt → native` per-component conversion that bakes the slowest EMA
+shadow as the inference UNet — the bridge from a training checkpoint to the
+inference Pipeline. Distinct from the hope→native converter.
+_Avoid_: convert (say export or hope-converter).
+
+**Fixed-sample validation**:
+In-training evaluation that reuses the SAME small validation subset AND re-seeds
+the generation noise every epoch, so only the model changes between epochs —
+isolating quality drift from sampling stochasticity.
+_Avoid_: rolling validation, random-sample eval.
+
+**Unbiased FID**:
+The small-sample-bias-corrected Fréchet distance — subtracts the exact
+`Tr(Σ)/n` upward bias of the `‖μ̂₁−μ̂₂‖²` mean term. The validation FID
+estimator; RadImageNet ResNet50 backbone, 2.5D (three orthogonal planes).
+Distinct from the legacy biased plug-in FID.
+_Avoid_: biased FID, plain FID.
 
 ### Configuration
 
