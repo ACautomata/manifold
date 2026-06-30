@@ -298,3 +298,29 @@ def test_load_radimagenet_resnet50_rejects_mismatched_state(tmp_path):
     torch.save({}, tmp_path / "RadImageNet-ResNet50_notop.pth")
     with pytest.raises(Exception):
         _load_radimagenet_resnet50(str(tmp_path / "RadImageNet-ResNet50_notop.pth"))
+
+
+# --- Global pooling of the spatial feature map (FID memory fix) -----------------
+# _RadImageNetFeatures wraps the bare resnet (avgpool/fc=Identity, returns a
+# 2048*h*w spatial map) and must global-average-pool it to 2048-dim so the Fréchet
+# covariance stays ~17 MB instead of ~69 GB at full resolution. This is the standard
+# FID feature (hope flattened the map; we pool — a deliberate, tested divergence).
+
+
+def test_radimagenet_features_global_pool_to_2048():
+    """The feature wrapper global-average-pools the spatial map to 2048-dim."""
+    from manifold.metrics.fid import _RadImageNetFeatures
+
+    # A bare bias-True resnet50 with avgpool/fc=Identity returns [B,2048,h,w].
+    from torchvision.models import resnet50
+
+    from manifold.metrics.fid import _match_radimagenet_arch
+
+    model = resnet50(weights=None)
+    _match_radimagenet_arch(model)
+    model.avgpool = torch.nn.Identity()
+    model.fc = torch.nn.Identity()
+    model.eval()
+    wrapped = _RadImageNetFeatures(model)
+    out = wrapped(torch.rand(1, 1, 224, 224))
+    assert out.shape == (1, 2048)  # pooled, not 2048*7*7 flattened

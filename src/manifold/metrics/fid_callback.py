@@ -120,11 +120,53 @@ class FIDCallback(pl.Callback):
             return True
         return False
 
+    def _stage_eval_on_device(self) -> None:
+        """Stage VAE + feature_net onto the UNet's (GPU) device for the FID phase.
+
+        ``warm_latent_pipeline`` leaves the VAE on CPU to free VRAM for UNet
+        *training*; the RadImageNet feature_net is CPU by default. During validation
+        the UNet is idle, so decoding + feature extraction on GPU is feasible and far
+        faster than CPU. Both are returned to CPU once the FID phase ends.
+        """
+        if not getattr(self, "_eval_staged", False):
+            self._vae_cpu_state = {k: v.detach().clone() for k, v in self.vae.state_dict().items()}
+            self.vae.to(self._device())
+            if self.feature_net is not None:
+                self.feature_net.to(self._device())
+            self._eval_staged = True
+
+    def _restore_eval_to_cpu(self) -> None:
+        """Return VAE + feature_net to CPU after the FID phase (free VRAM for training)."""
+        if getattr(self, "_eval_staged", False):
+            self.vae.to("cpu")
+            if hasattr(self, "_vae_cpu_state"):
+                self.vae.load_state_dict(self._vae_cpu_state)
+            if self.feature_net is not None:
+                self.feature_net.to("cpu")
+            self._eval_staged = False
+
+    def _eval_decode(self, latents: torch.Tensor) -> torch.Tensor:
+        """Decode for FID eval in float32 on the staged (GPU) device.
+
+        ``norm_float16`` makes MaisiGroupNorm3D cast its output to float16
+        unconditionally, so a downstream float32 conv raises a bias-type mismatch
+        unless an outer autocast reconciles them -- which this validation hook cannot
+        rely on. FID is an *evaluation* metric, so float32 decode is both robust and
+        more correct than half precision. The latent is moved to the VAE's device.
+        """
+        if not getattr(self, "_norm16_disabled", False):
+            for m in self.vae.modules():
+                if hasattr(m, "norm_float16"):
+                    m.norm_float16 = False
+            self._norm16_disabled = True
+        vae_device = next(self.vae.parameters()).device
+        return self.vae.decode(latents.float().to(vae_device))
+
     @torch.no_grad()
     def _real_features(self) -> list[torch.Tensor]:
         """Decode the fixed real subset once and cache its per-plane features."""
         self.vae.eval()
-        real_images = self.vae.decode(self.real_latents)
+        real_images = self._eval_decode(self.real_latents)
         return get_features_2p5d(real_images, self.feature_net, center_slices_ratio=self.center_slices_ratio)
 
     @torch.no_grad()
@@ -147,7 +189,7 @@ class FIDCallback(pl.Callback):
                 )
             finally:
                 self.ema_callback.restore(self.module)
-            image = self.vae.decode(latent)
+            image = self._eval_decode(latent)
             for axis, feats in enumerate(
                 get_features_2p5d(image, self.feature_net, center_slices_ratio=self.center_slices_ratio)
             ):
@@ -163,22 +205,26 @@ class FIDCallback(pl.Callback):
     def on_validation_epoch_end(self, trainer, module) -> None:
         if not self._gated(trainer):
             return
-        if self._real_planes is None:
-            self._real_planes = self._real_features()
-        synth_planes = self._synth_features()
+        self._stage_eval_on_device()
+        try:
+            if self._real_planes is None:
+                self._real_planes = self._real_features()
+            synth_planes = self._synth_features()
 
-        per_plane = {}
-        total = 0.0
-        n = 0
-        for axis, (rp, sp) in enumerate(zip(self._real_planes, synth_planes)):
-            name = ("xy", "yz", "zx")[axis]
-            if rp.numel() == 0 or sp.numel() == 0 or rp.shape[0] < 2 or sp.shape[0] < 2:
-                continue
-            fid = frechet_distance_unbiased(sp.float(), rp.float(), ridge=self.cov_ridge)
-            per_plane[name] = float(fid)
-            total += float(fid)
-            n += 1
-        if n:
-            module.log("val/fid_avg", total / n)
-            for name, val in per_plane.items():
-                module.log(f"val/fid_{name}", val)
+            per_plane = {}
+            total = 0.0
+            n = 0
+            for axis, (rp, sp) in enumerate(zip(self._real_planes, synth_planes)):
+                name = ("xy", "yz", "zx")[axis]
+                if rp.numel() == 0 or sp.numel() == 0 or rp.shape[0] < 2 or sp.shape[0] < 2:
+                    continue
+                fid = frechet_distance_unbiased(sp.float(), rp.float(), ridge=self.cov_ridge)
+                per_plane[name] = float(fid)
+                total += float(fid)
+                n += 1
+            if n:
+                module.log("val/fid_avg", total / n)
+                for name, val in per_plane.items():
+                    module.log(f"val/fid_{name}", val)
+        finally:
+            self._restore_eval_to_cpu()

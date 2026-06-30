@@ -271,6 +271,14 @@ class _RadImageNetFeatures(nn.Module):
 
     def __init__(self, model: nn.Module):
         super().__init__()
+        # Global-average-pool so the backbone yields the canonical 2048-dim FID
+        # feature. The offline loader leaves ``avgpool`` as Identity (returning a
+        # spatial map); torchvision's forward flattens that map before we see it, so
+        # pooling must happen *inside* the backbone via a real AdaptiveAvgPool2d (fc
+        # stays Identity — no classifier). hope flattened the map (D~131k -> 69 GB
+        # covariance); we pool to 2048 (17 MB) — a deliberate, tested divergence.
+        if isinstance(model.avgpool, nn.Identity):
+            model.avgpool = nn.AdaptiveAvgPool2d((1, 1))
         self.model = model
         for p in self.model.parameters():
             p.requires_grad_(False)
