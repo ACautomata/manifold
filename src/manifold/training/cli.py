@@ -135,7 +135,7 @@ def run_training(
 
     multi_gpu = isinstance(devices, int) and devices > 1
     if enable_fid:
-        inf = _inference_recipe(module)
+        inf = _inference_recipe(module, val_latents=bundle.val_latents)
         fid = FIDCallback(
             module=module,
             vae=bundle.vae,
@@ -176,10 +176,20 @@ def run_training(
     return trainer, ckpt
 
 
-def _inference_recipe(module: LatentFlowModule) -> dict:
-    """Default generation recipe for the FID callback (mirrors inference)."""
+def _inference_recipe(module: LatentFlowModule, *, val_latents: torch.Tensor) -> dict:
+    """Default generation recipe for the FID callback (mirrors inference).
+
+    ``latent_shape`` is the single-sample template of the **real** validation
+    latents — ``(1,) + val_latents.shape[1:]`` — not a hardcoded constant. The FID
+    compares features decoded from generated vs. real latents in the same image
+    space, so the synthetic latent must carry the real latents' spatial shape
+    (e.g. ``(1, 4, 64, 64, 32)``); the stub's ``(1, 4, 4, 4, 4)`` decoded to a
+    degraded volume and made ``val/fid_avg`` meaningless. Deriving it from the
+    warmed latents is ground truth and tracks any ``diffusion_unet_inference.dim``
+    / VAE-stride change without a fragile rescale formula here.
+    """
     return {
-        "latent_shape": (1, 4, 4, 4, 4),
+        "latent_shape": (1,) + tuple(val_latents.shape[1:]),
         "spacing": [1.0, 1.0, 1.0],
         "modality": 1,
         "num_inference_steps": 4,

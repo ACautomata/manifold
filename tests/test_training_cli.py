@@ -26,7 +26,7 @@ from manifold import (
     UNet3DConditionModel,
 )
 from manifold.training import export_to_native, run_training
-from manifold.training.cli import _DataBundle, main as train_main
+from manifold.training.cli import _DataBundle, _inference_recipe, main as train_main
 
 
 class _LatentDS(Dataset):
@@ -88,6 +88,19 @@ def _run(tmp_path, *, module=None, bundle=None, enable_fid=True, ckpt_path=None,
         cov_ridge=1e-2,
         ckpt_path=ckpt_path,
     )
+
+
+def test_inference_recipe_latent_shape_derived_from_val_latents():
+    """_inference_recipe derives latent_shape as one real-sample's latent shape.
+
+    The synthetic latent must match the real validation latents' spatial shape
+    (the FID compares features in the same image space), so the recipe template
+    is the leading-1, single-sample shape of the real latents — not a hardcoded
+    constant. A unique non-round shape proves the value is derived, not stubbed.
+    """
+    val_latents = torch.randn(6, 4, 7, 9, 11)  # [N, C, D, H, W]
+    inf = _inference_recipe(_module(), val_latents=val_latents)
+    assert inf["latent_shape"] == (1, 4, 7, 9, 11)
 
 
 def test_run_training_writes_ckpt_and_logs_metrics(tmp_path):
