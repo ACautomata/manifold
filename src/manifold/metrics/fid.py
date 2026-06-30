@@ -10,8 +10,9 @@ Ports only the unbiased core of hope's metric module:
   covariance before the matrix square root.
 - :func:`get_features_2p5d` — the 2.5D feature extraction (three orthogonal
   XY/YZ/ZX planes, stacked per volume).
-- :func:`make_feature_network` — the RadImageNet ResNet50 factory (via
-  ``torch.hub``; gauss must pre-populate ``$TORCH_HOME`` for offline use).
+- :func:`make_feature_network` — the RadImageNet ResNet50 factory (loads the
+  cached ``RadImageNet-ResNet50_notop.pth`` state_dict offline; falls back to
+  ``torch.hub`` only when the checkpoint is absent).
 
 The InceptionV3 / SqueezeNet backbones, the bootstrap CI, and the standalone
 2.5D orchestrator are **not** ported (out of scope). ``scipy`` and
@@ -20,6 +21,7 @@ The InceptionV3 / SqueezeNet backbones, the bootstrap CI, and the standalone
 
 from __future__ import annotations
 
+import os
 from typing import Callable
 
 import torch
@@ -136,35 +138,120 @@ def get_features_2p5d(
 
 
 def make_feature_network(name: str = "resnet50") -> nn.Module:
-    """Load a RadImageNet feature backbone via ``torch.hub``.
+    """Load a RadImageNet ResNet50 feature backbone.
+
+    On offline hosts (gauss, behind a jump host), builds the backbone directly
+    from the cached ``RadImageNet-ResNet50_notop.pth`` state_dict — no
+    ``torch.hub`` and no network. (``torch.hub.load`` is offline-broken there: the
+    cached repo dir uses a hyphen + ``_main`` suffix that the ``source='local'``
+    branch resolver mishandles, and the entry point never lands on ``sys.path``.)
+    Only when the checkpoint is *absent* does it fall back to a GitHub ``torch.hub``
+    load for hosts with network.
 
     Wraps the model in a BGR + ImageNet-mean preprocessing module so it maps a
     single-channel medical slice ``[B, 1, H, W]`` to ``[B, D_feat]`` features.
-    gauss (behind a jump host) must pre-populate ``$TORCH_HOME`` so the load runs
-    offline — set ``TORCH_HOME`` and ``torch.hub.load(..., source='local')`` will
-    find the cached ``Warvito/radimagenet_model`` repo.
 
     Only ``"resnet50"`` (RadImageNet) is supported here; the InceptionV3 /
     SqueezeNet backbones are out of scope.
     """
     if name != "resnet50":
         raise ValueError(f"Only 'resnet50' (RadImageNet) is supported, got {name!r}.")
-    model = torch.hub.load(
-        "Warvito/radimagenet_model",
-        "radimagenet_resnet50",
-        source="local" if _torchhub_cached() else "github",
-        trust_repo=True,
-    )
+    ckpt = _radimagenet_checkpoint_path()
+    if os.path.isfile(ckpt):
+        model = _load_radimagenet_resnet50(ckpt)
+    else:  # online fallback for hosts without the cached checkpoint
+        model = torch.hub.load(
+            _RADIMAGENET_REPO,
+            "radimagenet_resnet50",
+            source="github",
+            trust_repo=True,
+        )
     return _RadImageNetFeatures(model)
 
 
-def _torchhub_cached() -> bool:
-    import os
+# Cached RadImageNet assets: the ``_notop`` ResNet50 state_dict (no classifier
+# head) under ``$TORCH_HOME/checkpoints/``, and the (online-only) hub repo.
+_RADIMAGENET_CKPT = "RadImageNet-ResNet50_notop.pth"
+_RADIMAGENET_REPO = "Warvito/radimagenet-models"
 
-    import torch.hub
 
-    home = os.environ.get("TORCH_HOME", torch.hub.get_dir())
-    return os.path.isdir(os.path.join(home, "Warvito_radimagenet_model_master"))
+def _radimagenet_checkpoint_path() -> str:
+    """Resolve the cached RadImageNet ResNet50 (no-top) checkpoint path.
+
+    Honours ``TORCH_HOME`` then ``torch.hub.get_dir()``; the checkpoint lives in
+    ``<hub>/checkpoints/``. The path is returned whether or not the file exists —
+    :func:`make_feature_network` falls back to the online hub load when it does
+    not, so the absence is not an error here.
+    """
+    home = os.environ.get("TORCH_HOME") or torch.hub.get_dir()
+    return os.path.join(home, "checkpoints", _RADIMAGENET_CKPT)
+
+
+def _match_radimagenet_arch(model: nn.Module) -> None:
+    """Reshape torchvision's ``resnet50`` to the RadImageNet architecture in place.
+
+    RadImageNet's ResNet50 (converted from a Keras model) differs from
+    torchvision's in three inference-relevant ways — without *all three* the
+    loaded weights compute the wrong features despite every key/shape matching:
+
+    * **conv bias**: Keras convs carry a trained bias (53 keys); torchvision uses
+      ``bias=False``. Dropping them skews features by ~3% (cosine 0.97).
+    * **bottleneck stride**: Keras puts the downsampling stride on ``conv1`` (the
+      1×1); torchvision puts it on ``conv2`` (the 3×3). Same weight shapes, very
+      different receptive field (this is the divergence the shape-check hides).
+    * **BN ``eps``**: 1.001e-5 vs torchvision's 1e-5.
+
+    After this the features match the canonical ``torch.hub`` model bit-for-bit.
+    """
+    from torchvision.models.resnet import Bottleneck
+
+    for module in model.modules():
+        if isinstance(module, nn.BatchNorm2d):
+            module.eps = 1.001e-5
+        elif isinstance(module, Bottleneck) and module.conv2.stride[0] != 1:
+            # Move the downsampling stride conv2 (3×3) -> conv1 (1×1).
+            module.conv1.stride = module.conv2.stride
+            module.conv2.stride = (1, 1)
+    _enable_conv_bias(model)
+
+
+def _enable_conv_bias(model: nn.Module) -> None:
+    """Rebuild ``model``'s conv layers with ``bias=True`` in place (recursive)."""
+    for name, child in list(model.named_children()):
+        if isinstance(child, nn.Conv2d):
+            biased = nn.Conv2d(
+                child.in_channels,
+                child.out_channels,
+                child.kernel_size,
+                stride=child.stride,
+                padding=child.padding,
+                dilation=child.dilation,
+                groups=child.groups,
+                bias=True,
+            )
+            biased.weight = child.weight  # reuse the initialised Parameter
+            setattr(model, name, biased)
+        else:
+            _enable_conv_bias(child)
+
+
+def _load_radimagenet_resnet50(ckpt_path: str) -> nn.Module:
+    """Build a bias-True ``resnet50`` and strict-load the cached state_dict.
+
+    The checkpoint is the ``_notop`` variant (no ``fc`` head), so ``fc`` and
+    ``avgpool`` are replaced with :class:`~torch.nn.Identity` — the model then
+    returns the post-``layer4`` spatial map (the penultimate feature tensor),
+    matching ``torch.hub.load(..., 'radimagenet_resnet50')``. No network.
+    """
+    from torchvision.models import resnet50
+
+    model = resnet50(weights=None)
+    _match_radimagenet_arch(model)
+    model.avgpool = nn.Identity()
+    model.fc = nn.Identity()
+    state = torch.load(ckpt_path, map_location="cpu", weights_only=True)
+    model.load_state_dict(state, strict=True)
+    return model
 
 
 # ImageNet channel statistics (RadImageNet models are trained with ImageNet
