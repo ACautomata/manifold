@@ -254,19 +254,21 @@ def _load_radimagenet_resnet50(ckpt_path: str) -> nn.Module:
     return model
 
 
-# ImageNet channel statistics (RadImageNet models are trained with ImageNet
-# normalisation; the input is replicated to 3 channels from the single medical
-# slice and mean-subtracted). BGR ordering is applied inside the wrapper.
-_IMAGENET_MEAN = (0.485, 0.456, 0.406)
-_IMAGENET_STD = (0.229, 0.224, 0.225)
+# Caffe-mode channel mean (RadImageNet's training preprocessing: [0,1] ->
+# RGB->BGR -> mean-subtract ONLY, no std division — the hub model has no internal
+# normalisation, so this lands directly on conv1). Ordered BGR to pair with the
+# post-flip channel order inside the wrapper; the single medical slice is
+# replicated to 3 channels before the flip.
+_IMAGENET_MEAN = (0.406, 0.456, 0.485)
 
 
 class _RadImageNetFeatures(nn.Module):
     """Wrap a RadImageNet classifier as a single-channel → features backbone.
 
-    Replicates the medical slice to 3 channels, applies ImageNet mean/std
-    normalisation (BGR channel order, matching RadImageNet's preprocessing), and
-    returns the penultimate feature vector.
+    Replicates the medical slice to 3 channels, applies caffe-mode mean
+    subtraction in BGR channel order (RadImageNet's training preprocessing:
+    ``[0,1]`` → RGB→BGR → mean-subtract, no std division), and returns the
+    penultimate feature vector.
     """
 
     def __init__(self, model: nn.Module):
@@ -283,14 +285,13 @@ class _RadImageNetFeatures(nn.Module):
         for p in self.model.parameters():
             p.requires_grad_(False)
         self.register_buffer("_mean", torch.tensor(_IMAGENET_MEAN).view(1, 3, 1, 1))
-        self.register_buffer("_std", torch.tensor(_IMAGENET_STD).view(1, 3, 1, 1))
 
     def forward(self, x: Tensor) -> Tensor:
         # x: [B, 1, H, W] in ~[0, 1]; replicate to 3-channel, BGR order.
         if x.shape[1] == 1:
             x = x.repeat(1, 3, 1, 1)
         x = x.flip(1)  # RGB -> BGR
-        x = (x - self._mean) / self._std
+        x = x - self._mean  # caffe-mode: mean-subtract only (no std division)
         with torch.no_grad():
             feats = self.model.features(x) if hasattr(self.model, "features") else self.model(x)
         return feats.flatten(1)
