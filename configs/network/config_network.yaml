@@ -34,8 +34,7 @@ autoencoder:
   num_splits: 4
   dim_split: 1
   save_mem: true
-  scaling_factor: 1.0   # placeholder — estimated by the data stack (#16) or baked
-                        # from the hope checkpoint by the converter (#17).
+  scaling_factor: 1.0   # placeholder — estimated by the data stack at warm time (#16).
 
 diffusion_unet:
   spatial_dims: ${spatial_dims}

@@ -84,8 +84,8 @@ def load_vae(
 
     Constructs :class:`~manifold.AutoencoderKL` from ``cfg.autoencoder``, then
     loads ``cfg.trained_autoencoder_path`` into ``vae.autoencoder`` — unwrapping
-    the MAISI ``{unet_state_dict}`` wrapper if present (bare autoencoder keys,
-    like hope's ``load_vae``). Returned frozen + in eval mode on *device*.
+    the MAISI ``{unet_state_dict}`` wrapper if present (bare autoencoder keys).
+    Returned frozen + in eval mode on *device*.
     """
     vae = build_vae(cfg).to(device)
     ckpt = _load_checkpoint(cfg.trained_autoencoder_path, map_location=device)

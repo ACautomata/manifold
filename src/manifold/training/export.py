@@ -2,16 +2,16 @@
 
 A one-shot bridge from a Lightning training checkpoint to the directory layout
 :meth:`~manifold.LatentFlowPipeline.from_pretrained` loads: bake the **slowest
-EMA shadow** (the published model — the converter's prefer-EMA selection) as the
-inference UNet, take the VAE (carrying ``scaling_factor``) and scheduler, and
-write via :meth:`~manifold.LatentFlowPipeline.save_pretrained`. Sibling to the
-hope→native converter, not a replacement.
+EMA shadow** (the published model) as the inference UNet, take the VAE
+(carrying ``scaling_factor``) and scheduler, and write via
+:meth:`~manifold.LatentFlowPipeline.save_pretrained`. This is the sole
+checkpoint → inference path now that the hope→native converter has been
+retired (ADR-0007).
 
 The EMA shadows live in the checkpoint's callback state
 (``callbacks['DoubleEMACallback']``); the slowest (largest decay) is the
 generation/eval model the FID callback sampled. When no EMA state is present,
-the raw ``state_dict`` UNet weights are baked instead (the converter's no-EMA
-fallback).
+the raw ``state_dict`` UNet weights are baked instead.
 """
 
 from __future__ import annotations
@@ -21,6 +21,7 @@ import logging
 import torch
 
 from ..pipelines.latent_flow import LatentFlowPipeline
+from .ema import slowest_shadow_index
 
 _log = logging.getLogger(__name__)
 
@@ -40,12 +41,11 @@ def _slowest_ema_shadow(ckpt: dict) -> tuple[dict, float] | tuple[None, None]:
     """
     for state in ckpt.get("callbacks", {}).values():
         if isinstance(state, dict) and "shadows" in state and "decays" in state:
-            decays = state["decays"]
             shadows = state["shadows"]
             if not shadows:
                 return None, None
-            idx = max(range(len(shadows)), key=lambda i: decays[i])
-            return shadows[idx], float(decays[idx])
+            idx = slowest_shadow_index(state["decays"])
+            return shadows[idx], float(state["decays"][idx])
     return None, None
 
 

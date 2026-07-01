@@ -81,13 +81,10 @@ class LatentFlowPipeline(DiffusionPipeline):
     def from_pretrained(cls, save_directory: str) -> LatentFlowPipeline:
         """Load a pipeline written by :meth:`save_pretrained`.
 
-        Reads only the native per-component format. A hope flat checkpoint
-        (``{unet_state_dict, scale_factor, ema}``) is **not** accepted — convert
-        it first with :func:`convert_hope_checkpoint` (ADR-0003).
+        Reads only the native per-component format.
         """
         index_path = os.path.join(save_directory, _MODEL_INDEX_FILE)
         if not os.path.isdir(save_directory) or not os.path.isfile(index_path):
-            _reject_if_hope_flat(save_directory)  # raises a helpful error
             raise FileNotFoundError(
                 f"{save_directory!r} is not a manifold pipeline directory "
                 f"(missing {_MODEL_INDEX_FILE})."
@@ -115,9 +112,8 @@ class LatentFlowPipeline(DiffusionPipeline):
         primitive (ADR-0005) — inference is packaging over the same rollout the
         Module's ``sample()`` uses, so the two paths cannot drift. The
         pure-noise start is built from *generator* here; the rollout itself runs
-        under cuda autocast (matching hope's ``sample_x0``). No VAE decode.
-        Exposed so numerical validation can compare the latent trajectory
-        directly against hope's sampler (issue #18).
+        under cuda autocast. No VAE decode. Exposed so numerical validation can
+        compare the latent trajectory directly (issue #18).
         """
         device = next(self.unet.parameters()).device
         dtype = next(self.unet.parameters()).dtype
@@ -177,9 +173,8 @@ class LatentFlowPipeline(DiffusionPipeline):
         )
         self.vae.eval()
         # Decode under cuda autocast: the migrated VAE carries ``norm_float16``
-        # (half-precision norms, matching hope), so a float32 decode path hits a
-        # Half/float dtype mismatch. hope decodes under autocast too (its infer
-        # CLI wraps the ReconModel decode in torch.amp.autocast). Disabled off-cuda.
+        # (half-precision norms), so a float32 decode path hits a Half/float
+        # dtype mismatch. Disabled off-cuda.
         with (
             torch.inference_mode(),
             torch.autocast(device_type=latent.device.type, enabled=latent.device.type == "cuda"),
@@ -187,125 +182,9 @@ class LatentFlowPipeline(DiffusionPipeline):
             return self.vae.decode(latent)
 
 
-# -- checkpoint conversion: hope flat format -> native (ADR-0003) ------------
+# -- model_index helper -----------------------------------------------------
 
 
 def _qualname(component: Any) -> str:
     """``module.ClassName`` for a component (written to model_index.json)."""
     return f"{type(component).__module__}.{type(component).__name__}"
-
-
-def _reject_if_hope_flat(path: str) -> None:
-    """Raise a clear error if *path* is a hope flat checkpoint, else return.
-
-    hope flat checkpoints are a single dict ``{unet_state_dict, scale_factor,
-    ema}``; ``from_pretrained`` must refuse them so the converter stays the sole
-    migration path in.
-    """
-    if os.path.isfile(path):
-        try:
-            payload = torch.load(path, map_location="cpu", weights_only=True)
-        except Exception:  # not a torch checkpoint (or unsafe pickle) — fall through
-            return
-        if isinstance(payload, dict) and "unet_state_dict" in payload:
-            raise ValueError(
-                f"{path!r} is a hope flat checkpoint (has 'unet_state_dict'), not a "
-                "manifold pipeline directory. Convert it first with "
-                "`manifold.pipelines.latent_flow.convert_hope_checkpoint` (or the "
-                "scripts/convert_hope_checkpoint.py CLI)."
-            )
-
-
-def _select_inference_weights(hope: dict, *, prefer_ema: bool) -> tuple[dict, str]:
-    """Pick the inference UNet weights from a hope flat checkpoint.
-
-    hope's inference samples the EMA copy: when EMA shadows are present (and not
-    disabled), the slowest shadow (largest decay) is the published model and is
-    baked as the inference weights; otherwise the raw ``unet_state_dict``.
-    Returns ``(state_dict, source)`` where *source* names which was used.
-    """
-    ema = hope.get("ema")
-    if prefer_ema and isinstance(ema, dict):
-        shadows = ema.get("shadows") or []
-        if shadows:
-            decays = ema.get("decays") or []
-            idx = max(range(len(shadows)), key=lambda i: decays[i]) if decays else len(shadows) - 1
-            return shadows[idx], f"ema[decay={decays[idx]}]" if decays else "ema[last]"
-    if "unet_state_dict" not in hope:
-        raise KeyError("hope checkpoint has no 'unet_state_dict' (and no usable EMA shadow).")
-    return hope["unet_state_dict"], "unet_state_dict"
-
-
-def _load_vae_weights(vae: AutoencoderKL, vae_checkpoint: str | dict) -> None:
-    """Load a hope VAE checkpoint into ``vae.autoencoder`` before save.
-
-    Handles both checkpoint forms — a bare ``state_dict`` and the MAISI
-    ``{"unet_state_dict": ...}`` wrapper (the MAISI AE's internal field is named
-    ``unet``) — loading the bare autoencoder keys (no wrapper prefix), like
-    hope's ``load_vae``. Required so the converted checkpoint's VAE actually
-    decodes instead of producing random-init noise.
-    """
-    ckpt = (
-        torch.load(vae_checkpoint, map_location="cpu", weights_only=True)
-        if isinstance(vae_checkpoint, str)
-        else vae_checkpoint
-    )
-    if isinstance(ckpt, dict) and "unet_state_dict" in ckpt:
-        ckpt = ckpt["unet_state_dict"]
-    vae.autoencoder.load_state_dict(ckpt)
-
-
-def convert_hope_checkpoint(
-    hope_checkpoint: str | dict,
-    output_directory: str,
-    unet: UNet3DConditionModel,
-    vae: AutoencoderKL,
-    scheduler: FlowMatchHeunDiscreteScheduler,
-    *,
-    prefer_ema: bool = True,
-    vae_checkpoint: str | dict | None = None,
-) -> str:
-    """Convert a hope flat checkpoint to manifold's native per-component format.
-
-    Maps ``unet_state_dict → unet`` (or, by default, the **slowest EMA shadow** —
-    hope's inference copy — baked as the UNet weights), and
-    ``scale_factor → vae.scaling_factor``. The provided ``unet``/``vae``/
-    ``scheduler`` carry the target component configs; their weights/scale are set
-    from the checkpoint, then the pipeline is written via
-    :meth:`LatentFlowPipeline.save_pretrained`. Returns *output_directory*.
-
-    Args:
-        vae_checkpoint: optional path/dict to the trained VAE weights
-            (``autoencoder_v1.pt``). When given, the (possibly
-            ``{unet_state_dict}``-wrapped) autoencoder state dict is loaded into
-            ``vae.autoencoder`` **before** save, so the converted checkpoint's VAE
-            decodes. Without it the VAE keeps its construction (random-init)
-            weights — the old behaviour, retained for back-compat.
-    """
-    hope = (
-        # hope flat checkpoints hold only tensors + simple containers (state
-        # dicts, the scale_factor tensor, and an {shadows, decays} EMA dict), so
-        # weights_only=True loads them safely without unpickling arbitrary code.
-        torch.load(hope_checkpoint, map_location="cpu", weights_only=True)
-        if isinstance(hope_checkpoint, str)
-        else hope_checkpoint
-    )
-    if not isinstance(hope, dict) or "unet_state_dict" not in hope:
-        raise KeyError("Not a hope flat checkpoint: expected a dict with 'unet_state_dict'.")
-
-    weights, source = _select_inference_weights(hope, prefer_ema=prefer_ema)
-    # hope's ``unet_state_dict`` (and EMA shadows) are the RAW MAISI UNet's state
-    # dict — no wrapper prefix — so they load into the wrapped backbone directly.
-    unet.unet.load_state_dict(weights, strict=True)  # bake inference weights into the UNet
-
-    scale_factor = hope.get("scale_factor")
-    if scale_factor is None:
-        raise KeyError("hope checkpoint has no 'scale_factor' to map onto vae.scaling_factor.")
-    with torch.no_grad():
-        vae.scaling_factor.fill_(float(scale_factor))
-
-    if vae_checkpoint is not None:
-        _load_vae_weights(vae, vae_checkpoint)
-
-    LatentFlowPipeline(unet, vae, scheduler).save_pretrained(output_directory)
-    return output_directory

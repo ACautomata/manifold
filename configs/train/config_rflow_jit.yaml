@@ -5,8 +5,7 @@
 # network config (the architecture and transport are unchanged from velocity
 # RFlow — only the prediction target, loss, sampler, and EMA differ).
 #
-# Consumed by manifold-train (#28), the converter (#17), and the numerical-
-# validation script (#18).
+# Consumed by manifold-train (#28).
 
 diffusion_unet_train:
   batch_size: 8

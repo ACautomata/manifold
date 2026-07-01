@@ -37,7 +37,7 @@ from manifold.config.builder import build_unet
 
 # A tiny CPU-runnable network config (mirrors the conftest fixtures: 2-level VAE
 # divisor 2 → latent [1,4,4,4,4] decodes to image [1,1,8,8,8]). The shipped real
-# network config (hope's GPU architecture) is too large to forward on CPU, so the
+# network config (the shipped GPU architecture) is too large to forward on CPU, so the
 # build+call seam is exercised through this tiny block.
 _TINY_NETWORK = """\
 spatial_dims: 3
@@ -279,14 +279,14 @@ def test_unet_wrapper_accepts_widened_architectural_knobs(tmp_path: Path) -> Non
 
 
 def test_real_network_config_builds_vae_and_divisor() -> None:
-    """The shipped network config (hope's GPU architecture) builds the VAE on CPU
+    """The shipped network config (the BraTS GPU architecture) builds the VAE on CPU
     and reports the BraTS latent divisor (2**(3-1) == 4)."""
     cfg = load_config(
         str(_REPOS / "configs/env/environment_brats2023.yaml"),
         str(_REPOS / "configs/train/config_rflow_jit.yaml"),
         str(_REPOS / "configs/network/config_network.yaml"),
     )
-    # hope's BraTS architecture values migrated verbatim.
+    # The shipped BraTS GPU architecture values.
     assert list(cfg.autoencoder.num_channels) == [64, 128, 256]
     assert list(cfg.diffusion_unet.num_channels) == [64, 128, 256, 512]
     assert cfg.autoencoder.norm_float16 is True

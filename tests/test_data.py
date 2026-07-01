@@ -1,6 +1,6 @@
 """BraTS latent-prep data stack tests (issue #16).
 
-Covers the transforms (verbatim from hope), the BraTS label provider (contrast
+Covers the transforms, the BraTS label provider (contrast
 detection + seg drop), the NIfTI volume dataset (RAS reorient + the
 ``{image, spacing, label, sample_id, meta}`` contract), and the latent dataset's
 scale-on-read: warm an **unscaled** cache via an injected encode_fn, estimate

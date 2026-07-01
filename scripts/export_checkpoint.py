@@ -1,9 +1,9 @@
 #!/usr/bin/env python
 """Export a manifold training ``.ckpt`` to the native per-component inference dir.
 
-The ADR-0006 bridge (sibling to ``convert_hope_checkpoint``): load a Lightning
-``.ckpt``, bake the **slowest EMA shadow** as the inference UNet, and write a
-directory :meth:`manifold.LatentFlowPipeline.from_pretrained` loads.
+The ADR-0006 bridge: load a Lightning ``.ckpt``, bake the **slowest EMA shadow**
+as the inference UNet, and write a directory
+:meth:`manifold.LatentFlowPipeline.from_pretrained` loads.
 
 Example (gauss)::
 

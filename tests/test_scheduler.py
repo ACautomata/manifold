@@ -1,6 +1,6 @@
 """Scheduler unit tests: transport + the true two-evaluation Heun reverse step.
 
-Asserts the math ported from ``hope/sampling/x0.py``: the transport
+Asserts the math: the transport
 ``z = t·x + (1−t)·e``; the predictor's step-start denominator unclamped; the
 corrector's endpoint denominator clamped at ``t_eps``; and that a Heun rollout
 evaluates the model twice per non-final step (the defining property of a true

@@ -346,11 +346,9 @@ def _warm_data(cfg, device) -> _DataBundle:
 
 
 def _load_warm_start(unet, ckpt_path: str) -> None:
-    """Load a warm-start UNet checkpoint (hope flat or a state dict)."""
+    """Load a warm-start UNet checkpoint (a Lightning ``.ckpt`` or a state dict)."""
     ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=True)
-    if isinstance(ckpt, dict) and "unet_state_dict" in ckpt:
-        unet.unet.load_state_dict(ckpt["unet_state_dict"], strict=True)
-    elif isinstance(ckpt, dict) and "state_dict" in ckpt:
+    if isinstance(ckpt, dict) and "state_dict" in ckpt:
         # A Lightning .ckpt: take the wrapper's UNet params ("unet.unet.*").
         sd = {
             k[len("unet.unet."):]: v

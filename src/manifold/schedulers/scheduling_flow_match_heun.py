@@ -8,12 +8,11 @@ Heun *requires* evaluating the model at the Euler-advanced point, so the reverse
 API is two-phase (a predictor :meth:`euler_step` and a corrector
 :meth:`heun_correct`) rather than diffusers' single-call ``step()`` (ADR-0002).
 
-Ported faithfully from the x0-denoiser sampler in ``hope/sampling/x0.py``. The
-transport is shared verbatim with the training module, which obtains its noised
-latent via :meth:`add_noise` rather than re-deriving it (ADR-0001) so train and
-inference cannot drift.
+The transport is shared verbatim with the training module, which obtains its
+noised latent via :meth:`add_noise` rather than re-deriving it (ADR-0001) so
+train and inference cannot drift.
 
-Conventions (matching ``hope``):
+Conventions:
 
 - ``t = 1`` → clean data, ``t = 0`` → pure noise; sampling integrates ``t: 0 → 1``.
 - The model output is interpreted as the clean-latent prediction x0

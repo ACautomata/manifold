@@ -1,6 +1,6 @@
 """Shared fixtures: tiny MONAI MAISI components on CPU (no GPU, no real data).
 
-Mirrors hope's test style — tiny tensors and tiny/mock networks — so the four
+Tiny tensors and tiny/mock networks, so the four
 components are exercised in isolation. The tiny config is verified to construct
 and forward on CPU: a 2-level VAE (latent divisor 2) and a 2-level UNet (one
 downsample, mid block at spatial 2 so GroupNorm never collapses to size 1).
