@@ -22,13 +22,17 @@ tier — documented at the bottom, skipped locally (RadImageNet _notop not cache
 # tag: DEBUG-a1f3
 import os
 import sys
+from pathlib import Path
 
-MANIFOLD_SRC = os.environ.get("MANIFOLD_SRC", "/Users/junran/Documents/manifold/src")
-HOPE_SRC = os.environ.get("HOPE_SRC", "/Users/junran/Documents/hope/src")
+MANIFOLD_SRC = os.environ.get(
+    "MANIFOLD_SRC", str(Path(__file__).resolve().parents[1] / "src")
+)
+HOPE_SRC = os.environ.get("HOPE_SRC")
+if not HOPE_SRC:
+    raise SystemExit("Set HOPE_SRC=/path/to/hope/src to run this diff harness")
 for p in (MANIFOLD_SRC, HOPE_SRC):
     if p not in sys.path:
         sys.path.insert(0, p)
-
 import torch
 
 torch.manual_seed(0)
