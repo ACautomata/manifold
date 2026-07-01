@@ -300,11 +300,12 @@ def test_load_radimagenet_resnet50_rejects_mismatched_state(tmp_path):
         _load_radimagenet_resnet50(str(tmp_path / "RadImageNet-ResNet50_notop.pth"))
 
 
-# --- Global pooling of the spatial feature map (FID memory fix) -----------------
+# --- Global pooling of the spatial feature map --------------------------------
 # _RadImageNetFeatures wraps the bare resnet (avgpool/fc=Identity, returns a
-# 2048*h*w spatial map) and must global-average-pool it to 2048-dim so the Fréchet
-# covariance stays ~17 MB instead of ~69 GB at full resolution. This is the standard
-# FID feature (hope flattened the map; we pool — a deliberate, tested divergence).
+# 2048*h*w spatial map) and global-average-pools it to 2048-dim — matching hope:
+# the hub RadImageNet ResNet50 has no avgpool/fc (its forward returns the layer4
+# (B,2048,7,7) map) and hope pools it to (B,2048) via spatial_average. NOT a
+# divergence.
 
 
 def test_radimagenet_features_global_pool_to_2048():
@@ -326,13 +327,15 @@ def test_radimagenet_features_global_pool_to_2048():
     assert out.shape == (1, 2048)  # pooled, not 2048*7*7 flattened
 
 
-# --- Caffe-mode preprocessing contract (RadImageNet feature preprocessing) -------
-# RadImageNet's training preprocessing is caffe-mode: [0,1] -> RGB->BGR -> mean-
-# subtract ONLY (no std division — the hub model has no internal normalisation, so
-# this lands directly on conv1). This test pins that exact contract so a regression
-# to the torchvision mean+std recipe, or a mean/flip channel-order mismatch, is
-# caught at the numeric seam. The backbone is a passthrough so the preprocessed
-# tensor is directly observable.
+# --- RadImageNet preprocessing contract (matches hope radimagenet_intensity_) ----
+# hope's RadImageNet preprocessing (metrics.fid.radimagenet_intensity_normalisation,
+# applied per plane-batch): replicate 1->3 -> RGB->BGR -> per-plane-batch min-max to
+# [0,1] -> caffe-mode ImageNet-mean subtract (no std division — the hub model has no
+# internal normalisation, so this lands directly on conv1). This test pins that exact
+# contract so a regression to mean-only (the original D1 bug — no min-max, which made
+# FID scale-sensitive on the unclamped BraTS MR decode), to the torchvision mean+std
+# recipe, or to a mean/flip channel-order mismatch, is caught at the numeric seam.
+# The backbone is a passthrough so the preprocessed tensor is directly observable.
 
 
 class _PassthroughBackbone(nn.Module):
@@ -347,14 +350,20 @@ class _PassthroughBackbone(nn.Module):
         return x
 
 
-def test_radimagenet_features_preprocessing_is_mean_only_bgr():
-    """Preprocessing is replicate -> BGR flip -> mean-subtract, with NO std division.
+def test_radimagenet_features_preprocessing_minmax_then_mean_bgr():
+    """Preprocessing is replicate -> BGR flip -> per-plane-batch min-max -> mean-subtract.
+
+    Matches hope's ``radimagenet_intensity_normalisation``: a single global
+    min/max over the whole plane-batch maps it to ``[0,1]``, then caffe-mode
+    ImageNet-mean subtract (no std division).
 
     * The mean buffer is the BGR constant ``(0.406, 0.456, 0.485)`` (pairs with the
       post-flip channel order — channel 0 is B, so it gets B's mean).
     * No ``_std`` buffer is registered (caffe-mode drops the ``/std``).
     * On replicated grayscale the channel flip is a value-level no-op, so the
       constant ORDER is the only thing the mean-subtract pairs with.
+    * The min-max makes the output scale-invariant — feeding ``c*x`` yields the
+      same features (the load-bearing fix for the unclamped BraTS MR decode).
     """
     from manifold.metrics.fid import _RadImageNetFeatures
 
@@ -369,7 +378,10 @@ def test_radimagenet_features_preprocessing_is_mean_only_bgr():
     out = wrapped(x)  # backbone is a passthrough -> out == preprocessed x, flattened
 
     mean_bgr = torch.tensor((0.406, 0.456, 0.485)).view(1, 3, 1, 1)
-    expected = (replicated.flip(1) - mean_bgr).flatten(1)
+    bgr = replicated.flip(1)
+    minv, maxv = torch.min(bgr), torch.max(bgr)
+    normed = (bgr - minv) / (maxv - minv + 1e-10)  # hope's per-plane-batch min-max
+    expected = (normed - mean_bgr).flatten(1)
     assert out.shape == expected.shape == (2, 48)
     assert torch.allclose(out, expected)
     # The mean is the BGR constant, in channel order (float32 repr → approx).
@@ -378,3 +390,6 @@ def test_radimagenet_features_preprocessing_is_mean_only_bgr():
     )
     # No std division: the std buffer is gone.
     assert not hasattr(wrapped, "_std")
+    # Scale invariance: feeding 3x the input yields identical features (min-max
+    # cancels the scale) — the property the old mean-only preprocessing lacked.
+    assert torch.allclose(wrapped(x * 3.0), out, atol=1e-6)

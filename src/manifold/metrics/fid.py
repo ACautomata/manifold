@@ -105,35 +105,46 @@ def get_features_2p5d(
     """Extract 2.5D features over the XY / YZ / ZX planes (stacked per volume).
 
     For each volume ``[B, C, D, H, W]`` and each of the three orthogonal axes,
-    take ``max(1, round(center_slices_ratio·axis_len))`` center slices, run each
-    plane (a 2D image ``[B, C, h, w]``) through *feature_net*, and collect the
-    feature vectors per plane. Returns three ``[M_axis, D_feat]`` tensors — one
-    per plane — so the caller can compute a per-plane Fréchet distance.
+    take ``max(1, round(center_slices_ratio·axis_len))`` center slices, batch them
+    into one plane (``[K, C, h, w]``) per (volume, axis), run each plane-batch
+    through *feature_net*, and collect the feature vectors per plane. Returns
+    three ``[M_axis, D_feat]`` tensors — one per plane — so the caller can compute
+    a per-plane Fréchet distance.
+
+    The feature net is called once per (volume, plane) — NOT once per slice — so
+    its per-plane-batch min-max normalization matches hope's
+    ``radimagenet_intensity_normalisation`` (one global min/max over all of a
+    volume's slices for that plane). hope computes that min-max per volume (its
+    ``get_features_2p5d`` is invoked one volume at a time), so we loop per volume
+    here rather than batching volumes together.
 
     Args:
         volumes: decoded image volumes ``[B, C, D, H, W]``.
         feature_net: callable ``[K, C, h, w] -> [K, D_feat]`` (the RadImageNet
-            backbone, pre-wrapped with its BGR + ImageNet-mean preprocessing).
+            backbone, pre-wrapped with its BGR + per-plane-batch min-max +
+            ImageNet-mean preprocessing).
         center_slices_ratio: fraction of each axis's center slices to sample.
     """
     if volumes.dim() != 5:
         raise ValueError(f"Expected [B, C, D, H, W] volumes, got shape {tuple(volumes.shape)}.")
     per_plane: list[list[Tensor]] = [[], [], []]
-    for axis in (2, 3, 4):  # D, H, W
-        length = volumes.shape[axis]
-        k = max(1, int(round(center_slices_ratio * length)))
-        if k >= length:
-            idx = list(range(length))
-        else:
-            start = (length - k) // 2
-            idx = list(range(start, start + k))
-        for i in idx:
-            plane = volumes.index_select(axis, torch.tensor(i, device=volumes.device))
-            # Collapse the singleton axis → [B, C, h, w] 2D image.
-            plane = plane.squeeze(axis)
-            if plane.dim() == 3:  # single batch → add batch dim for the net
-                plane = plane.unsqueeze(0)
-            per_plane[axis - 2].append(feature_net(plane).detach())
+    for v in range(volumes.shape[0]):
+        vol = volumes[v : v + 1]  # (1, C, D, H, W) — hope min-maxes per volume
+        for axis in (2, 3, 4):  # D, H, W
+            length = vol.shape[axis]
+            k = max(1, int(round(center_slices_ratio * length)))
+            if k >= length:
+                idx = list(range(length))
+            else:
+                start = (length - k) // 2
+                idx = list(range(start, start + k))
+            slices = []
+            for i in idx:
+                # Select slice i along the axis, collapse it → [1, C, h, w].
+                plane = vol.index_select(axis, torch.tensor(i, device=vol.device)).squeeze(axis)
+                slices.append(plane)
+            plane_batch = torch.cat(slices, dim=0)  # (K, C, h, w)
+            per_plane[axis - 2].append(feature_net(plane_batch).detach())
     return [torch.cat(feats, dim=0) if feats else torch.empty(0) for feats in per_plane]
 
 
@@ -277,8 +288,10 @@ class _RadImageNetFeatures(nn.Module):
         # feature. The offline loader leaves ``avgpool`` as Identity (returning a
         # spatial map); torchvision's forward flattens that map before we see it, so
         # pooling must happen *inside* the backbone via a real AdaptiveAvgPool2d (fc
-        # stays Identity — no classifier). hope flattened the map (D~131k -> 69 GB
-        # covariance); we pool to 2048 (17 MB) — a deliberate, tested divergence.
+        # stays Identity — no classifier). NOT a divergence from hope: the hub
+        # RadImageNet ResNet50 has no avgpool/fc (its _forward_impl returns the
+        # layer4 (B,2048,7,7) map) and hope pools it to (B,2048) outside via
+        # spatial_average; this AdaptiveAvgPool2d matches that bit-for-bit.
         if isinstance(model.avgpool, nn.Identity):
             model.avgpool = nn.AdaptiveAvgPool2d((1, 1))
         self.model = model
@@ -287,10 +300,18 @@ class _RadImageNetFeatures(nn.Module):
         self.register_buffer("_mean", torch.tensor(_IMAGENET_MEAN).view(1, 3, 1, 1))
 
     def forward(self, x: Tensor) -> Tensor:
-        # x: [B, 1, H, W] in ~[0, 1]; replicate to 3-channel, BGR order.
+        # x: [K, 1, H, W] raw decoded slice batch for ONE plane of ONE volume.
+        # hope's RadImageNet preprocessing (metrics.fid.radimagenet_intensity_
+        # normalisation): replicate 1->3, RGB->BGR, per-plane-batch min-max to
+        # [0,1], then caffe-mode ImageNet-mean subtract (no std division). The
+        # min-max is over the WHOLE plane-batch (all K slices × channels), so
+        # get_features_2p5d must call this once per (volume, plane) — not per slice.
         if x.shape[1] == 1:
             x = x.repeat(1, 3, 1, 1)
         x = x.flip(1)  # RGB -> BGR
+        minv = torch.min(x)
+        maxv = torch.max(x)
+        x = (x - minv) / (maxv - minv + 1e-10)  # per-plane-batch min-max to [0,1]
         x = x - self._mean  # caffe-mode: mean-subtract only (no std division)
         with torch.no_grad():
             feats = self.model.features(x) if hasattr(self.model, "features") else self.model(x)
