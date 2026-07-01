@@ -150,7 +150,7 @@ def main(argv: list[str] | None = None) -> int:
     grad_norm_m = _grad_norm(unet_m)
 
     loss_diff = (loss_h - loss_m).abs().item()
-    ratio = (grad_norm_m / grad_norm_h).item() if grad_norm_h > 0 else float("nan")
+    ratio = grad_norm_m / grad_norm_h if grad_norm_h > 0 else float("nan")
     print(f"[train-diff] device={device} shape={shape} t={t.tolist()} ntt={ntt}")
     print(f"[train-diff] loss_hope  = {loss_h.item():.8f}")
     print(f"[train-diff] loss_mani  = {loss_m.item():.8f}")
