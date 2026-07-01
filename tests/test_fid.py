@@ -380,8 +380,8 @@ def test_radimagenet_features_preprocessing_minmax_then_mean_bgr():
     mean_bgr = torch.tensor((0.406, 0.456, 0.485)).view(1, 3, 1, 1)
     bgr = replicated.flip(1)
     minv, maxv = torch.min(bgr), torch.max(bgr)
-    denom = (maxv - minv).clamp_min(torch.finfo(bgr.dtype).eps)
-    normed = (bgr - minv) / denom  # hope's per-plane-batch min-max
+    normed = (bgr - minv) / (maxv - minv + 1e-10)  # hope's per-plane-batch min-max
+    expected = (normed - mean_bgr).flatten(1)
     assert out.shape == expected.shape == (2, 48)
     assert torch.allclose(out, expected)
     # The mean is the BGR constant, in channel order (float32 repr → approx).

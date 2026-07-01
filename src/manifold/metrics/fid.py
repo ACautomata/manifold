@@ -311,8 +311,7 @@ class _RadImageNetFeatures(nn.Module):
         x = x.flip(1)  # RGB -> BGR
         minv = torch.min(x)
         maxv = torch.max(x)
-        denom = (maxv - minv).clamp_min(torch.finfo(x.dtype).eps)
-        x = (x - minv) / denom  # per-plane-batch min-max to [0,1]
+        x = (x - minv) / (maxv - minv + 1e-10)  # per-plane-batch min-max to [0,1]
         x = x - self._mean  # caffe-mode: mean-subtract only (no std division)
         with torch.no_grad():
             feats = self.model.features(x) if hasattr(self.model, "features") else self.model(x)
