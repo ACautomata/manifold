@@ -15,6 +15,7 @@ import sys
 from pathlib import Path
 
 import torch
+from omegaconf import OmegaConf
 from torch import nn
 from torch.utils.data import Dataset
 
@@ -73,7 +74,7 @@ def _bundle():
     )
 
 
-def _run(tmp_path, *, module=None, bundle=None, enable_fid=True, ckpt_path=None, max_epochs=1):
+def _run(tmp_path, *, module=None, bundle=None, enable_fid=True, ckpt_path=None, max_epochs=1, inference_recipe=None):
     return run_training(
         module=module or _module(),
         bundle=bundle or _bundle(),
@@ -87,6 +88,7 @@ def _run(tmp_path, *, module=None, bundle=None, enable_fid=True, ckpt_path=None,
         limit_val_batches=2,
         cov_ridge=1e-2,
         ckpt_path=ckpt_path,
+        inference_recipe=inference_recipe,
     )
 
 
@@ -99,8 +101,57 @@ def test_inference_recipe_latent_shape_derived_from_val_latents():
     constant. A unique non-round shape proves the value is derived, not stubbed.
     """
     val_latents = torch.randn(6, 4, 7, 9, 11)  # [N, C, D, H, W]
-    inf = _inference_recipe(_module(), val_latents=val_latents)
+    inf = _inference_recipe(_module(), cfg=None, val_latents=val_latents)
     assert inf["latent_shape"] == (1, 4, 7, 9, 11)
+
+
+def test_inference_recipe_uses_configured_sampling_knobs():
+    """FID generation uses the composed JiT inference recipe, not tiny defaults."""
+    val_latents = torch.randn(6, 4, 7, 9, 11)
+    cfg = OmegaConf.create(
+        {
+            "diffusion_unet_inference": {
+                "spacing": [1.7, 1.7, 2],
+                "modality": 1,
+                "num_inference_steps": 15,
+                "cfg_guidance_scale": 1.5,
+            },
+            "formulation": {"cfg_interval": [0.1, 1.0]},
+        }
+    )
+
+    inf = _inference_recipe(_module(), cfg=cfg, val_latents=val_latents)
+
+    assert inf == {
+        "latent_shape": (1, 4, 7, 9, 11),
+        "spacing": [1.7, 1.7, 2],
+        "modality": 1,
+        "num_inference_steps": 15,
+        "guidance_scale": 1.5,
+        "cfg_interval": [0.1, 1.0],
+    }
+
+
+def test_run_training_threads_inference_recipe_to_fid_callback(tmp_path):
+    """run_training passes configured sampling knobs into FIDCallback."""
+    recipe = {
+        "latent_shape": (1, 4, 4, 4, 4),
+        "spacing": [1.7, 1.7, 2],
+        "modality": 1,
+        "num_inference_steps": 15,
+        "guidance_scale": 1.5,
+        "cfg_interval": [0.1, 1.0],
+    }
+
+    trainer, _ = _run(tmp_path, inference_recipe=recipe)
+    fid = next(c for c in trainer.callbacks if type(c).__name__ == "FIDCallback")
+
+    assert fid.latent_shape == recipe["latent_shape"]
+    assert fid.spacing == recipe["spacing"]
+    assert fid.modality == recipe["modality"]
+    assert fid.num_inference_steps == recipe["num_inference_steps"]
+    assert fid.guidance_scale == recipe["guidance_scale"]
+    assert fid.cfg_interval == recipe["cfg_interval"]
 
 
 def test_run_training_writes_ckpt_and_logs_metrics(tmp_path):
