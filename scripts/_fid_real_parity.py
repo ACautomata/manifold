@@ -31,6 +31,9 @@ dev = "cuda" if torch.cuda.is_available() else "cpu"
 print(f"[real-parity] device={dev}")
 
 net_h = hfid.make_feature_network("radimagenet_resnet50", device=dev).eval()
+# manifold's make_feature_network ALREADY returns the wrapped _RadImageNetFeatures
+# (preprocessing + backbone); hope's returns the raw hub model (preprocessing is
+# done separately in get_features_2p5d). So call net_m directly; wrap only net_h.
 net_m = mfid.make_feature_network("resnet50").to(dev).eval()
 
 FAIL = []
@@ -50,14 +53,14 @@ with torch.no_grad():
     h_prep = hfid.radimagenet_intensity_normalisation(h_in)
     feat_h = hfid.spatial_average(net_h(h_prep), keepdim=False)
     # manifold: the wrapper does preprocessing + backbone + flatten
-    feat_m = mfid._RadImageNetFeatures(net_m)(s)
+    feat_m = net_m(s)
 max_abs = (feat_h.float() - feat_m.float()).abs().max().item()
 _check("real-backbone feature parity (D1+D2)", max_abs < 1e-4, f"max_abs={max_abs:.3e}")
 
 # Scale invariance through the real backbone (the D1 property).
 with torch.no_grad():
-    f1 = mfid._RadImageNetFeatures(net_m)(s)
-    f3 = mfid._RadImageNetFeatures(net_m)(s * 3.0)
+    f1 = net_m(s)
+    f3 = net_m(s * 3.0)
 drift = (f1.float() - f3.float()).abs().max().item()
 _check("manifold scale-invariant (real backbone)", drift < 1e-4, f"drift={drift:.3e}")
 
