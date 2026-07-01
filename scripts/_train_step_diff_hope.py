@@ -113,6 +113,10 @@ def main(argv: list[str] | None = None) -> int:
     scale_h = scale_h.to(device)
     Xsf = X_raw * scale_h  # the effective (scaled) latent both sides train on
     cond_h = build_inference_conditions(cfg, device, modality)  # {'class_labels': ...}
+    # The inline harness runs outside Lightning/autocast. hope's inference-condition
+    # helper may return half-precision spacing tensors; cast floating conditions to
+    # float32 so raw MAISI float32 Linear layers accept them.
+    cond_h = {k: (v.float() if torch.is_floating_point(v) else v) for k, v in cond_h.items()}
     spacing = list(cfg.diffusion_unet_inference["spacing"])
 
     # -- manifold wrapper UNet (same weights, via the converted pipeline) ------
