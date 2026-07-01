@@ -36,9 +36,13 @@ for p in (MANIFOLD_SRC, HOPE_SRC):
 import torch
 
 torch.manual_seed(0)
-from hope.metrics import fid as hfid
+try:
+    from hope.metrics import fid as hfid
+except ModuleNotFoundError as exc:
+    raise SystemExit(
+        "Could not import 'hope'. Ensure HOPE_SRC is set to the hope repository's src/ directory."
+    ) from exc
 from manifold.metrics import fid as mfid
-
 FAILURES: list[str] = []
 
 
