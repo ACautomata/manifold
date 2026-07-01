@@ -14,8 +14,7 @@ optimization training a Lightning ``Trainer`` needs to ``fit`` it: Adam over the
 UNet + a cosine-with-warmup schedule (horizon in optimizer steps, divided by
 world size), and an AMP-aware grad-norm hook (issue #25).
 
-Ported faithfully from the x0 path in ``hope/modules/rflow.py`` (``_forward_x0``);
-``t = 1 → data`` matches the scheduler and the sampler.
+The x0-denoiser forward: ``t = 1 → data`` matches the scheduler and the sampler.
 """
 
 from __future__ import annotations
@@ -48,8 +47,7 @@ def cosine_with_warmup(
     linear ramp ``0 → lr`` over ``num_warmup_steps``, then a cosine decay
     ``lr → 0`` over the remaining ``num_training_steps − num_warmup_steps``.
     Implemented with a ``LambdaLR`` so manifold stays free of a ``diffusers``
-    runtime dependency (ADR-0001's install-surface discipline) while matching
-    hope's optimizer recipe.
+    runtime dependency (ADR-0001's install-surface discipline).
     """
     warmup = max(0, int(num_warmup_steps))
     total = max(1, int(num_training_steps))
@@ -102,7 +100,7 @@ class LatentFlowModule(spt.Module):
         n_epochs: int = 1,
     ):
         # NOTE: forward is NOT passed to spt.Module — it would double-bind self.
-        # Overriding forward directly is the supported pattern (hope prior art).
+        # Overriding forward directly is the supported pattern.
         super().__init__(
             hparams={
                 "p_mean": p_mean,

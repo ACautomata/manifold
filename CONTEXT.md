@@ -55,8 +55,8 @@ _Avoid_: forward process, noise schedule, corruption.
 
 **scale_factor**:
 The latent normalization scalar `1/std(z)` estimated from VAE latents by the data
-stack (over an unscaled cache; ADR-0003) — at inference it comes from the converted
-checkpoint instead. Owned by the VAE wrapper — `encode` returns scaled latents,
+stack (over an unscaled cache; ADR-0003) — at inference it comes from the exported
+native checkpoint (ADR-0006) instead. Owned by the VAE wrapper — `encode` returns scaled latents,
 `decode` undoes the scaling — so the Module and Pipeline never reference it. A
 domain property: identical across ranks.
 _Avoid_: latent scale, norm factor.
@@ -71,8 +71,9 @@ _Avoid_: context, encoder hidden states (those are diffusers text-conditioned te
 **Checkpoint** (native):
 A per-component manifold checkpoint, read/written by
 `Pipeline.from_pretrained` / `save_pretrained`. Old hope flat checkpoints
-(`{unet_state_dict, scale_factor, ema}`) are not read directly — they pass through a
-one-shot converter (ADR-0003).
+(`{unet_state_dict, scale_factor, ema}`) are no longer ingested — the one-shot
+hope converter was retired once the migration completed (ADR-0007); training
+checkpoints reach inference via export (ADR-0006).
 _Avoid_: weights file, model file.
 
 ### Training
@@ -93,9 +94,10 @@ _Avoid_: weights file (say training-ckpt or native).
 
 **Export**:
 The one-shot `.ckpt → native` per-component conversion that bakes the slowest EMA
-shadow as the inference UNet — the bridge from a training checkpoint to the
-inference Pipeline. Distinct from the hope→native converter.
-_Avoid_: convert (say export or hope-converter).
+shadow as the inference UNet — the sole bridge from a training checkpoint to the
+inference Pipeline (ADR-0006), now that the hope→native converter is retired
+(ADR-0007).
+_Avoid_: convert (say export).
 
 **Fixed-sample validation**:
 In-training evaluation that reuses the SAME small validation subset AND re-seeds

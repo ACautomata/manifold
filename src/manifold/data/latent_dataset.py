@@ -16,9 +16,8 @@ The disk cache stores **unscaled** latents, so it is reusable across runs and
 independent of the estimated scale. ``encode_fn`` is injected (and freed after
 the warm) so the dataset is encoder-agnostic and testable with a mock.
 
-Ported from hope's ``data/latent_dataset.py`` with the scale placement moved
-from the training module (hope applies ``latent * scale_factor`` at train time)
-to the data stack (manifold: scale-on-read).
+Scale placement is moved from the training module (applied at train time) to
+the data stack (scale-on-read at ``__getitem__``).
 """
 
 from __future__ import annotations

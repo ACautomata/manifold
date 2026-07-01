@@ -13,7 +13,8 @@ same primitive (inference stays a thin packaging over it).
 
 The two-evaluation Heun **mechanism** is unchanged (still the predictor+corrector
 pair ADR-0002 specifies); only its home moves, and `validate_against_hope.py`'s
-`<1e-3` parity is preserved because both paths call the same primitive.
+`<1e-3` parity was verified during migration (the script now lives in
+`scripts/_archive/`); both paths call the same primitive.
 
 ## Why
 

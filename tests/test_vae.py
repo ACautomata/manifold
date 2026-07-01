@@ -108,7 +108,7 @@ def test_widened_knobs_accepted_and_captured(kwargs):
     These are GPU / memory knobs (``norm_float16`` runs the backbone in half;
     ``num_splits`` / ``dim_split`` chunk encode/decode) whose forward behaviour
     cannot be exercised on tiny CPU tensors, so the assertion is construction +
-    config capture — that a hope checkpoint's construction kwargs load without a
+    config capture — that the construction kwargs load without a
     TypeError and persist identically (mirrors the scale-cancellation parametrize
     varying a knob; defaults preserved so the tiny fixtures stay green).
     """

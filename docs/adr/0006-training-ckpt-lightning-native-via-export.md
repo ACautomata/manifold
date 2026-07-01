@@ -12,8 +12,9 @@ The `ModelCheckpoint` monitors `val/fid_avg` (`mode='min'`, `save_top_k`, `save_
 LR-schedule + epoch + EMA callback state) so `trainer.fit(ckpt_path=…)` resumes
 cleanly, and the `EMACallback` shadows are captured via its callback `state_dict`.
 The export loads a `.ckpt`, bakes the **slowest EMA shadow** as the inference UNet,
-and writes the native dir (reusing the converter's prefer-EMA + write-layout
-logic) so `Pipeline.from_pretrained` can load it.
+and writes the native dir (the EMA-selection lives in `slowest_shadow_index`;
+the hope→native converter that previously shared it is retired — ADR-0007) so
+`Pipeline.from_pretrained` can load it.
 
 ## Why
 
@@ -30,8 +31,8 @@ logic) so `Pipeline.from_pretrained` can load it.
 ## Consequences
 
 - A trained checkpoint is **not** immediately Pipeline-loadable — run the export
-  first. This is the same shape as the existing hope→native converter, now with a
-  manifold `.ckpt → native` sibling.
+  first. This mirrors the shape of the now-retired hope→native converter
+  (ADR-0007); export is now the sole checkpoint → inference path.
 - Best-by-FID monitoring is meaningful only when FID actually logs each epoch,
   i.e. **single-GPU** (FID is rank-0-only, the hope invariant); under DDP the
   checkpoint falls back to `save_last` + `every_n_epochs` without a monitor.

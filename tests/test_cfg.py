@@ -95,8 +95,8 @@ def test_in_interval_step_costs_four_evals():
     """With CFG active at both Heun points, a step costs 4 UNet evals.
 
     For ``n`` steps with interval ``(0, 1)`` (active at every node except the
-    pure-noise start ``t = 0``, which the strict ``low < t`` excludes — matching
-    hope): each of the ``2n − 2`` non-start eval points costs 2 calls (cond +
+    pure-noise start ``t = 0``, which the strict ``low < t`` excludes): each of
+    the ``2n − 2`` non-start eval points costs 2 calls (cond +
     uncond), the ``t = 0`` point costs 1, for ``4n − 3`` total. A single-call
     scheme would cost ``2n − 1``; this rules that out.
     """

@@ -14,13 +14,12 @@ through the callback's :meth:`state_dict` / :meth:`load_state_dict`, so a resume
 run continues the EMA history instead of re-snapshotting from raw weights.
 
 Shadows cover the UNet **parameters** (the trainable set; buffers are not EMA'd —
-the MAISI UNet is GroupNorm-based). Ported from hope's double-EMA, with the
-home moved into a Lightning callback (hope ran it inside its bespoke trainer).
+the MAISI UNet is GroupNorm-based). The EMA lives in a Lightning callback.
 """
 
 from __future__ import annotations
 
-from typing import Iterable
+from typing import Iterable, Sequence
 
 import torch
 from torch import Tensor
@@ -29,6 +28,17 @@ try:
     import lightning.pytorch as pl
 except ImportError:  # pragma: no cover — lightning is a hard dep via spt
     import pytorch_lightning as pl  # type: ignore
+
+
+def slowest_shadow_index(decays: Sequence[float]) -> int:
+    """Index of the largest-decay EMA shadow — the published (inference) model.
+
+    The shadow with the slowest (largest) decay is the generation/eval copy baked
+    as the inference UNet. Owned here so training (``_EMAShadows`` swap-in) and
+    the ``.ckpt`` → native export bridge cite one policy for which shadow is
+    published (ADR-0006).
+    """
+    return max(range(len(decays)), key=lambda i: decays[i])
 
 
 class _EMAShadows:
@@ -54,7 +64,7 @@ class _EMAShadows:
     @property
     def slow_index(self) -> int:
         """Index of the largest-decay shadow (the published EMA model)."""
-        return max(range(len(self.decays)), key=lambda i: self.decays[i])
+        return slowest_shadow_index(self.decays)
 
     @torch.no_grad()
     def update(self, named_params: Iterable[tuple[str, Tensor]]) -> None:

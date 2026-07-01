@@ -1,9 +1,7 @@
 """Volume preprocessing transforms (numpy/tensor ops, no I/O).
 
-Ported verbatim from hope's ``data/transforms.py`` (itself ported from the
-NV-Generate-CTMR reference + the BraTS / build-cache scripts). MR takes a
-per-volume percentile window with no clip; CT takes a fixed HU window with a
-hard clip. BraTS labels (34-37) are ``>= 8`` so they take the MR branch.
+MR takes a per-volume percentile window with no clip; CT takes a fixed HU window
+with a hard clip. BraTS labels (34-37) are ``>= 8`` so they take the MR branch.
 """
 
 from __future__ import annotations

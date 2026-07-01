@@ -5,13 +5,13 @@ corrector at ``z_{t+dt}``; Euler on the final step where ``1 − t_next`` vanish
 is the single source of truth for x0-latent generation.
 :meth:`LatentFlowModule.sample` (in-training generation — the FID callback) and
 :meth:`LatentFlowPipeline.sample_latent` (inference) both delegate here, so the
-train and infer paths cannot drift and silently break the sampler parity the
-migration exists to preserve (``validate_against_hope``).
+train and infer paths cannot drift. Sampler parity against the upstream ``hope``
+implementation was verified during migration (``scripts/_archive/validate_against_hope.py``).
 
 The mechanism is unchanged from ADR-0002: the scheduler's
 :meth:`~manifold.schedulers.FlowMatchHeunDiscreteScheduler.euler_step` /
 :meth:`~manifold.schedulers.FlowMatchHeunDiscreteScheduler.heun_correct` run
-under ``inference_mode`` + cuda autocast (matching hope's ``sample_x0``), with
+under ``inference_mode`` + cuda autocast, with
 denoising-interval classifier-free guidance wrapping the UNet calls.
 ``guidance_scale == 1.0`` short-circuits to the conditional output — the no-CFG
 path is bit-identical to a single conditional forward.
@@ -114,7 +114,7 @@ def sample_latent_flow(
 
     unet.eval()
     with torch.inference_mode():
-        # Autocast the Heun rollout on cuda (matches hope's ``sample_x0``) so the
+        # Autocast the Heun rollout on cuda so the
         # latent-trajectory tolerance for numerical validation is achievable;
         # disabled off-cuda, so CPU results are bit-identical to the no-autocast
         # path.

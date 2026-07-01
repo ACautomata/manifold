@@ -1,8 +1,8 @@
 """Label providers: filename/metadata -> int class label.
 
 BraTS is **one** provider, not baked into trainers. Also retains the central
-contrast/modality-code helpers (ported from hope's ``data/labels.py``) plus a
-:class:`FixedLabelProvider` / :class:`ManifestLabelProvider`. Train-time label
+contrast/modality-code helpers plus a :class:`FixedLabelProvider` /
+:class:`ManifestLabelProvider`. Train-time label
 augmentation (modality dropout) stays deferred with the trainer.
 """
 

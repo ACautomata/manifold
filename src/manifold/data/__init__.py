@@ -1,7 +1,7 @@
 """BraTS latent-prep data stack (issue #16).
 
 Turns BraTS2023 NIfTIs into the training batch the :class:`~manifold.LatentFlowModule`
-consumes: a NIfTI volume dataset (RAS reorient + hope's transforms verbatim), a
+consumes: a NIfTI volume dataset (RAS reorient + the preprocessing transforms), a
 BraTS label provider, a latent dataset that warms an **unscaled** cache via the
 VAE's ``encode_raw`` and returns **scaled** latents at ``__getitem__`` (scale-on-
 read, ADR-0003 addendum), and the latent-prep orchestration +

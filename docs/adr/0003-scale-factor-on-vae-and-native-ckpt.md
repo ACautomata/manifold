@@ -1,5 +1,9 @@
 # scale_factor owned by the VAE; native per-component checkpoints with a hope converter
 
+> **Superseded in part (2026-07-02):** the hope→native converter described below
+> is retired — see ADR-0007. The `scale_factor`-on-VAE ownership and the native
+> per-component format decisions in this ADR still stand.
+
 `scaling_factor` is a buffer+config on the VAE wrapper: `encode` returns **scaled**
 latents and `decode` undoes the scaling internally, so the Module and Pipeline never
 reference it. This absorbs hope's scattered `latent * scale_factor` (in the module)
@@ -36,7 +40,7 @@ by it at `LatentDataset.__getitem__` so the Module receives scaled latents. The
 Module and Pipeline still never reference `scaling_factor`; only the data stack
 reads the VAE's own property. The public `encode` contract (returns scaled latents)
 is unchanged — `encode_raw` is an internal affordance for estimation. At inference,
-`scaling_factor` comes from the converted checkpoint, not re-estimated.
+`scaling_factor` comes from the exported native checkpoint (ADR-0006), not re-estimated.
 
 Considered: estimate-then-encode-scaled (estimate from a subset, then re-encode the
 full cache scaled — fully clean but two encode passes, deviation from hope's

@@ -1,6 +1,6 @@
 """Build a Lightning ``Trainer`` for JiT latent-flow training.
 
-A thin factory mirroring hope's trainer package onto manifold's conventions:
+A thin factory building a Lightning ``Trainer`` for JiT latent-flow training:
 AMP via ``precision`` (``16-mixed`` on CUDA else ``32-true``), DDP with
 ``find_unused_parameters=True`` (the class-embedding row may be untouched when
 labels are dropped), the spt :class:`~stable_pretraining.callbacks.ModuleRegistryCallback`
