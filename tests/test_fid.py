@@ -324,3 +324,57 @@ def test_radimagenet_features_global_pool_to_2048():
     wrapped = _RadImageNetFeatures(model)
     out = wrapped(torch.rand(1, 1, 224, 224))
     assert out.shape == (1, 2048)  # pooled, not 2048*7*7 flattened
+
+
+# --- Caffe-mode preprocessing contract (RadImageNet feature preprocessing) -------
+# RadImageNet's training preprocessing is caffe-mode: [0,1] -> RGB->BGR -> mean-
+# subtract ONLY (no std division — the hub model has no internal normalisation, so
+# this lands directly on conv1). This test pins that exact contract so a regression
+# to the torchvision mean+std recipe, or a mean/flip channel-order mismatch, is
+# caught at the numeric seam. The backbone is a passthrough so the preprocessed
+# tensor is directly observable.
+
+
+class _PassthroughBackbone(nn.Module):
+    """Returns its input unchanged so the wrapper's preprocessing is observable."""
+
+    def __init__(self):
+        super().__init__()
+        # Present so _RadImageNetFeatures.__init__ can read .avgpool; ignored here.
+        self.avgpool = nn.Identity()
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return x
+
+
+def test_radimagenet_features_preprocessing_is_mean_only_bgr():
+    """Preprocessing is replicate -> BGR flip -> mean-subtract, with NO std division.
+
+    * The mean buffer is the BGR constant ``(0.406, 0.456, 0.485)`` (pairs with the
+      post-flip channel order — channel 0 is B, so it gets B's mean).
+    * No ``_std`` buffer is registered (caffe-mode drops the ``/std``).
+    * On replicated grayscale the channel flip is a value-level no-op, so the
+      constant ORDER is the only thing the mean-subtract pairs with.
+    """
+    from manifold.metrics.fid import _RadImageNetFeatures
+
+    wrapped = _RadImageNetFeatures(_PassthroughBackbone())
+
+    # Sanity: flip is a value-level no-op on replicated grayscale (all 3 channels
+    # identical), so the mean-constant order is what's actually under test.
+    x = torch.rand(2, 1, 4, 4)
+    replicated = x.repeat(1, 3, 1, 1)
+    assert torch.equal(replicated, replicated.flip(1))
+
+    out = wrapped(x)  # backbone is a passthrough -> out == preprocessed x, flattened
+
+    mean_bgr = torch.tensor((0.406, 0.456, 0.485)).view(1, 3, 1, 1)
+    expected = (replicated.flip(1) - mean_bgr).flatten(1)
+    assert out.shape == expected.shape == (2, 48)
+    assert torch.allclose(out, expected)
+    # The mean is the BGR constant, in channel order (float32 repr → approx).
+    assert wrapped._mean.flatten().tolist() == pytest.approx(
+        [0.406, 0.456, 0.485], abs=1e-6
+    )
+    # No std division: the std buffer is gone.
+    assert not hasattr(wrapped, "_std")
