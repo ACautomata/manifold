@@ -3,7 +3,7 @@
 The end-to-end Training-pipeline + Export round-trip (the highest seam, per the
 issue's testing plan): ``run_training`` on a tiny CPU config (tiny UNet + a
 fake-latent cache + a fake feature network) writes a Lightning ``.ckpt`` and
-logs ``train/loss_epoch`` / ``train/grad_norm`` / ``val/x0_mae`` / ``val/fid_avg``;
+logs ``train/loss_epoch`` / ``train/grad_norm`` / ``val/x0_mae`` / ``val/fid_avg`` (slow-EMA) / ``val/fid_raw`` (raw, monitored for ckpt);
 Export bakes the slowest EMA shadow into a native dir ``Pipeline.from_pretrained``
 loads, whose decode matches ``Module.sample()`` + the held-VAE decode. Plus resume
 via ``ckpt_path`` and the ``main`` console entry.
@@ -157,7 +157,7 @@ def test_run_training_threads_inference_recipe_to_fid_callback(tmp_path):
 def test_run_training_writes_ckpt_and_logs_metrics(tmp_path):
     trainer, ckpt = _run(tmp_path, enable_fid=True)
     metrics = trainer.callback_metrics
-    for key in ("train/loss_epoch", "train/grad_norm", "val/x0_mae", "val/fid_avg"):
+    for key in ("train/loss_epoch", "train/grad_norm", "val/x0_mae", "val/fid_avg", "val/fid_raw"):
         assert key in metrics, f"missing {key}"
         assert torch.isfinite(metrics[key])
     # A Lightning .ckpt was written (best-by-FID + last), full state.

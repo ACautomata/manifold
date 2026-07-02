@@ -68,16 +68,18 @@ def _build_checkpoint(
 ) -> ModelCheckpoint:
     """Stock Lightning ``ModelCheckpoint`` (ADR-0006).
 
-    Single-GPU + FID: monitor ``val/fid_avg`` (top-k, last, full state). Under
-    DDP (FID is rank-0-only, so the metric is not global) fall back to
-    ``save_last`` + ``every_n_epochs`` with no monitor. ``auto_insert_metric_name
-    = False`` because the metric key contains a ``/``.
+    Single-GPU + FID: monitor ``val/fid_raw`` (the raw-optimizer arm, top-k, last,
+    full state) — the slow-EMA ``val/fid_avg`` lags the model on short runs and
+    would hide raw progress (a 0.9999 EMA from a random init is still mostly init
+    well before epoch 50). Under DDP (FID is rank-0-only, so the metric is not
+    global) fall back to ``save_last`` + ``every_n_epochs`` with no monitor.
+    ``auto_insert_metric_name = False`` because the metric key contains a ``/``.
     """
     if monitor_fid:
         return ModelCheckpoint(
             dirpath=model_dir,
-            filename="unet3d-{epoch:03d}-{step}-{val/fid_avg:.3f}",
-            monitor="val/fid_avg",
+            filename="unet3d-{epoch:03d}-{step}-{val/fid_raw:.3f}",
+            monitor="val/fid_raw",
             mode="min",
             save_top_k=save_top_k,
             save_last=True,

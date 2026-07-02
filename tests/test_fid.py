@@ -199,6 +199,61 @@ def test_fid_callback_same_seed_reproduces(latent_module):
     assert all(torch.equal(a, b) for a, b in zip(cb._real_features(), cb._real_features()))
 
 
+def test_fid_callback_logs_raw_alongside_slow(latent_module):
+    """log_raw_fid (default) logs val/fid_raw (+ per-plane) alongside val/fid_avg."""
+    from manifold import AutoencoderKL
+    from manifold.training import DoubleEMACallback
+
+    vae = AutoencoderKL(scaling_factor=0.5)
+    ema = DoubleEMACallback(latent_module)
+    real_latents = torch.randn(6, 4, 4, 4, 4)
+    cb = _make_fid_callback(latent_module, vae, ema, real_latents, ridge=1e-2)
+
+    trainer = _fit_with_fid(latent_module, cb)
+    metrics = trainer.callback_metrics
+    assert "val/fid_raw" in metrics, "raw arm must log val/fid_raw"
+    assert torch.isfinite(metrics["val/fid_raw"])
+    assert any(k.startswith("val/fid_raw_") for k in metrics), "raw per-plane must log"
+    # The slow-EMA arm is still logged alongside.
+    assert "val/fid_avg" in metrics
+
+
+def test_synth_features_raw_is_blind_to_ema_shadow(latent_module):
+    """raw=True bypasses ema.swap_in: perturbing the slow shadow moves the
+    slow-arm features but leaves the raw-arm features bit-identical. This is the
+    load-bearing property that lets val/fid_raw track raw learning decoupled from
+    the 0.9999 EMA's convergence lag."""
+    from manifold import AutoencoderKL
+    from manifold.training import DoubleEMACallback
+
+    vae = AutoencoderKL(scaling_factor=0.5)
+    ema = DoubleEMACallback(latent_module)
+    real_latents = torch.randn(6, 4, 4, 4, 4)
+    cb = _make_fid_callback(latent_module, vae, ema, real_latents, seed=0, ridge=1e-2)
+    cb._stage_eval_on_device()
+
+    raw_before = cb._synth_features(raw=True)
+    slow_before = cb._synth_features(raw=False)
+
+    # Replace the slow EMA shadow with fresh random weights — the raw arm must
+    # not see this. (Random replacement, not a 2x mul: the UNet's group norms are
+    # scale-invariant, so a uniform scaling would leave the sample unchanged.)
+    g = torch.Generator().manual_seed(123)
+    slow_shadow = ema._shadows.shadows[ema._shadows.slow_index]
+    for n in slow_shadow:
+        slow_shadow[n].copy_(
+            torch.randn(slow_shadow[n].shape, generator=g, dtype=slow_shadow[n].dtype)
+        )
+
+    raw_after = cb._synth_features(raw=True)
+    slow_after = cb._synth_features(raw=False)
+
+    for a, b in zip(raw_before, raw_after):
+        assert torch.equal(a, b), "raw arm must be blind to the EMA shadow"
+    assert not all(torch.equal(a, b) for a, b in zip(slow_before, slow_after)), \
+        "slow arm must reflect the replaced shadow"
+
+
 # --- Offline RadImageNet loader (issue #32) -------------------------------------
 # The factory's ``torch.hub.load`` path is offline-broken on gauss (wrong repo
 # name + ``source='local'`` branch fragility), so the FID backbone is built from
