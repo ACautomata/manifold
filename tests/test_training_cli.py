@@ -3,7 +3,7 @@
 The end-to-end Training-pipeline + Export round-trip (the highest seam, per the
 issue's testing plan): ``run_training`` on a tiny CPU config (tiny UNet + a
 fake-latent cache + a fake feature network) writes a Lightning ``.ckpt`` and
-logs ``train/loss_epoch`` / ``train/grad_norm`` / ``val/x0_mae`` / ``val/fid_avg``;
+logs ``train/loss_epoch`` / ``train/grad_norm`` / ``val/x0_mae`` / ``val/fid_avg`` (slow-EMA) / ``val/fid_raw`` (raw, monitored for ckpt);
 Export bakes the slowest EMA shadow into a native dir ``Pipeline.from_pretrained``
 loads, whose decode matches ``Module.sample()`` + the held-VAE decode. Plus resume
 via ``ckpt_path`` and the ``main`` console entry.
@@ -157,7 +157,7 @@ def test_run_training_threads_inference_recipe_to_fid_callback(tmp_path):
 def test_run_training_writes_ckpt_and_logs_metrics(tmp_path):
     trainer, ckpt = _run(tmp_path, enable_fid=True)
     metrics = trainer.callback_metrics
-    for key in ("train/loss_epoch", "train/grad_norm", "val/x0_mae", "val/fid_avg"):
+    for key in ("train/loss_epoch", "train/grad_norm", "val/x0_mae", "val/fid_avg", "val/fid_raw"):
         assert key in metrics, f"missing {key}"
         assert torch.isfinite(metrics[key])
     # A Lightning .ckpt was written (best-by-FID + last), full state.
@@ -166,6 +166,19 @@ def test_run_training_writes_ckpt_and_logs_metrics(tmp_path):
     # The monitored checkpoint resolved a best path distinct from last.ckpt.
     assert ckpt.best_model_path and Path(ckpt.best_model_path).is_file()
     assert Path(ckpt.best_model_path).name != "last.ckpt"
+
+
+def test_build_checkpoint_monitor_matches_logged_arm(tmp_path):
+    """The checkpoint monitor tracks the arm that is actually logged: val/fid_raw
+    by default (raw arm on), val/fid_avg when log_raw_fid=False (only slow arm).
+    A mismatch would make Lightning error on a never-logged monitored metric."""
+    from manifold.training.cli import _build_checkpoint
+
+    assert _build_checkpoint(str(tmp_path / "a"), monitor_fid=True).monitor == "val/fid_raw"
+    assert (
+        _build_checkpoint(str(tmp_path / "b"), monitor_fid=True, monitor_metric="val/fid_avg").monitor
+        == "val/fid_avg"
+    )
 
 
 def test_export_bakes_slowest_ema_and_round_trips(tmp_path):
@@ -180,11 +193,13 @@ def test_export_bakes_slowest_ema_and_round_trips(tmp_path):
     ckpt_path = str(Path(str(tmp_path)) / "last.ckpt")
 
     # Fresh UNet (built from a network config in the real CLI); export bakes the
-    # slowest EMA shadow into it, the SAME held VAE carries scaling_factor.
+    # slowest EMA shadow into it (opt-in: the default now bakes raw), the SAME
+    # held VAE carries scaling_factor.
     fresh_unet = UNet3DConditionModel(num_class_embeds=4, include_spacing_input=True)
     export_to_native(
         ckpt_path, str(tmp_path / "native"),
         unet=fresh_unet, vae=bundle.vae, scheduler=FlowMatchHeunDiscreteScheduler(),
+        prefer_ema=True,
     )
     loaded = LatentFlowPipeline.from_pretrained(str(tmp_path / "native"))
 
@@ -205,7 +220,9 @@ def test_export_bakes_slowest_ema_and_round_trips(tmp_path):
     assert torch.allclose(decode_mod.float(), decode_pipe.float(), atol=1e-5)
 
 
-def test_export_no_ema_bakes_raw_weights(tmp_path):
+def test_export_default_bakes_raw_weights(tmp_path):
+    """The default export bakes the RAW UNet weights (aligned with the val/fid_raw
+    checkpoint monitor); prefer_ema=True is the opt-in for EMA."""
     module = _module()
     _run(tmp_path, module=module, enable_fid=True)
     ckpt_path = str(Path(str(tmp_path)) / "last.ckpt")
@@ -213,7 +230,7 @@ def test_export_no_ema_bakes_raw_weights(tmp_path):
     source = export_to_native(
         ckpt_path, str(tmp_path / "native_raw"),
         unet=fresh_unet, vae=AutoencoderKL(scaling_factor=0.5),
-        scheduler=FlowMatchHeunDiscreteScheduler(), prefer_ema=False,
+        scheduler=FlowMatchHeunDiscreteScheduler(),
     )
     assert source == "unet_state_dict"
     LatentFlowPipeline.from_pretrained(str(tmp_path / "native_raw"))  # loads cleanly

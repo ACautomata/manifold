@@ -1,8 +1,9 @@
 #!/usr/bin/env python
 """Export a manifold training ``.ckpt`` to the native per-component inference dir.
 
-The ADR-0006 bridge: load a Lightning ``.ckpt``, bake the **slowest EMA shadow**
-as the inference UNet, and write a directory
+The ADR-0006 bridge: load a Lightning ``.ckpt``, bake the inference UNet (the
+**raw UNet weights** by default, matching the ``val/fid_raw`` checkpoint monitor;
+``--ema`` bakes the slowest EMA shadow instead), and write a directory
 :meth:`manifold.LatentFlowPipeline.from_pretrained` loads.
 
 Example (gauss)::
@@ -48,7 +49,11 @@ def main(argv: list[str] | None = None) -> int:
         "vae.autoencoder before export so the exported VAE decodes.",
     )
     parser.add_argument(
-        "--no-ema", action="store_true", help="bake the raw UNet weights instead of the EMA shadow."
+        "--ema",
+        action="store_true",
+        help="bake the slowest EMA shadow instead of the raw UNet weights (the "
+        "default bakes raw, matching the val/fid_raw checkpoint monitor; use this "
+        "for warm-start / long-horizon runs where the 0.9999 EMA has converged).",
     )
     args = parser.parse_args(argv)
 
@@ -69,7 +74,7 @@ def main(argv: list[str] | None = None) -> int:
         unet=unet,
         vae=vae,
         scheduler=scheduler,
-        prefer_ema=not args.no_ema,
+        prefer_ema=args.ema,
     )
     print(f"Exported {args.ckpt} -> {args.output} ({source}).")
     return 0

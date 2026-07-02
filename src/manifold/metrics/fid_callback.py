@@ -1,10 +1,17 @@
 """Per-epoch unbiased 2.5D FID callback (issue #27).
 
-Generates ``num_synth`` unconditional volumes through ``Module.sample`` (the
-**slow** EMA shadow swapped in) + the held frozen VAE's decode — never the
-inference Pipeline — extracts 2.5D RadImageNet features over the three
-orthogonal planes, and logs the small-sample-bias-corrected Fréchet distance
-``val/fid_avg`` (plus per-plane).
+Generates ``num_synth`` unconditional volumes through ``Module.sample`` + the
+held frozen VAE's decode — never the inference Pipeline — extracts 2.5D
+RadImageNet features over the three orthogonal planes, and logs the small-sample-
+bias-corrected Fréchet distance ``val/fid_avg`` (plus per-plane).
+
+Two arms share the same fixed real reference and per-sample seeds:
+
+- **slow** (``val/fid_avg``): the 0.9999 EMA shadow swapped in — the published
+  model (matches hope's policy).
+- **raw** (``val/fid_raw``): the raw optimizer weights, sampled without the EMA
+  swap — blind to the slow EMA's convergence lag, so it tracks whether the model
+  is actually learning. The best checkpoint monitors this arm.
 
 Fixed-sample mechanism:
 
@@ -59,6 +66,11 @@ class FIDCallback(pl.Callback):
             :func:`~manifold.metrics.fid.get_features_2p5d` /
             :func:`~manifold.metrics.fid.frechet_distance_unbiased`.
         seed: the re-seeded generation noise seed (fixed across epochs).
+        log_raw_fid: also log ``val/fid_raw`` (+ per-plane) sampled from the RAW
+            optimizer weights — blind to the slow EMA's convergence lag, so it
+            tracks whether the model is actually learning (this is the metric
+            the best checkpoint monitors). Costs one extra generation pass per
+            validation epoch. The slow-EMA arm stays logged as ``val/fid_avg``.
     """
 
     def __init__(
@@ -80,6 +92,7 @@ class FIDCallback(pl.Callback):
         center_slices_ratio: float = 0.5,
         cov_ridge: float = 1e-6,
         seed: int = 0,
+        log_raw_fid: bool = True,
     ):
         super().__init__()
         self.module = module
@@ -98,6 +111,7 @@ class FIDCallback(pl.Callback):
         self.center_slices_ratio = float(center_slices_ratio)
         self.cov_ridge = float(cov_ridge)
         self.seed = int(seed)
+        self.log_raw_fid = bool(log_raw_fid)
         self._real_planes: list[torch.Tensor] | None = None
 
     # -- internals -----------------------------------------------------------
@@ -133,6 +147,12 @@ class FIDCallback(pl.Callback):
             self.vae.to(self._device())
             if self.feature_net is not None:
                 self.feature_net.to(self._device())
+                # eval so BatchNorm uses fixed running stats (RadImageNet ResNet50
+                # is BN-based). In train mode every forward updates them, so the
+                # raw arm would inherit stats drifted by the real/slow arms — and
+                # since the raw arm is the checkpoint monitor, that contamination
+                # would distort selection. Also matches hope (net.eval().to()).
+                self.feature_net.eval()
             self._eval_staged = True
 
     def _restore_eval_to_cpu(self) -> None:
@@ -170,13 +190,20 @@ class FIDCallback(pl.Callback):
         return get_features_2p5d(real_images, self.feature_net, center_slices_ratio=self.center_slices_ratio)
 
     @torch.no_grad()
-    def _synth_features(self) -> list[torch.Tensor]:
-        """Generate num_synth volumes (slow-EMA-swapped) + held-VAE decode."""
+    def _synth_features(self, *, raw: bool = False) -> list[torch.Tensor]:
+        """Generate num_synth volumes + held-VAE decode (slow-EMA-swapped).
+
+        raw=True samples the raw optimizer weights — it skips ema.swap_in/restore
+        so the result is blind to the slow EMA's convergence lag (the
+        ``val/fid_raw`` arm). Both arms share the same per-sample seeds, so the
+        slow-vs-raw gap reflects weights, not sampling noise.
+        """
         self.vae.eval()
         planes: list[list[torch.Tensor]] = [[], [], []]
         for i in range(self.num_synth):
             gen = torch.Generator(device=self._device()).manual_seed(self.seed + i)
-            self.ema_callback.swap_in(self.module)
+            if not raw:
+                self.ema_callback.swap_in(self.module)
             try:
                 latent = self.module.sample(
                     self.latent_shape,
@@ -188,7 +215,8 @@ class FIDCallback(pl.Callback):
                     generator=gen,
                 )
             finally:
-                self.ema_callback.restore(self.module)
+                if not raw:
+                    self.ema_callback.restore(self.module)
             image = self._eval_decode(latent)
             for axis, feats in enumerate(
                 get_features_2p5d(image, self.feature_net, center_slices_ratio=self.center_slices_ratio)
@@ -209,22 +237,42 @@ class FIDCallback(pl.Callback):
         try:
             if self._real_planes is None:
                 self._real_planes = self._real_features()
-            synth_planes = self._synth_features()
-
-            per_plane = {}
-            total = 0.0
-            n = 0
-            for axis, (rp, sp) in enumerate(zip(self._real_planes, synth_planes)):
-                name = ("xy", "yz", "zx")[axis]
-                if rp.numel() == 0 or sp.numel() == 0 or rp.shape[0] < 2 or sp.shape[0] < 2:
-                    continue
-                fid = frechet_distance_unbiased(sp.float(), rp.float(), ridge=self.cov_ridge)
-                per_plane[name] = float(fid)
-                total += float(fid)
-                n += 1
-            if n:
-                module.log("val/fid_avg", total / n)
-                for name, val in per_plane.items():
-                    module.log(f"val/fid_{name}", val)
+            # Slow-EMA(0.9999) arm — the published model (matches hope's policy).
+            self._compute_and_log(module, raw=False)
+            # Raw-optimizer arm — decoupled from the slow EMA's convergence lag,
+            # so it tracks whether the model is actually learning. Monitored for
+            # the best checkpoint (a lagging EMA otherwise hides raw progress).
+            if self.log_raw_fid:
+                self._compute_and_log(module, raw=True)
         finally:
             self._restore_eval_to_cpu()
+
+    def _compute_and_log(self, module, *, raw: bool) -> None:
+        """Generate one arm + log its per-plane unbiased FID vs the cached real.
+
+        raw=False -> ``val/fid_avg`` (+ ``val/fid_{xy,yz,zx}``), the slow-EMA arm.
+        raw=True  -> ``val/fid_raw`` (+ ``val/fid_raw_{xy,yz,zx}``), the raw arm
+        sampled without the EMA swap. No-op when no plane has ≥2 features.
+        """
+        synth_planes = self._synth_features(raw=raw)
+        per_plane: dict[str, float] = {}
+        total = 0.0
+        n = 0
+        for axis, (rp, sp) in enumerate(zip(self._real_planes, synth_planes)):
+            name = ("xy", "yz", "zx")[axis]
+            if rp.numel() == 0 or sp.numel() == 0 or rp.shape[0] < 2 or sp.shape[0] < 2:
+                continue
+            fid = float(frechet_distance_unbiased(sp.float(), rp.float(), ridge=self.cov_ridge))
+            per_plane[name] = fid
+            total += fid
+            n += 1
+        if not n:
+            return
+        if raw:
+            module.log("val/fid_raw", total / n)
+            for name, val in per_plane.items():
+                module.log(f"val/fid_raw_{name}", val)
+        else:
+            module.log("val/fid_avg", total / n)
+            for name, val in per_plane.items():
+                module.log(f"val/fid_{name}", val)
