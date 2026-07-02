@@ -1,17 +1,19 @@
 """Export a training ``.ckpt`` to the native per-component inference dir (ADR-0006).
 
 A one-shot bridge from a Lightning training checkpoint to the directory layout
-:meth:`~manifold.LatentFlowPipeline.from_pretrained` loads: bake the **slowest
-EMA shadow** (the published model) as the inference UNet, take the VAE
-(carrying ``scaling_factor``) and scheduler, and write via
+:meth:`~manifold.LatentFlowPipeline.from_pretrained` loads: bake the inference
+UNet, take the VAE (carrying ``scaling_factor``) and scheduler, and write via
 :meth:`~manifold.LatentFlowPipeline.save_pretrained`. This is the sole
 checkpoint → inference path now that the hope→native converter has been
 retired (ADR-0007).
 
-The EMA shadows live in the checkpoint's callback state
-(``callbacks['DoubleEMACallback']``); the slowest (largest decay) is the
-generation/eval model the FID callback sampled. When no EMA state is present,
-the raw ``state_dict`` UNet weights are baked instead.
+By default the **raw ``state_dict`` UNet weights** are baked — aligned with the
+``ModelCheckpoint`` raw-FID monitor (``val/fid_raw``), so the exported "best"
+checkpoint is best for the weights that are published. Pass ``prefer_ema=True``
+to bake the slowest EMA shadow instead, for runs where the 0.9999 EMA has
+converged (warm-start / long horizon, as hope trains). The EMA shadows live in
+the checkpoint's callback state (``callbacks['DoubleEMACallback']``); the
+slowest (largest decay) is the generation/eval model the FID callback sampled.
 """
 
 from __future__ import annotations
@@ -61,7 +63,7 @@ def export_to_native(
     unet,
     vae,
     scheduler,
-    prefer_ema: bool = True,
+    prefer_ema: bool = False,
 ) -> str:
     """Convert a training ``.ckpt`` into a native per-component inference dir.
 
@@ -73,8 +75,13 @@ def export_to_native(
         unet / vae / scheduler: fresh components built from the network config;
             the UNet's backbone weights are overwritten from the checkpoint, the
             VAE carries its (already-set) ``scaling_factor``.
-        prefer_ema: bake the slowest EMA shadow when present (the default); else
-            the raw ``state_dict`` UNet weights.
+        prefer_ema: bake the slowest EMA shadow when present; else (the default)
+            the raw ``state_dict`` UNet weights. The default ``False`` aligns the
+            published weights with what ``ModelCheckpoint`` selects — the raw-FID
+            monitor (``val/fid_raw``) — so the exported "best" checkpoint is best
+            for the weights that are actually published. Pass ``True`` for runs
+            where the 0.9999 EMA has converged (warm-start / long horizon, as
+            hope trains), publishing that instead.
 
     Returns:
         A short string naming which weights were baked (e.g. ``ema[decay=...]``).

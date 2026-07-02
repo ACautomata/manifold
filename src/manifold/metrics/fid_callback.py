@@ -147,6 +147,12 @@ class FIDCallback(pl.Callback):
             self.vae.to(self._device())
             if self.feature_net is not None:
                 self.feature_net.to(self._device())
+                # eval so BatchNorm uses fixed running stats (RadImageNet ResNet50
+                # is BN-based). In train mode every forward updates them, so the
+                # raw arm would inherit stats drifted by the real/slow arms — and
+                # since the raw arm is the checkpoint monitor, that contamination
+                # would distort selection. Also matches hope (net.eval().to()).
+                self.feature_net.eval()
             self._eval_staged = True
 
     def _restore_eval_to_cpu(self) -> None:

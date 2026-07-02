@@ -237,12 +237,13 @@ def test_synth_features_raw_is_blind_to_ema_shadow(latent_module):
 
     # Replace the slow EMA shadow with fresh random weights — the raw arm must
     # not see this. (Random replacement, not a 2x mul: the UNet's group norms are
-    # scale-invariant, so a uniform scaling would leave the sample unchanged.)
+    # scale-invariant, so a uniform scaling would leave the sample unchanged.
+    # manual_seed + randn_like is device-correct: the seed applies to whichever
+    # device generator owns the shadow tensor, so this is safe on CUDA/MPS too.)
+    torch.manual_seed(123)
     slow_shadow = ema._shadows.shadows[ema._shadows.slow_index]
-    device = next(iter(slow_shadow.values())).device
-    g = torch.Generator(device=device).manual_seed(123)
     for n in slow_shadow:
-        slow_shadow[n].copy_(torch.randn_like(slow_shadow[n], generator=g))
+        slow_shadow[n].copy_(torch.randn_like(slow_shadow[n]))
 
     raw_after = cb._synth_features(raw=True)
     slow_after = cb._synth_features(raw=False)
@@ -251,6 +252,22 @@ def test_synth_features_raw_is_blind_to_ema_shadow(latent_module):
         assert torch.equal(a, b), "raw arm must be blind to the EMA shadow"
     assert not all(torch.equal(a, b) for a, b in zip(slow_before, slow_after)), \
         "slow arm must reflect the replaced shadow"
+
+
+def test_fid_callback_feature_net_set_to_eval(latent_module):
+    """The feature net is set to eval on staging so its BatchNorm uses fixed
+    running stats — otherwise the raw arm (the checkpoint monitor) inherits BN
+    stats drifted by the real/slow arms' forwards. Matches hope's net.eval()."""
+    from manifold import AutoencoderKL
+    from manifold.training import DoubleEMACallback
+
+    vae = AutoencoderKL(scaling_factor=0.5)
+    ema = DoubleEMACallback(latent_module)
+    real_latents = torch.randn(6, 4, 4, 4, 4)
+    cb = _make_fid_callback(latent_module, vae, ema, real_latents, ridge=1e-2)
+    assert cb.feature_net.training  # constructed in train mode by default
+    cb._stage_eval_on_device()
+    assert cb.feature_net.training is False, "staging must set the feature net to eval"
 
 
 # --- Offline RadImageNet loader (issue #32) -------------------------------------

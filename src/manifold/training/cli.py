@@ -63,23 +63,27 @@ def _build_checkpoint(
     model_dir: str,
     *,
     monitor_fid: bool,
+    monitor_metric: str = "val/fid_raw",
     every_n_epochs: int = 1,
     save_top_k: int = 3,
 ) -> ModelCheckpoint:
     """Stock Lightning ``ModelCheckpoint`` (ADR-0006).
 
-    Single-GPU + FID: monitor ``val/fid_raw`` (the raw-optimizer arm, top-k, last,
-    full state) — the slow-EMA ``val/fid_avg`` lags the model on short runs and
-    would hide raw progress (a 0.9999 EMA from a random init is still mostly init
-    well before epoch 50). Under DDP (FID is rank-0-only, so the metric is not
-    global) fall back to ``save_last`` + ``every_n_epochs`` with no monitor.
-    ``auto_insert_metric_name = False`` because the metric key contains a ``/``.
+    Single-GPU + FID: monitor ``monitor_metric`` (top-k, last, full state). The
+    default ``val/fid_raw`` (raw-optimizer arm) tracks whether the model is
+    actually learning — the slow-EMA ``val/fid_avg`` lags on short from-scratch
+    runs (a 0.9999 EMA is still mostly init well before epoch 50). Callers that
+    disable the raw arm (``log_raw_fid=False``) must pass ``val/fid_avg`` here so
+    the monitor matches a metric that is actually logged. Under DDP (FID is
+    rank-0-only, so the metric is not global) fall back to ``save_last`` +
+    ``every_n_epochs`` with no monitor. ``auto_insert_metric_name = False``
+    because the metric key contains a ``/``.
     """
     if monitor_fid:
         return ModelCheckpoint(
             dirpath=model_dir,
-            filename="unet3d-{epoch:03d}-{step}-{val/fid_raw:.3f}",
-            monitor="val/fid_raw",
+            filename=f"unet3d-{{epoch:03d}}-{{step}}-{{{monitor_metric}:.3f}}",
+            monitor=monitor_metric,
             mode="min",
             save_top_k=save_top_k,
             save_last=True,
@@ -121,6 +125,7 @@ def run_training(
     every_n_epochs: int = 1,
     center_slices_ratio: float = 0.5,
     cov_ridge: float = 1e-6,
+    log_raw_fid: bool = True,
 ) -> tuple[pl.Trainer, ModelCheckpoint]:
     """Assemble callbacks + ``Trainer`` and ``fit`` the module (the core seam).
 
@@ -156,11 +161,17 @@ def run_training(
             center_slices_ratio=center_slices_ratio,
             cov_ridge=cov_ridge,
             seed=seed,
+            log_raw_fid=log_raw_fid,
         )
         callbacks.append(fid)
 
     ckpt = _build_checkpoint(
-        model_dir, monitor_fid=enable_fid and not multi_gpu, every_n_epochs=every_n_epochs, save_top_k=save_top_k
+        model_dir,
+        monitor_fid=enable_fid and not multi_gpu,
+        # monitor what's logged: raw arm if present, else the slow-EMA avg.
+        monitor_metric="val/fid_raw" if log_raw_fid else "val/fid_avg",
+        every_n_epochs=every_n_epochs,
+        save_top_k=save_top_k,
     )
     callbacks.append(ckpt)
 
@@ -297,7 +308,9 @@ def main(argv: list[str] | None = None, *, data_provider=None) -> int:
     # fid_eval.* / checkpoint.* knobs are actually reachable via dotlist/YAML.
     fid_cfg = opt(cfg, "fid_eval", {})
     ckpt_cfg = opt(cfg, "checkpoint", {})
-    fid_kwargs = _dict_subset(fid_cfg, ("num_synth", "every_n_epochs", "center_slices_ratio", "cov_ridge"))
+    fid_kwargs = _dict_subset(
+        fid_cfg, ("num_synth", "every_n_epochs", "center_slices_ratio", "cov_ridge", "log_raw_fid")
+    )
     ckpt_save_top_k = fid_cfg.get("save_top_k", ckpt_cfg.get("save_top_k", 3)) if fid_cfg or ckpt_cfg else 3
 
     run_training(
