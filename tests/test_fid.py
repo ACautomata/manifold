@@ -238,12 +238,11 @@ def test_synth_features_raw_is_blind_to_ema_shadow(latent_module):
     # Replace the slow EMA shadow with fresh random weights — the raw arm must
     # not see this. (Random replacement, not a 2x mul: the UNet's group norms are
     # scale-invariant, so a uniform scaling would leave the sample unchanged.)
-    g = torch.Generator().manual_seed(123)
     slow_shadow = ema._shadows.shadows[ema._shadows.slow_index]
+    device = next(iter(slow_shadow.values())).device
+    g = torch.Generator(device=device).manual_seed(123)
     for n in slow_shadow:
-        slow_shadow[n].copy_(
-            torch.randn(slow_shadow[n].shape, generator=g, dtype=slow_shadow[n].dtype)
-        )
+        slow_shadow[n].copy_(torch.randn_like(slow_shadow[n], generator=g))
 
     raw_after = cb._synth_features(raw=True)
     slow_after = cb._synth_features(raw=False)
