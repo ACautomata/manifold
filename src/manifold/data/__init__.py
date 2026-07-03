@@ -28,6 +28,14 @@ from .latent_pipeline import (
     load_vae,
     warm_latent_pipeline,
 )
+from .reward_pairs import (
+    RewardPairDataset,
+    generate_generated_end_probe,
+    generate_reward_pairs,
+    load_frozen_denoiser,
+    load_reward_pairs,
+    save_reward_pairs,
+)
 from .transforms import floor_to_divisible, normalize_to_01, pad_to_divisible, resize_to
 from .volume_dataset import NiftiVolumeDataset, collect_nifti_paths
 
@@ -43,6 +51,7 @@ __all__ = [
     "ManifestLabelProvider",
     "MedicalDataset",
     "NiftiVolumeDataset",
+    "RewardPairDataset",
     "SampleDict",
     "build_datamodule",
     "build_encode_pipeline",
@@ -51,11 +60,16 @@ __all__ = [
     "detect_brats_contrast",
     "estimate_scale_factor",
     "floor_to_divisible",
+    "generate_generated_end_probe",
+    "generate_reward_pairs",
     "label_provider_from_config",
     "load_brats_labels",
+    "load_frozen_denoiser",
+    "load_reward_pairs",
     "load_vae",
     "normalize_to_01",
     "pad_to_divisible",
     "resize_to",
+    "save_reward_pairs",
     "warm_latent_pipeline",
 ]

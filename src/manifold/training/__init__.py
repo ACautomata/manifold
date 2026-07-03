@@ -15,6 +15,7 @@ from .cli import run_training
 from .ema import DoubleEMACallback
 from .export import export_to_native
 from .metrics import LatentX0MAE, TrainLossLogger
+from .reward_cli import run_reward_training
 from .trainer import build_trainer
 
 __all__ = [
@@ -23,6 +24,7 @@ __all__ = [
     "TrainLossLogger",
     "build_trainer",
     "export_to_native",
+    "run_reward_training",
     "run_training",
 ]
 

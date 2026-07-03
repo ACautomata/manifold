@@ -112,6 +112,32 @@ estimator; RadImageNet ResNet50 backbone, 2.5D (three orthogonal planes).
 Distinct from the legacy biased plug-in FID.
 _Avoid_: biased FID, plain FID.
 
+### Reward model (GRPO)
+
+**Reward Model**:
+The scorer that maps a latent to a scalar reward — a MONAI `PatchGANDiscriminator`
+behind a thin pooling head, never a hand-rolled net. Its scoring `forward` is the
+inference path GRPO calls during policy learning; it owns **no** generation rollout.
+A **Model** in the four-component sense (a network wrapper), specialized to scoring.
+_Avoid_: discriminator (that denotes the wrapped MONAI class itself), critic.
+
+**Reward Module** (reward-training Module):
+The `spt.Module` owning reward-training-only concerns — preference-pair
+construction, the pairwise preference loss, and its optimizer wiring. Distinct from
+the **Reward Model** (the network it trains) and the JiT **Module** (whose denoiser
+it consumes frozen).
+_Avoid_: reward trainer, reward Lightning module.
+
+**Preference pair** (winner / loser):
+Two latents built by noising the same clean latent to a flow-time `t` then denoising
+back to clean. The **winner** is lightly corrupted (`t_w ∈ [0.5, 1)`, near-clean);
+the **loser** heavily corrupted (`t_l ∈ [0, 0.5)`, near-noise) — both denoised with
+the same step budget. The ranges are half-open at 1 so `t = 1` is never sampled
+(there the step-start denominator `1 − t` would vanish). Built on the Scheduler's transport and `t→1 = clean`
+convention (ADR-0001), so "more noise" is *smaller* `t`.
+_Avoid_: positive/negative sample (say winner/loser — those name the half-pair, not
+a label).
+
 ### Configuration
 
 **Experiment config**:

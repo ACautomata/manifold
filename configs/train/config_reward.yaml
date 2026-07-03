@@ -1,0 +1,22 @@
+# Reward recipe preset — GRPO reward-model training (issue #39/#40/#43). Composed
+# with a BraTS2023 env + the network config (which carries the `reward_model`
+# block). Pairs are precomputed offline by scripts/generate_reward_pairs.py (the
+# frozen JiT denoiser), so this recipe trains ONLY the discriminator.
+#
+# Consumed by manifold-train-reward (#40). The reward job needs no VAE / JiT-UNet
+# checkpoint path (pairs are pre-made) — only the output model_dir.
+
+reward_train:
+  batch_size: 16
+  lr: 1.0e-4
+  n_epochs: 50
+
+# The precomputed RewardPairDataset directory (written by
+# scripts/generate_reward_pairs.py: pairs.pt + val_pairs.pt [+ probe_pairs.pt]).
+# Override on the CLI: --pairs-dir <dir>  or  reward.pairs_dir=<dir>.
+reward:
+  pairs_dir: ???   # REQUIRED — set via --pairs-dir or dotlist.
+
+# Stock Lightning ModelCheckpoint: monitor val/pair_acc (max), save top-1 + last.
+checkpoint:
+  save_top_k: 1
