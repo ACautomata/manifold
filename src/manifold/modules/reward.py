@@ -201,7 +201,7 @@ class RewardModule(spt.Module):
         if self._val_r_w:
             r_w = self._gather_global(torch.cat(self._val_r_w))
             r_l = self._gather_global(torch.cat(self._val_r_l))
-            self.log("val/roc_auc", reward_roc_auc(r_w, r_l), sync_dist=True)
+            self.log("val/roc_auc", reward_roc_auc(r_w, r_l))  # already global (gathered across ranks)
         if self.val_probe is not None:
             winner, loser = self.val_probe
             probe_w = winner.to(self.device)
