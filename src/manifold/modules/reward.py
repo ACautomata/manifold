@@ -66,7 +66,14 @@ def reward_roc_auc(reward_winner: Tensor, reward_loser: Tensor) -> Tensor:
     Returns ``0.5`` (neutral) when one class is absent.
     """
     scores = torch.cat([reward_winner.float(), reward_loser.float()])
-    labels = torch.cat([torch.ones_like(reward_winner), torch.zeros_like(reward_loser)])
+    # float32 (not ones_like(reward_*)): under Lightning 16-mixed the rewards are
+    # fp16, and an fp16 ``labels`` makes ``n_pos``/``n_neg`` fp16 — then
+    # ``n_pos*(n_pos+1)/2`` (~5e5) and ``n_pos*n_neg`` (~1e6) overflow fp16's
+    # 65504 max to inf, turning the AUC into (finite - inf) / inf = NaN. Counts
+    # are dtype-agnostic; build them in float32 so fp16 rewards behave like fp32.
+    labels = torch.cat(
+        [torch.ones_like(reward_winner, dtype=torch.float32), torch.zeros_like(reward_loser, dtype=torch.float32)]
+    )
     n_pos = labels.sum()
     n_neg = labels.numel() - n_pos
     if float(n_pos) == 0 or float(n_neg) == 0:

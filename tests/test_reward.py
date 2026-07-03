@@ -340,6 +340,26 @@ def test_reward_roc_auc_handles_single_class_neutral():
     assert reward_roc_auc(w, loser).item() == 0.5
 
 
+def test_reward_roc_auc_fp16_large_validation_set_is_not_nan():
+    """fp16 rewards (AMP validation) over a large N must not overflow to NaN.
+
+    Under Lightning ``16-mixed`` the discriminator forward returns fp16 rewards,
+    so ``ones_like``/``zeros_like`` build an fp16 ``labels`` and the counts
+    ``n_pos*(n_pos+1)/2`` (~5e5) and ``n_pos*n_neg`` (~1e6) overflow fp16's
+    65504 max → ``inf`` → the final ``(finite - inf) / inf`` = NaN. This is the
+    sanity-check-fine / full-epoch-NaN signature (small N doesn't overflow).
+    Counts are dtype-agnostic, so the fix makes fp16 behave like fp32.
+    """
+    n = 1000
+    # Finite, perfectly separable values — any NaN here is arithmetic, not inputs.
+    w = torch.full((n,), 1.0, dtype=torch.float16)
+    loser = torch.full((n,), -1.0, dtype=torch.float16)
+    assert not torch.isnan(reward_roc_auc(w, loser))
+    assert reward_roc_auc(w, loser).item() == 1.0  # perfect ranking
+    # fp16 and fp32 must agree (only counts/ranks, no dtype-dependent math).
+    assert reward_roc_auc(w, loser).item() == reward_roc_auc(w.float(), loser.float()).item()
+
+
 def test_reward_model_save_load_round_trips_identical(tmp_path):
     """Reward Model persists via component save/load; reloaded scores identically."""
     m = _reward_model()
