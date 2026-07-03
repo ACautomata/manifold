@@ -43,33 +43,75 @@ from manifold.data.reward_pairs import (  # noqa: E402
 )
 
 
-def _load_clean_latents(latents_dir: Path) -> tuple[torch.Tensor, list[str]]:
-    """Load clean latents + subject ids from a directory of ``.pt`` files."""
+def _subject_id(sample_id: str, regex) -> str:
+    """Derive a true subject id from a cache sample_id / file stem.
+
+    BraTS contrast files of one subject differ in the trailing contrast token
+    (``BraTS-GLI-0000-000-t1n`` vs ``-t1c``); the full id would split one subject
+    across train/val. By default the last ``-<token>`` is stripped (BraTS
+    convention). ``--subject-regex`` (one capture group) overrides for other naming.
+    """
+    import re
+
+    if regex:
+        m = re.match(regex, sample_id)
+        return m.group(1) if (m and m.groups()) else sample_id
+    return sample_id.rsplit("-", 1)[0] if "-" in sample_id else sample_id
+
+
+def _load_clean_latents(
+    latents_dir: Path, subject_regex
+) -> tuple[torch.Tensor, list[str], list, list]:
+    """Load clean latents + subject ids + per-sample spacing/label from a ``.pt`` dir.
+
+    Latent-cache items are ``{"latent", "spacing", "label", "sample_id"}`` storing
+    the **unscaled** latent (scale-on-read happens at training ``__getitem__``); the
+    caller scales them by the VAE ``scaling_factor``. Per-sample ``spacing`` /
+    ``label`` are collected so a heterogeneous (multi-contrast) cache conditions
+    each rollout correctly; a plain-tensor file yields ``None`` (fall back to globals).
+    """
     files = sorted(p for p in latents_dir.glob("*.pt") if not p.name.endswith(".tmp.r0.p0"))
     if not files:
         raise FileNotFoundError(f"No .pt latents under {latents_dir}.")
-    latents, subject_ids = [], []
+    latents, subject_ids, spacings, labels = [], [], [], []
     for path in files:
         item = torch.load(path, map_location="cpu", weights_only=True)
         if isinstance(item, dict) and "latent" in item:
             latent = item["latent"]
-            sid = str(item.get("sample_id", path.stem))
+            sid_raw = str(item.get("sample_id", path.stem))
+            spacings.append(item.get("spacing"))
+            labels.append(item.get("label"))
         else:
             latent = item
-            sid = path.stem.split("__", 1)[0]  # group by cache stem prefix
+            sid_raw = path.stem
+            spacings.append(None)
+            labels.append(None)
         latents.append(latent.float())
-        subject_ids.append(sid)
-    return torch.stack(latents), subject_ids
+        subject_ids.append(_subject_id(sid_raw, subject_regex))
+    return torch.stack(latents), subject_ids, spacings, labels
+
+
+def _maybe_per_sample(items, n: int, fallback):
+    """Build a per-sample tensor if every item is present, else the broadcast fallback."""
+    if items and all(it is not None for it in items):
+        return torch.as_tensor(items)
+    return fallback
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--native-dir", required=True, help="native JiT export dir (frozen denoiser).")
-    parser.add_argument("--latents-dir", required=True, help="directory of clean .pt latents.")
+    parser.add_argument("--native-dir", required=True, help="native JiT export dir (frozen denoiser + VAE scale).")
+    parser.add_argument("--latents-dir", required=True, help="directory of clean .pt latents (latent cache).")
     parser.add_argument("--output-dir", required=True, help="output RewardPairDataset directory.")
     parser.add_argument("--num-steps", type=int, default=4, help="shared Heun step budget.")
-    parser.add_argument("--modality", type=int, default=1, help="class label for conditioning.")
-    parser.add_argument("--spacing", type=float, nargs=3, default=[1.0, 1.0, 1.0], help="voxel spacing.")
+    parser.add_argument("--modality", type=int, default=1, help="class label (used if cache items lack a label).")
+    parser.add_argument("--spacing", type=float, nargs=3, default=[1.0, 1.0, 1.0], help="voxel spacing (used if cache items lack spacing).")
+    parser.add_argument(
+        "--subject-regex",
+        default=None,
+        help="regex (one capture group) extracting a subject id from the sample_id; "
+        "default strips the last '-<token>' (BraTS <subject>-<contrast> convention).",
+    )
     parser.add_argument("--val-fraction", type=float, default=0.2, help="held-out subject fraction.")
     parser.add_argument("--batch-size", type=int, default=4, help="generation batch size.")
     parser.add_argument(
@@ -82,17 +124,23 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    clean, subject_ids = _load_clean_latents(Path(args.latents_dir))
-    denoiser, scheduler = load_frozen_denoiser(args.native_dir)
+    clean, subject_ids, spacings, labels = _load_clean_latents(Path(args.latents_dir), args.subject_regex)
+    denoiser, scheduler, scaling_factor = load_frozen_denoiser(args.native_dir)
     denoiser.to(device)
+    # The latent cache stores UNSCALED latents; the frozen denoiser was trained in
+    # the VAE's scaled latent space, so scale before denoising (ADR-0003).
+    clean = clean * scaling_factor
+
+    spacing_arg = _maybe_per_sample(spacings, len(clean), args.spacing)
+    modality_arg = _maybe_per_sample(labels, len(clean), args.modality)
 
     train, val = generate_reward_pairs(
         clean,
         subject_ids,
         denoiser,
         scheduler,
-        spacing=args.spacing,
-        modality=args.modality,
+        spacing=spacing_arg,
+        modality=modality_arg,
         num_steps=args.num_steps,
         val_fraction=args.val_fraction,
         batch_size=args.batch_size,
@@ -105,8 +153,8 @@ def main(argv: list[str] | None = None) -> int:
         clean[: args.n_probe],
         denoiser,
         scheduler,
-        spacing=args.spacing,
-        modality=args.modality,
+        spacing=spacing_arg,
+        modality=modality_arg,
         num_steps=args.num_steps,
         batch_size=args.batch_size,
         seed=args.seed,
@@ -115,7 +163,7 @@ def main(argv: list[str] | None = None) -> int:
     save_reward_pairs(args.output_dir, train, val, probe=probe)
     print(
         f"[generate_reward_pairs] wrote {len(train)} train / {len(val)} val / "
-        f"{len(probe)} probe pairs to {args.output_dir}."
+        f"{len(probe)} probe pairs to {args.output_dir} (scale ×{scaling_factor})."
     )
     return 0
 

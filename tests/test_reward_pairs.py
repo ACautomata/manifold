@@ -340,7 +340,6 @@ def test_reward_pair_dataset_save_load_round_trips(tmp_path):
 
 # -- frozen-denoiser loading ------------------------------------------------
 
-
 def test_load_frozen_denoiser_from_native_export(tmp_path):
     """The frozen denoiser loads from a native pipeline dir (ADR-0006)."""
     torch.manual_seed(0)
@@ -349,9 +348,10 @@ def test_load_frozen_denoiser_from_native_export(tmp_path):
     scheduler = FlowMatchHeunDiscreteScheduler(t_eps=0.05)
     LatentFlowPipeline(unet, vae, scheduler).save_pretrained(str(tmp_path / "native"))
 
-    denoiser, partial_sched = load_frozen_denoiser(tmp_path / "native")
+    denoiser, partial_sched, scaling_factor = load_frozen_denoiser(tmp_path / "native")
     assert isinstance(partial_sched, PartialFlowMatchHeunScheduler)
     assert partial_sched.t_eps == 0.05  # matched from the JiT scheduler config
+    assert scaling_factor == 0.5  # the native VAE's scaling_factor (used to scale raw cache latents)
     # Frozen + a working scoring forward.
     assert all(not p.requires_grad for p in denoiser.parameters())
     out = denoiser(sample=torch.randn(1, *_LAT), timestep=torch.tensor([0.5]),
@@ -408,3 +408,118 @@ def test_generate_reward_pairs_script_end_to_end(tmp_path):
     assert train.winners.shape[1:] == _LAT
     assert torch.isfinite(train.winners).all() and torch.isfinite(val.losers).all()
 
+
+
+# -- Codex #45 regression: subject id + per-sample conditioning + scaling ----
+
+
+def test_subject_id_groups_brats_contrasts():
+    """_subject_id strips the trailing contrast so one subject's contrasts group together."""
+    import sys
+
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
+    try:
+        from generate_reward_pairs import _subject_id
+    finally:
+        sys.path.pop(0)
+
+    # Default (BraTS): last '-<token>' stripped → contrasts of one subject merge.
+    # (Cache sample_ids always carry the contrast suffix; the subject id itself is
+    # the prefix shared across t1n/t1c/t2w/t2f.)
+    assert _subject_id("BraTS-GLI-0000-000-t1n", None) == "BraTS-GLI-0000-000"
+    assert _subject_id("BraTS-GLI-0000-000-t1c", None) == "BraTS-GLI-0000-000"
+    assert _subject_id("BraTS-GLI-0000-000-t2f", None) == "BraTS-GLI-0000-000"
+    assert _subject_id("no_dash_id", None) == "no_dash_id"  # nothing to strip
+    # A custom regex overrides (e.g. group by an explicit prefix).
+    assert _subject_id("siteA_case007_t1n", r"^(siteA_case007)") == "siteA_case007"
+
+
+class _RecordingDenoiser(nn.Module):
+    """Identity denoiser that records every class_labels / spacing it receives."""
+
+    def __init__(self):
+        super().__init__()
+        self.dummy = nn.Parameter(torch.zeros(0))
+        self.seen_labels = []
+        self.seen_spacing = []
+
+    def forward(self, sample, timestep, spacing, class_labels=None, **kw):
+        self.seen_labels.append(None if class_labels is None else class_labels.detach().cpu().clone())
+        self.seen_spacing.append(None if spacing is None else spacing.detach().cpu().clone())
+        return sample
+
+
+def test_partial_rollout_threads_per_sample_modality_and_spacing():
+    """A per-sample modality tensor + [B,3] spacing reach the UNet verbatim."""
+    sched = PartialFlowMatchHeunScheduler()
+    rec = _RecordingDenoiser()
+    z = torch.randn(2, *_LAT)
+    t_start = torch.tensor([0.2, 0.6])
+    labels = torch.tensor([3, 7])
+    spacing = torch.tensor([[1.0, 1.0, 1.0], [2.0, 2.0, 3.0]])
+    partial_denoise_rollout(rec, sched, z, t_start, spacing, labels, num_steps=2)
+    # Every UNet eval got the per-sample labels [3,7] and the per-sample spacing.
+    assert all(torch.equal(s, torch.tensor([3.0, 7.0])) for s in rec.seen_labels if s is not None)
+    assert any(torch.allclose(s, spacing) for s in rec.seen_spacing)
+
+
+def test_generate_reward_pairs_slices_per_sample_modality_across_batches():
+    """A length-N per-sample modality is sliced per batch (batch0=[0,1], batch1=[2,3])."""
+    sched = PartialFlowMatchHeunScheduler()
+    rec = _RecordingDenoiser()
+    torch.manual_seed(0)
+    clean = torch.randn(4, *_LAT)
+    sids = ["s0", "s0", "s1", "s1"]
+    generate_reward_pairs(
+        clean, sids, rec, sched, spacing=[1.0, 1.0, 1.0], modality=torch.tensor([0, 1, 2, 3]),
+        num_steps=1, val_fraction=0.5, batch_size=2, seed=0, device="cpu",
+    )
+    seen = torch.stack([s for s in rec.seen_labels if s is not None])
+    # Each batch's labels are a slice of the per-sample modality (order-independent check).
+    assert torch.equal(seen.unique().sort().values, torch.tensor([0, 1, 2, 3]))
+
+
+def test_generate_reward_pairs_applies_scaling_via_script(tmp_path):
+    """The script scales raw cache latents by the native VAE scaling_factor before denoising.
+
+    Equivalent pairs come from running generate_reward_pairs directly on
+    manually-scaled latents with the same frozen denoiser + seed (the script's
+    `clean = clean * scaling_factor` must make them identical).
+    """
+    import sys
+
+    torch.manual_seed(0)
+    unet = UNet3DConditionModel(num_class_embeds=4, include_spacing_input=True)
+    # Native export carries scaling_factor on the VAE.
+    LatentFlowPipeline(
+        unet, AutoencoderKL(scaling_factor=2.0), FlowMatchHeunDiscreteScheduler(),
+    ).save_pretrained(str(tmp_path / "native"))
+
+    raw = torch.randn(8, *_LAT)
+    latents_dir = tmp_path / "latents"
+    latents_dir.mkdir()
+    for i in range(8):
+        torch.save({"latent": raw[i], "sample_id": f"subj_{i // 2}"}, latents_dir / f"s{i}__v.pt")
+
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
+    try:
+        import generate_reward_pairs as cli  # type: ignore[import-not-found]
+    finally:
+        sys.path.pop(0)
+    rc = cli.main(
+        ["--native-dir", str(tmp_path / "native"), "--latents-dir", str(latents_dir),
+         "--output-dir", str(tmp_path / "pairs"), "--num-steps", "2", "--val-fraction", "0.34",
+         "--batch-size", "4"]
+    )
+    assert rc == 0
+    script_train, _script_val, _ = load_reward_pairs(tmp_path / "pairs")
+
+    # Direct generation on MANUALLY-scaled latents with the same denoiser + seed.
+    denoiser, scheduler, scaling = load_frozen_denoiser(tmp_path / "native")
+    sids = [f"subj_{i // 2}" for i in range(8)]
+    direct_train, _direct_val = generate_reward_pairs(
+        raw * scaling, sids, denoiser, scheduler, spacing=[1.0, 1.0, 1.0], modality=1,
+        num_steps=2, val_fraction=0.34, batch_size=4, seed=0, device="cpu",
+    )
+    # Same subject split (seeded) + same scaling + same denoiser → identical winners.
+    assert torch.allclose(script_train.winners, direct_train.winners, atol=1e-6)

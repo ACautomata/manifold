@@ -435,3 +435,58 @@ def test_main_consumes_pairs_dir_with_probe(tmp_path):
     assert rc == 0
     ckpts = list(Path(str(tmp_path / "model")).glob("*.ckpt"))
     assert any(p.name == "last.ckpt" for p in ckpts)
+
+
+# -- Codex #45 regression: O(N log N) ROC-AUC + DDP checkpoint + probe batching
+
+
+def _brute_force_auc(rw, rl):
+    """Reference AUC = mean over (pos,neg) pairs of [p>n] + 0.5*[p==n] (handles ties)."""
+    total = 0.0
+    for p in rw:
+        for n in rl:
+            total += 1.0 if p > n else (0.5 if p == n else 0.0)
+    return total / (len(rw) * len(rl))
+
+
+def test_reward_roc_auc_matches_brute_force_with_and_without_ties():
+    """The O(N log N) sort-based AUC equals the brute-force pairwise AUC (incl. ties)."""
+    torch.manual_seed(0)
+    # Continuous rewards (no ties). float32 (reward_roc_auc) vs float64 (brute) → 1e-6 tol.
+    rw = torch.randn(20)
+    rl = torch.randn(20) + 0.3
+    assert abs(reward_roc_auc(rw, rl).item() - _brute_force_auc(rw.tolist(), rl.tolist())) < 1e-6
+    # With deliberate ties (exercises the tie-group average-rank sweep).
+    rw_tie = torch.tensor([2.0, 2.0, 0.5, 0.5])  # ties within winners
+    rl_tie = torch.tensor([1.0, 1.0, 0.0, -1.0])  # ties within losers
+    assert abs(reward_roc_auc(rw_tie, rl_tie).item() - _brute_force_auc(rw_tie.tolist(), rl_tie.tolist())) < 1e-6
+
+
+def test_build_checkpoint_ddp_fallback_drops_monitor():
+    """Under multi-GPU the checkpoint does not monitor a rank-local metric (mirrors JiT)."""
+    from manifold.training.reward_cli import _build_checkpoint
+
+    single = _build_checkpoint(str(Path("/tmp/_rwd_ckpt_a").resolve()), multi_gpu=False)
+    multi = _build_checkpoint(str(Path("/tmp/_rwd_ckpt_b").resolve()), multi_gpu=True)
+    assert single.monitor == "val/pair_acc"
+    assert multi.monitor is None  # DDP: no rank-0-shard selection
+    assert multi.save_last and multi.save_top_k == 1
+
+
+def test_generated_end_probe_is_scored_in_chunks(tmp_path):
+    """A probe larger than probe_batch_size is still scored correctly (chunked, no OOM)."""
+    import shutil
+
+    big_probe = _ToyPairDS(n=8)  # 8 probe pairs
+    pw = torch.stack([big_probe.items[i]["winner"] for i in range(8)])
+    pl_ = torch.stack([big_probe.items[i]["loser"] for i in range(8)])
+    module = RewardModule(_reward_model(), lr=1e-2, val_probe=(pw, pl_), probe_batch_size=2)
+    bundle = _RewardDataBundle(pair_ds=_ToyPairDS(), val_pair_ds=_ToyPairDS(n=4))
+    trainer, _ = run_reward_training(
+        module=module, bundle=bundle, model_dir=str(tmp_path), max_epochs=1,
+        devices=1, accelerator="cpu", batch_size=2, num_workers=0, limit_val_batches=1.0,
+    )
+    metrics = trainer.callback_metrics
+    assert "val/gen_pair_acc" in metrics and torch.isfinite(metrics["val/gen_pair_acc"])
+    shutil.rmtree("/tmp/_rwd_ckpt_a", ignore_errors=True)
+    shutil.rmtree("/tmp/_rwd_ckpt_b", ignore_errors=True)

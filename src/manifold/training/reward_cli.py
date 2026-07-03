@@ -56,12 +56,27 @@ def _build_checkpoint(
     monitor_metric: str = "val/pair_acc",
     mode: str = "max",
     save_top_k: int = 1,
+    multi_gpu: bool = False,
 ) -> ModelCheckpoint:
     """Stock Lightning ``ModelCheckpoint`` monitoring the reward val metric.
 
     Pairwise accuracy is maximized (``mode="max"``); ``auto_insert_metric_name =
     False`` because the metric key contains a ``/``. ``save_last=True`` for resume.
+    Under DDP (``multi_gpu``) the metric is rank-local to rank 0, so monitoring is
+    dropped (``save_last`` + ``save_top_k=1`` keep the latest) — mirroring the JiT
+    checkpoint's DDP fallback (val/pair_acc is synced for reporting, but the
+    selection signal stays single-GPU).
     """
+    if multi_gpu:
+        return ModelCheckpoint(
+            dirpath=model_dir,
+            filename="reward-{epoch:03d}",
+            save_last=True,
+            save_top_k=1,
+            save_on_train_epoch_end=True,
+            auto_insert_metric_name=False,
+            save_weights_only=False,
+        )
     return ModelCheckpoint(
         dirpath=model_dir,
         filename=f"reward-{{epoch:03d}}-{{{monitor_metric}:.3f}}",
@@ -102,11 +117,16 @@ def run_reward_training(
         bundle: the train + val pair datasets (``{"winner","loser"}``-emitting).
         ckpt_path: optional warm-start / resume checkpoint passed to ``fit``.
     """
+    # Seed deterministically so direct callers (tests, notebooks) get reproducible
+    # runs; ``main`` also seeds, harmlessly, before building the module.
+    pl.seed_everything(seed, workers=True)
+    multi_gpu = isinstance(devices, int) and devices > 1
     ckpt = _build_checkpoint(
-        model_dir, monitor_metric=monitor_metric, mode=mode, save_top_k=save_top_k
+        model_dir, monitor_metric=monitor_metric, mode=mode, save_top_k=save_top_k, multi_gpu=multi_gpu
     )
-    # Attach the fixed generated-end probe (precomputed; reused across epochs) if
-    # the bundle carries one and the module does not already have one attached.
+    # Score the fixed generated-end probe in training-batch-size chunks (bounds
+    # epoch-end memory); attach the probe if the bundle carries one.
+    module.probe_batch_size = int(batch_size)
     if bundle.val_probe is not None and getattr(module, "val_probe", None) is None:
         module.set_val_probe(bundle.val_probe.winners, bundle.val_probe.losers)
     datamodule = build_datamodule(

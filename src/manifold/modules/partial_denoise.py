@@ -47,7 +47,8 @@ def partial_denoise_rollout(
             (callers noise via ``scheduler.add_noise``).
         t_start: ``(B,)`` flow-times — each sample's corruption level.
         spacing: raw voxel spacing ``[3]`` or ``[B, 3]`` (scaled ×1e2 in the UNet).
-        modality: the integer class label for conditioning.
+        modality: integer class label (broadcast across the batch) **or** a
+            per-sample ``(B,)`` long tensor (a heterogeneous, multi-contrast cache).
         num_steps: Heun steps over each sample's ``[t_start, 1]`` range (shared
             budget; per-sample ``δt`` differs).
 
@@ -59,7 +60,13 @@ def partial_denoise_rollout(
     batch_size = z_start.shape[0]
 
     spacing_t = torch.as_tensor(spacing, device=device)
-    class_labels = torch.full((batch_size,), int(modality), dtype=torch.long, device=device)
+    # modality may be a scalar (broadcast across the batch) or a per-sample
+    # ``(B,)`` long tensor (a heterogeneous, multi-contrast cache). spacing may be
+    # ``[3]`` (broadcast) or ``[B, 3]`` (per-sample) — the UNet wrapper handles both.
+    if isinstance(modality, Tensor):
+        class_labels = modality.to(device=device, dtype=torch.long)
+    else:
+        class_labels = torch.full((batch_size,), int(modality), dtype=torch.long, device=device)
     nodes = scheduler.set_timesteps_partial(t_start, num_steps, device=device)  # (B, n+1)
 
     z = z_start.to(device=device, dtype=dtype)

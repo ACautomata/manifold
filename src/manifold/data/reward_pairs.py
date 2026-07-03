@@ -94,7 +94,10 @@ def load_frozen_denoiser(native_dir: str | Path):
     :meth:`~manifold.LatentFlowPipeline.save_pretrained` /
     :func:`~manifold.training.export_to_native`; the UNet is the trained JiT
     x0-denoiser (one source of truth). The scheduler config is read back as a
-    :class:`PartialFlowMatchHeunScheduler` so its ``t_eps`` matches training.
+    :class:`PartialFlowMatchHeunScheduler` so its ``t_eps`` matches training, and
+    the VAE's ``scaling_factor`` is returned so callers can scale raw cached
+    latents into the denoiser's training space (the latent cache stores unscaled
+    latents — scale-on-read happens at ``__getitem__``).
     """
     from ..pipelines.latent_flow import LatentFlowPipeline
 
@@ -102,10 +105,11 @@ def load_frozen_denoiser(native_dir: str | Path):
     # Re-instantiate the scheduler as the partial subclass (same ctor signature /
     # t_eps), so pair generation shares the JiT endpoint clamp exactly.
     scheduler = PartialFlowMatchHeunScheduler(**pipe.scheduler.config)
+    scaling_factor = float(pipe.vae.scaling_factor)
     pipe.unet.eval()
     for p in pipe.unet.parameters():
         p.requires_grad_(False)
-    return pipe.unet, scheduler
+    return pipe.unet, scheduler, scaling_factor
 
 
 def generate_reward_pairs(
@@ -114,8 +118,8 @@ def generate_reward_pairs(
     denoiser,
     scheduler: PartialFlowMatchHeunScheduler,
     *,
-    spacing: Sequence[float],
-    modality: int,
+    spacing: Sequence[float] | Tensor,
+    modality: int | Sequence[int] | Tensor,
     num_steps: int,
     val_fraction: float = 0.2,
     batch_size: int = 4,
@@ -132,11 +136,17 @@ def generate_reward_pairs(
     generalization, not memorization.
 
     Args:
-        clean_latents: ``[N, C, D, H, W]`` clean VAE latents (already scaled).
-        subject_ids: length-``N`` subject id per latent (the split key).
+        clean_latents: ``[N, C, D, H, W]`` clean VAE latents (already scaled to the
+            denoiser's training space — apply ``vae.scaling_factor`` to raw cache
+            latents before passing them in).
+        subject_ids: length-``N`` **subject** id per latent (the split key — derive
+            a true per-subject id, not the per-contrast cache sample_id).
         denoiser: the frozen JiT denoiser (e.g. from :func:`load_frozen_denoiser`).
         scheduler: a :class:`PartialFlowMatchHeunScheduler` (transport + steps).
-        spacing / modality: the conditioning shared across the batch.
+        spacing: voxel spacing — ``[3]`` (broadcast) or ``[N, 3]`` (per-sample, for
+            a heterogeneous cache).
+        modality: integer class label (broadcast) or a length-``N`` per-sample
+            sequence/tensor (a multi-contrast cache).
         num_steps: shared Heun step budget for winner and loser rollouts.
         val_fraction: fraction of unique **subjects** held out for validation.
 
@@ -168,11 +178,15 @@ def generate_reward_pairs(
         noise_l = torch.randn(batch.shape, generator=gen, device=device)
         z_w = scheduler.add_noise(batch, noise_w, t_w)
         z_l = scheduler.add_noise(batch, noise_l, t_l)
+        # Per-sample conditioning: spacing may be [3] (broadcast) or [N,3]; modality
+        # may be an int (broadcast) or a length-N sequence/tensor (multi-contrast).
+        spacing_b = spacing[start : start + b] if isinstance(spacing, Tensor) and spacing.dim() == 2 else spacing
+        modality_b = modality[start : start + b] if not isinstance(modality, (int, float)) else modality
         winners = partial_denoise_rollout(
-            denoiser, scheduler, z_w, t_w, spacing, modality, num_steps=num_steps
+            denoiser, scheduler, z_w, t_w, spacing_b, modality_b, num_steps=num_steps
         )
         losers = partial_denoise_rollout(
-            denoiser, scheduler, z_l, t_l, spacing, modality, num_steps=num_steps
+            denoiser, scheduler, z_l, t_l, spacing_b, modality_b, num_steps=num_steps
         )
         for j in range(b):
             sid = subject_ids[start + j]
@@ -241,8 +255,8 @@ def generate_generated_end_probe(
     denoiser,
     scheduler: PartialFlowMatchHeunScheduler,
     *,
-    spacing: Sequence[float],
-    modality: int,
+    spacing: Sequence[float] | Tensor,
+    modality: int | Sequence[int] | Tensor,
     num_steps: int,
     batch_size: int = 4,
     seed: int = 0,
@@ -276,13 +290,15 @@ def generate_generated_end_probe(
         noise_l = torch.randn(batch.shape, generator=gen, device=device)
         z_w = scheduler.add_noise(batch, noise_w, winner_t)
         z_l = scheduler.add_noise(batch, noise_l, loser_t)
+        spacing_b = spacing[start : start + b] if isinstance(spacing, Tensor) and spacing.dim() == 2 else spacing
+        modality_b = modality[start : start + b] if not isinstance(modality, (int, float)) else modality
         winners.append(
-            partial_denoise_rollout(denoiser, scheduler, z_w, winner_t, spacing, modality, num_steps=num_steps)
+            partial_denoise_rollout(denoiser, scheduler, z_w, winner_t, spacing_b, modality_b, num_steps=num_steps)
             .detach()
             .cpu()
         )
         losers.append(
-            partial_denoise_rollout(denoiser, scheduler, z_l, loser_t, spacing, modality, num_steps=num_steps)
+            partial_denoise_rollout(denoiser, scheduler, z_l, loser_t, spacing_b, modality_b, num_steps=num_steps)
             .detach()
             .cpu()
         )
