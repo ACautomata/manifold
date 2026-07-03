@@ -52,6 +52,9 @@ dev = [
 # The JiT training launcher (issue #28): compose config -> warm cache -> fit.
 # `python -m` parity for the export bridge is scripts/export_checkpoint.py.
 manifold-train = "manifold.training.cli:main"
+# The standalone reward-training launcher (issue #39/#40): precomputed pairs -> fit.
+# Pair generation is scripts/generate_reward_pairs.py (loads the frozen JiT export).
+manifold-train-reward = "manifold.training.reward_cli:main"
 
 [project.urls]
 Homepage = "https://github.com/junran/manifold"

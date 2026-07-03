@@ -57,3 +57,16 @@ diffusion_unet:
 scheduler:
   num_train_timesteps: 1000
   t_eps: 0.05
+
+# Reward Model (GRPO, issue #39/#40) — a MONAI PatchGAN discriminator over the
+# latent. `channels` is the first-conv filter count (doubled per layer, MONAI
+# convention); `num_layers_d` is the strided-conv depth. The BraTS2023 GLI latent
+# is ~[4,64,64,32] (z-dim 32), which survives num_layers_d=3 (patch map z-dim 2);
+# smaller latents must lower num_layers_d (RewardModel.forward raises a clear
+# ValueError on spatial collapse).
+reward_model:
+  spatial_dims: ${spatial_dims}
+  in_channels: ${latent_channels}
+  channels: 64
+  num_layers_d: 3
+  norm: BATCH

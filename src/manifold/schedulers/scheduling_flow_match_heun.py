@@ -35,7 +35,8 @@ from ..configuration import register_to_config
 from .scheduling_utils import SchedulerMixin
 
 #: A timestep may be a python/0-d scalar (inference, one flow-time node) or a
-#: per-sample ``(B,)`` tensor (training, logit-normal sample).
+#: per-sample ``(B,)`` tensor (training's logit-normal sample, or a per-sample
+#: partial-denoise step where each sample sits at its own flow-time).
 Timestep = Union[float, int, Tensor]
 
 
@@ -72,6 +73,24 @@ class FlowMatchHeunDiscreteScheduler(SchedulerMixin):
         shape = [t_tensor.shape[0]] + [1] * (reference.dim() - 1)
         return t_tensor.view(shape)
 
+    @staticmethod
+    def _step_t(t: Timestep, reference: Tensor) -> Union[float, Tensor]:
+        """Coerce a reverse-step endpoint to its arithmetic form.
+
+        A scalar (python ``float``/``int`` or 0-d tensor) becomes a python
+        ``float`` — the byte-identical scalar fast path (the JiT train/inference
+        callers pass scalars, and their outputs must not change). A ``(B,)``
+        tensor is broadcast over the sample's spatial dims as ``(B, 1, 1, …)`` so
+        each sample advances by its own ``dt`` and divides by its own ``1 − t``
+        (per-sample partial denoise, ADR-0008).
+        """
+        if isinstance(t, Tensor):
+            t = torch.as_tensor(t, dtype=torch.float32, device=reference.device)
+            if t.dim() == 0:
+                return float(t)
+            return FlowMatchHeunDiscreteScheduler._bcast_t(t, reference)
+        return float(t)
+
     def add_noise(self, original_samples: Tensor, noise: Tensor, timesteps: Timestep) -> Tensor:
         """The rectified-flow transport ``z = t·x + (1 − t)·e``.
 
@@ -107,17 +126,23 @@ class FlowMatchHeunDiscreteScheduler(SchedulerMixin):
     # -- reverse step: true two-evaluation Heun ------------------------------
 
     def euler_step(
-        self, model_output: Tensor, sample: Tensor, t: float, t_next: float
+        self, model_output: Tensor, sample: Tensor, t: Timestep, t_next: Timestep
     ) -> tuple[Tensor, Tensor]:
         """Predictor: derive the step-start velocity and advance to the Euler point.
 
         ``v1 = (x0_pred − z) / (1 − t)`` with the denominator **unclamped** (the
         step-start node ``t`` never reaches 1, so it is never singular). Returns
         the Euler-advanced point ``z + v1·dt`` and ``v1`` (the corrector needs it).
+
+        ``t`` / ``t_next`` may be scalars (the JiT path — byte-identical to the
+        scalar arithmetic) or ``(B,)`` tensors (per-sample partial denoise; each
+        sample divides by its own ``1 − t`` and advances by its own ``dt``).
         """
-        denom = 1.0 - float(t)
+        t_b = self._step_t(t, sample)
+        t_next_b = self._step_t(t_next, sample)
+        denom = 1.0 - t_b
         v1 = (model_output.float() - sample.float()) / denom
-        dt = float(t_next) - float(t)
+        dt = t_next_b - t_b
         z_euler = sample.float() + v1 * dt
         return z_euler.to(sample.dtype), v1
 
@@ -127,17 +152,26 @@ class FlowMatchHeunDiscreteScheduler(SchedulerMixin):
         sample: Tensor,
         z_euler: Tensor,
         v1: Tensor,
-        t: float,
-        t_next: float,
+        t: Timestep,
+        t_next: Timestep,
     ) -> Tensor:
         """Corrector: derive the endpoint velocity and return the trapezoidal average.
 
         ``v2 = (x0_pred_euler − z_euler) / max(1 − t_next, t_eps)`` with the
         denominator **clamped** at ``t_eps`` (``t_next`` can hit 1), then the
         trapezoidal Heun update ``z + 0.5·(v1 + v2)·dt``.
+
+        ``t`` / ``t_next`` may be scalars or ``(B,)`` tensors (the clamp is
+        elementwise over the batch in the tensor path).
         """
-        denom = max(1.0 - float(t_next), float(self.t_eps))
+        t_b = self._step_t(t, sample)
+        t_next_b = self._step_t(t_next, sample)
+        one_minus = 1.0 - t_next_b
+        if isinstance(one_minus, Tensor):
+            denom = one_minus.clamp(min=self.t_eps)
+        else:
+            denom = max(one_minus, float(self.t_eps))
         v2 = (model_output.float() - z_euler.float()) / denom
-        dt = float(t_next) - float(t)
+        dt = t_next_b - t_b
         out = sample.float() + 0.5 * (v1 + v2) * dt
         return out.to(sample.dtype)
