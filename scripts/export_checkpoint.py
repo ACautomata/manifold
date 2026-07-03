@@ -64,8 +64,11 @@ def main(argv: list[str] | None = None) -> int:
     if args.vae_checkpoint:
         import torch
 
+        from omegaconf import OmegaConf
+
         from manifold.data.latent_pipeline import load_vae as _load_vae
 
+        cfg = OmegaConf.merge(cfg, {"trained_autoencoder_path": args.vae_checkpoint})
         vae = _load_vae(cfg, torch.device("cpu"))
 
     source = export_to_native(
