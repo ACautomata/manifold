@@ -1,11 +1,14 @@
-"""Reward model + reward module tests (GRPO reward model, issue #39/#40).
+"""Reward model + reward module tests (GRPO reward model; online rollout-in-the loop, #48/#50).
 
 External-behavior seams (per the PRD testing plan): the Reward Model scores a
 latent to a finite per-sample scalar (no sigmoid); the Bradley–Terry loss is
-finite and its gradient pushes ``r_w`` up / ``r_l`` down; ``RewardModule.forward``
-returns a finite BT loss whose backward touches discriminator params only; and a
-reward-training run completes end-to-end on toy pairs via the injected-data CLI
-smoke, writing a checkpoint and logging pairwise accuracy.
+finite and its gradient pushes ``r_w`` up / ``r_l`` down; the online
+``RewardModule.forward("fit")`` consumes a **clean-latent** batch, rolls fresh
+preference pairs (frozen denoiser, no grad), and returns a finite BT loss whose
+backward touches discriminator params only; the frozen denoiser is held but
+UNregistered (off the checkpoint/optimizer); and a reward-training run completes
+end-to-end on toy clean latents via the injected-data CLI smoke, writing a
+checkpoint and logging pairwise accuracy + the generated-end probe.
 """
 
 from __future__ import annotations
@@ -16,10 +19,11 @@ import torch
 from torch import nn
 from torch.utils.data import Dataset
 
-from manifold import RewardModel
+from manifold import PartialFlowMatchHeunScheduler, RewardModel
+from manifold.data.reward_pairs import RewardPairDataset
 from manifold.modules import RewardModule, bradley_terry_loss, reward_roc_auc
 from manifold.training import run_reward_training
-from manifold.training.reward_cli import _RewardDataBundle, main as reward_main
+from manifold.training.reward_cli import RewardInputs, main as reward_main
 
 #: A tiny latent shape + RewardModel config that survives the PatchGAN strided
 #: convs on CPU (initial_conv 8->4, one middle layer 4->3, final_conv 3->2).
@@ -30,6 +34,31 @@ _RM_KW = dict(spatial_dims=3, in_channels=4, channels=8, num_layers_d=1)
 def _reward_model() -> RewardModel:
     torch.manual_seed(0)
     return RewardModel(**_RM_KW)
+
+
+class _SoftDenoiser(nn.Module):
+    """A NON-identity fake denoiser (``x0 = 0.5·z``) so the rollout provably moves the latent.
+
+    The identity denoiser (``x0 = z``) makes the rollout a verbatim no-op, so it
+    cannot prove the rollout ran — hence the soft variant. Carries a dummy param
+    so it mimics a real module (the rollout reads the device off
+    ``next(unet.parameters())``). Frozen + eval by the Module ctor.
+    """
+
+    def __init__(self, target: torch.Tensor | None = None):
+        super().__init__()
+        self.dummy = nn.Parameter(torch.ones(3))
+        self.target = target  # if set, ``x0 = 0.5·target + 0.5·z`` (pulls toward clean).
+
+    def forward(self, sample, timestep, spacing, class_labels=None, **kw):
+        if self.target is not None:
+            return 0.5 * self.target + 0.5 * sample
+        return 0.5 * sample
+
+
+def _soft_denoiser() -> _SoftDenoiser:
+    """The default fake denoiser for the smoke (non-identity → the rollout moves)."""
+    return _SoftDenoiser()
 
 
 # -- Reward Model -----------------------------------------------------------
@@ -66,7 +95,8 @@ def test_reward_model_scores_winner_above_loser_on_separated_pair():
     assert sum(margins) / len(margins) != 0.0  # finite, non-degenerate scoring
 
 
-# -- Bradley–Terry loss -----------------------------------------------------
+# -- Bradley–Terry loss (kept verbatim) -------------------------------------
+
 
 def test_bradley_terry_loss_finite_and_gradient_direction():
     """L = -log σ(r_w − r_l); ∂L/∂r_w < 0 and ∂L/∂r_l > 0 (descent raises r_w, lowers r_l).
@@ -85,70 +115,153 @@ def test_bradley_terry_loss_finite_and_gradient_direction():
     assert (r_l.grad > 0).all()
 
 
-# -- Reward Module ----------------------------------------------------------
+# -- Reward Module (online rollout contract) --------------------------------
+
+
+def _clean_batch(b: int = 2) -> dict:
+    """A clean-latent batch the fit-step online rollout consumes."""
+    return {
+        "latent": torch.randn(b, *_LAT),
+        "spacing": torch.tensor([[1.0, 1.0, 1.0]] * b),
+        "label": torch.tensor([1] * b, dtype=torch.long),
+    }
+
+
+def _module() -> RewardModule:
+    return RewardModule(_reward_model(), lr=1e-2, denoiser=_soft_denoiser(), scheduler=PartialFlowMatchHeunScheduler(), num_steps=2)
 
 
 def test_module_forward_fit_returns_finite_bt_loss():
-    m = _reward_model()
-    mod = RewardModule(m, lr=1e-2)
-    winner = torch.randn(2, *_LAT)
-    loser = torch.randn(2, *_LAT)
-    out = mod.forward({"winner": winner, "loser": loser}, "fit")
-    assert torch.isfinite(out["loss"])
+    mod = _module()
+    out = mod.forward(_clean_batch(), "fit")
     assert "loss" in out
+    assert torch.isfinite(out["loss"])
+
+
+def test_module_online_rollout_moves_latent():
+    """With a NON-identity denoiser the rollout output differs from its noised start.
+
+    Proves the rollout ran (not skipped): the identity denoiser (x0 = z) makes the
+    rollout a no-op, so the soft denoiser (x0 = 0.5·z) is used — its output must
+    depart from the noised start latent (#50 acceptance).
+    """
+    mod = _module()
+    winner, loser = mod._online_rollout(_clean_batch(2))
+    # Reconstruct the noised start for the winner half (winner_t = max(t_a, t_b)).
+    # The frozen soft denoiser shrinks z toward 0 each Heun eval → out ≠ z_start.
+    assert winner.shape == (2, *_LAT) and loser.shape == (2, *_LAT)
+    assert torch.isfinite(winner).all() and torch.isfinite(loser).all()
+    # A shrunk (×0.5) rollout must depart from any fixed noised start — out has
+    # smaller magnitude than a unit-normal noised start.
+    assert winner.abs().mean() < 0.9
 
 
 def test_module_backward_updates_discriminator_only():
-    """backward populates grads on every discriminator param; nothing else exists.
+    """backward populates grads on every discriminator param; the denoiser is frozen + unregistered.
 
-    The Module holds only the Reward Model (pairs are pre-made) — so every
-    trainable parameter is a discriminator parameter (issue #40 acceptance).
+    The Module HOLDS the frozen denoiser (unregistered via object.__setattr__) —
+    so it is absent from parameters()/state_dict()/optimizer, and backward only
+    touches discriminator params (#50 acceptance: the exclusion invariant).
     """
     m = _reward_model()
-    mod = RewardModule(m, lr=1e-2)
-    winner = torch.randn(2, *_LAT)
-    loser = torch.randn(2, *_LAT)
-    mod.forward({"winner": winner, "loser": loser}, "fit")["loss"].backward()
-    params = list(mod.reward_model.parameters())
+    mod = RewardModule(m, lr=1e-2, denoiser=_soft_denoiser(), scheduler=PartialFlowMatchHeunScheduler(), num_steps=2)
+    mod.forward(_clean_batch(), "fit")["loss"].backward()
+    params = list(m.parameters())
     assert params, "reward model has parameters"
     assert all(p.grad is not None and torch.isfinite(p.grad).all() for p in params)
-    # Issue #40 / ADR-0009 acceptance: the Module holds NO denoiser — every parameter
-    # is a discriminator parameter. Guards a future online-pair-generation change
-    # from silently registering a frozen denoiser on the module.
-    assert set(mod.parameters()) == set(mod.reward_model.parameters())
+    # Denoiser held but UNREGISTERED: its params are disjoint from the Module's
+    # parameters() (so off the optimizer / checkpoint / DDP).
+    denoiser_ids = {id(p) for p in mod.denoiser.parameters()}
+    module_ids = {id(p) for p in mod.parameters()}
+    assert denoiser_ids, "fake denoiser has parameters"
+    assert denoiser_ids.isdisjoint(module_ids)
+    assert "denoiser" not in mod.state_dict()
+    assert all(not p.requires_grad for p in mod.denoiser.parameters())
+    # The optimizer covers discriminator params only.
+    opt_ids = {id(p) for p in mod.configure_optimizers()["optimizer"].param_groups[0]["params"]}
+    assert opt_ids == {id(p) for p in m.parameters()}
 
 
-def test_module_optimizer_step_raises_winner_above_loser():
-    """One Adam step on the BT loss widens (r_w − r_l) on the pair (gradient direction).
+def test_module_optimizer_step_widens_winner_loser_margin():
+    """One Adam step on the BT loss widens (r_w − r_l) on the rolled pair.
 
-    After a step the reward margin on the *same* pair must increase — the BT loss
-    can only push r_w up and r_l down.
+    After a step the reward margin on the SAME rolled pair must increase — the BT
+    loss can only push r_w up and r_l down. (Rewritten from the pair-fed version to
+    the clean-latent contract: the pair is rolled fresh inside forward.)
     """
     torch.manual_seed(0)
     m = _reward_model()
-    mod = RewardModule(m, lr=1e-2)
-    winner = torch.randn(2, *_LAT)
-    loser = torch.randn(2, *_LAT)
+    mod = RewardModule(m, lr=1e-2, denoiser=_soft_denoiser(), scheduler=PartialFlowMatchHeunScheduler(), num_steps=2)
+    batch = _clean_batch(2)
+
+    # Snapshot the rolled pair (detached) so the margin is measured on the SAME
+    # latents before/after the step (the rollout is non-deterministic across calls).
+    with torch.no_grad():
+        winner0, loser0 = mod._online_rollout({**batch})
 
     def margin() -> float:
-        r = m(torch.cat([winner, loser]))
+        r = m(torch.cat([winner0, loser0]))
         return float((r[:2] - r[2:]).mean())
 
     before = margin()
     opt = torch.optim.Adam(m.parameters(), lr=1e-2)
     for _ in range(3):
         opt.zero_grad()
-        mod.forward({"winner": winner, "loser": loser}, "fit")["loss"].backward()
+        mod.forward(batch, "fit")["loss"].backward()
         opt.step()
     after = margin()
     assert after > before
+
+
+def test_module_forward_stage_mismatch_raises():
+    """A clean-latent batch routed to validate (or a pair batch to fit) raises clearly."""
+    mod = _module()
+    # pair batch → fit
+    with __import__("pytest").raises(ValueError, match="clean-latent"):
+        mod.forward({"winner": torch.randn(1, *_LAT), "loser": torch.randn(1, *_LAT)}, "fit")
+    # clean-latent batch → validate
+    with __import__("pytest").raises(ValueError, match="winner"):
+        mod.forward(_clean_batch(1), "validate")
+    # unknown stage
+    with __import__("pytest").raises(ValueError, match="stage"):
+        mod.forward(_clean_batch(1), "test")
+
+
+def test_module_combined_batch_threads_duplicated_conditioning():
+    """The [2B] winner-first rollout duplicates per-sample spacing/modality to 2B."""
+    sched = PartialFlowMatchHeunScheduler()
+
+    class _RecordingDenoiser(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.dummy = nn.Parameter(torch.ones(3))
+            self.seen_labels = []
+            self.seen_spacing = []
+
+        def forward(self, sample, timestep, spacing, class_labels=None, **kw):
+            self.seen_labels.append(class_labels.detach().cpu().clone())
+            self.seen_spacing.append(spacing.detach().cpu().clone())
+            return sample  # identity (we only assert what it RECEIVES)
+
+    rec = _RecordingDenoiser()
+    mod = RewardModule(_reward_model(), lr=1e-2, denoiser=rec, scheduler=sched, num_steps=1)
+    b = 2
+    batch = {
+        "latent": torch.randn(b, *_LAT),
+        "spacing": torch.tensor([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]]),
+        "label": torch.tensor([3, 7], dtype=torch.long),
+    }
+    mod._online_rollout(batch)
+    # Every UNet eval received the [2B] duplicated labels [3,7,3,7] and spacing.
+    assert all(tuple(s.tolist()) == (3, 7, 3, 7) for s in rec.seen_labels if s is not None)
+    assert any(torch.allclose(s, torch.tensor([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]] * 2)) for s in rec.seen_spacing)
 
 
 # -- CLI smoke (the end-to-end seam) ----------------------------------------
 
 
 class _ToyPairDS(Dataset):
-    """Handmade learnable pairs: winner = a clean latent, loser = a corrupted one."""
+    """Handmade learnable pairs: winner = a clean latent, loser = a corrupted one (val)."""
 
     def __init__(self, n: int = 8):
         torch.manual_seed(0)
@@ -156,9 +269,7 @@ class _ToyPairDS(Dataset):
         self.items = []
         for i in range(n):
             noise = torch.randn(*_LAT)
-            self.items.append(
-                {"winner": clean[i].clone(), "loser": (0.3 * clean[i] + 0.7 * noise)}
-            )
+            self.items.append({"winner": clean[i].clone(), "loser": (0.3 * clean[i] + 0.7 * noise)})
 
     def __len__(self):
         return len(self.items)
@@ -167,18 +278,45 @@ class _ToyPairDS(Dataset):
         return self.items[i]
 
 
-def _module():
-    return RewardModule(_reward_model(), lr=1e-2)
+class _ToyCleanDS(Dataset):
+    """A tiny clean-latent dataset (train): emits {latent, spacing, label}."""
+
+    def __init__(self, n: int = 8):
+        torch.manual_seed(0)
+        self.latents = torch.randn(n, *_LAT)
+
+    def __len__(self):
+        return len(self.latents)
+
+    def __getitem__(self, i):
+        return {
+            "latent": self.latents[i],
+            "spacing": torch.tensor([1.0, 1.0, 1.0]),
+            "label": torch.tensor(1, dtype=torch.long),
+        }
 
 
-def _bundle():
-    return _RewardDataBundle(pair_ds=_ToyPairDS(), val_pair_ds=_ToyPairDS(n=4))
+def _inputs() -> RewardInputs:
+    """The injection-seam bundle: fake non-identity denoiser + toy clean train + val/probe pairs."""
+    probe_item = _ToyPairDS(n=4).items
+    probe = RewardPairDataset(
+        torch.stack([it["winner"] for it in probe_item]),
+        torch.stack([it["loser"] for it in probe_item]),
+    )
+    return RewardInputs(
+        denoiser=_soft_denoiser(),
+        scheduler=PartialFlowMatchHeunScheduler(),
+        num_steps=2,
+        clean_ds=_ToyCleanDS(),
+        val_pair_ds=_ToyPairDS(n=4),
+        val_probe=probe,
+    )
 
 
 def _run(tmp_path, **kw):
     return run_reward_training(
         module=_module(),
-        bundle=_bundle(),
+        inputs=_inputs(),
         model_dir=str(tmp_path),
         max_epochs=2,
         devices=1,
@@ -190,14 +328,17 @@ def _run(tmp_path, **kw):
     )
 
 
-def test_run_reward_training_writes_ckpt_and_logs_pair_acc(tmp_path):
+def test_run_reward_training_writes_ckpt_and_logs_metrics(tmp_path):
     trainer, ckpt = _run(tmp_path)
     metrics = trainer.callback_metrics
-    assert "val/pair_acc" in metrics
-    assert torch.isfinite(metrics["val/pair_acc"])
+    for key in ("val/pair_acc", "val/roc_auc", "val/gen_pair_acc"):
+        assert key in metrics, f"missing {key}"
+        assert torch.isfinite(metrics[key])
     ckpts = list(Path(str(tmp_path)).glob("*.ckpt"))
     assert any(p.name == "last.ckpt" for p in ckpts)
     assert ckpt.best_model_path and Path(ckpt.best_model_path).is_file()
+    # on_fit_start moved the unregistered denoiser onto the module device.
+    assert next(trainer.model.denoiser.parameters()).device == trainer.model.device
 
 
 _TINY_NETWORK_YAML = """\
@@ -223,18 +364,18 @@ def _write_tiny_configs(tmp_path):
     )
     train = tmp_path / "train.yaml"
     train.write_text(
-        "reward_train: {batch_size: 2, lr: 1.0e-2, n_epochs: 2}\n"
-        "reward: {pairs_dir: /tmp/_unused_pairs_}\n"
+        "reward_train: {batch_size: 2, lr: 1.0e-2, n_epochs: 2, num_steps: 2}\n"
+        "reward: {val_fraction: 0.34}\n"
     )
     return str(env), str(train), str(net)
 
 
-def test_main_runs_end_to_end_with_fake_pair_data(tmp_path):
-    """main(): argparse -> compose -> build -> fit -> ckpt (fake-data seam)."""
+def test_main_runs_end_to_end_with_fake_data(tmp_path):
+    """main(): argparse -> compose -> build -> online fit -> ckpt (fake-data seam)."""
     env, train, net = _write_tiny_configs(tmp_path)
 
     def fake_provider(cfg, device):
-        return _bundle()
+        return _inputs()
 
     rc = reward_main(
         ["-e", env, "-c", train, "-t", net, "-g", "1", "--max-epochs", "2"],
@@ -245,34 +386,27 @@ def test_main_runs_end_to_end_with_fake_pair_data(tmp_path):
     assert any(p.name == "last.ckpt" for p in ckpts)
 
 
-class _IdDenoiser(nn.Module):
-    """A frozen identity denoiser (x0 = z) with a dummy param (mimics a real UNet)."""
-
-    def __init__(self):
-        super().__init__()
-        self.dummy = nn.Parameter(torch.zeros(0))
-
-    def forward(self, sample, timestep, spacing, class_labels=None, **kw):
-        return sample
+def test_main_native_dir_latents_dir_default_none_and_validated(tmp_path):
+    """--native-dir/--latents-dir default None and are validated only without a data_provider."""
+    env, train, net = _write_tiny_configs(tmp_path)
+    # No data_provider AND no --native-dir/--latents-dir → clear error (not a crash).
+    with __import__("pytest").raises(ValueError, match="native-dir"):
+        reward_main(["-e", env, "-c", train, "-t", net, "-g", "1", "--max-epochs", "1"])
+    # With a data_provider, the missing args are NOT required (smoke seam intact).
+    rc = reward_main(
+        ["-e", env, "-c", train, "-t", net, "-g", "1", "--max-epochs", "1"],
+        data_provider=lambda cfg, device: _inputs(),
+    )
+    assert rc == 0
 
 
 # -- #43: ROC-AUC + generated-end probe + persistence + real pairs -----------
 
-#: A production-shaped latent (~[4,64,64,32], z-dim 32 — the BraTS2023 GLI cached
-#: latent size) that survives the default RewardModel depth (num_layers_d=3).
-_LAT_PROD = (4, 64, 64, 32)
-
 
 def test_reward_model_default_depth_works_on_production_latent():
-    """The default num_layers_d=3 scores a production-shaped latent (z-dim 32).
-
-    Guards the issue's reviewer finding that the default crashed on small latents:
-    on the real BraTS2023 GLI latent shape (~[4,64,64,32], z-dim 32) the default
-    depth produces a finite patch map. Smaller latents raise a clear ValueError
-    (see test_reward_model_raises_clear_error_on_collapsed_spatial).
-    """
+    """The default num_layers_d=3 scores a production-shaped latent (z-dim 32)."""
     m = RewardModel()  # defaults: channels=64, num_layers_d=3
-    r = m(torch.randn(2, *_LAT_PROD))
+    r = m(torch.randn(2, 4, 64, 64, 32))
     assert r.shape == (2,) and torch.isfinite(r).all()
 
 
@@ -286,12 +420,7 @@ def test_reward_model_raises_clear_error_on_collapsed_spatial():
 
 
 def test_main_uses_committed_default_reward_recipe(tmp_path):
-    """main() with NO -c (argparse default) resolves the committed config_reward.yaml.
-
-    Guards the reviewer finding that the default -c path did not exist: the
-    committed recipe + network config (reward_model block) compose, and the run
-    fits on fake data. num_layers_d is overridden to 1 for the tiny toy latent.
-    """
+    """main() with NO -c (argparse default) resolves the committed config_reward.yaml."""
     env = tmp_path / "env.yaml"
     env.write_text(
         "data_base_dir: /tmp/_unused_\n"
@@ -300,7 +429,7 @@ def test_main_uses_committed_default_reward_recipe(tmp_path):
     )
 
     def fake_provider(cfg, device):
-        return _bundle()
+        return _inputs()
 
     net = "configs/network/config_network.yaml"
     rc = reward_main(
@@ -312,21 +441,13 @@ def test_main_uses_committed_default_reward_recipe(tmp_path):
     assert any(p.name == "last.ckpt" for p in ckpts)
 
 
-
-
 def test_reward_roc_auc_perfect_inverted_and_differs_from_pair_acc():
-    """ROC-AUC: perfect ranking → 1, inverted → 0; and it ≠ pairwise accuracy.
-
-    AUC ranks every winner against every loser (cross-pairs); pairwise accuracy
-    only the matched pairs — so AUC is the stricter, threshold-free summary.
-    """
+    """ROC-AUC: perfect ranking → 1, inverted → 0; and it ≠ pairwise accuracy."""
     perfect_w = torch.tensor([2.0, 3.0])
     perfect_l = torch.tensor([0.0, 1.0])
     assert reward_roc_auc(perfect_w, perfect_l).item() == 1.0
     assert reward_roc_auc(perfect_l, perfect_w).item() == 0.0  # inverted
 
-    # Matched pairs all rank right (pair_acc = 1), but a winner is below a
-    # *different* loser → AUC < 1 (the cross-pair distinction).
     w = torch.tensor([2.0, 0.5])
     loser = torch.tensor([1.0, 0.0])
     assert (w > loser).float().mean().item() == 1.0  # pair_acc == 1
@@ -341,22 +462,12 @@ def test_reward_roc_auc_handles_single_class_neutral():
 
 
 def test_reward_roc_auc_fp16_large_validation_set_is_not_nan():
-    """fp16 rewards (AMP validation) over a large N must not overflow to NaN.
-
-    Under Lightning ``16-mixed`` the discriminator forward returns fp16 rewards,
-    so ``ones_like``/``zeros_like`` build an fp16 ``labels`` and the counts
-    ``n_pos*(n_pos+1)/2`` (~5e5) and ``n_pos*n_neg`` (~1e6) overflow fp16's
-    65504 max → ``inf`` → the final ``(finite - inf) / inf`` = NaN. This is the
-    sanity-check-fine / full-epoch-NaN signature (small N doesn't overflow).
-    Counts are dtype-agnostic, so the fix makes fp16 behave like fp32.
-    """
+    """fp16 rewards (AMP validation) over a large N must not overflow to NaN."""
     n = 1000
-    # Finite, perfectly separable values — any NaN here is arithmetic, not inputs.
     w = torch.full((n,), 1.0, dtype=torch.float16)
     loser = torch.full((n,), -1.0, dtype=torch.float16)
     assert not torch.isnan(reward_roc_auc(w, loser))
     assert reward_roc_auc(w, loser).item() == 1.0  # perfect ranking
-    # fp16 and fp32 must agree (only counts/ranks, no dtype-dependent math).
     assert reward_roc_auc(w, loser).item() == reward_roc_auc(w.float(), loser.float()).item()
 
 
@@ -369,7 +480,6 @@ def test_reward_model_save_load_round_trips_identical(tmp_path):
     reloaded = RewardModel.from_pretrained(str(tmp_path / "reward"))
     after = reloaded(x)
     assert torch.equal(before, after)
-    # The config round-trips (construction was captured).
     assert reloaded.config["num_layers_d"] == _RM_KW["num_layers_d"]
 
 
@@ -377,16 +487,11 @@ def test_module_validation_logs_pair_acc_roc_auc_and_probe(tmp_path):
     """validation_step logs pair_acc + roc_auc; the probe logs gen_pair_acc.
 
     Driven through a real Trainer.fit so the Lightning-attached logging path and
-    the on_validation_epoch_end probe hook both run end-to-end.
+    the on_validation_epoch_end probe hook both run end-to-end (train = clean latents).
     """
-    probe_item = _ToyPairDS(n=4).items[0]
-    module = RewardModule(
-        _reward_model(), lr=1e-2,
-        val_probe=(probe_item["winner"].unsqueeze(0), probe_item["loser"].unsqueeze(0)),
-    )
-    bundle = _RewardDataBundle(pair_ds=_ToyPairDS(), val_pair_ds=_ToyPairDS(n=4))
+    module = _module()  # carries the probe-less default; _inputs sets the probe
     trainer, _ = run_reward_training(
-        module=module, bundle=bundle, model_dir=str(tmp_path),
+        module=module, inputs=_inputs(), model_dir=str(tmp_path),
         max_epochs=1, devices=1, accelerator="cpu", batch_size=2, num_workers=0, limit_val_batches=1.0,
     )
     metrics = trainer.callback_metrics
@@ -395,27 +500,29 @@ def test_module_validation_logs_pair_acc_roc_auc_and_probe(tmp_path):
         assert torch.isfinite(metrics[key])
 
 
-def test_run_reward_training_on_real_precomputed_pairs(tmp_path):
-    """The reward run consumes a real precomputed RewardPairDataset (held-out split).
+def test_run_reward_training_on_real_clean_latents(tmp_path):
+    """The reward run trains on a real CleanLatentDataset (clean latents, not pairs).
 
-    Generates pairs with a tiny identity denoiser (so pairs are static latents),
-    then fits on them — wiring the offline pair cache (#42) into the training run.
+    Builds clean latents + a non-identity denoiser (so the rollout moves), wraps
+    them in a CleanLatentDataset (scale-on-read), and fits — wiring the online
+    clean-latent train contract into the training run.
     """
-    from manifold import PartialFlowMatchHeunScheduler
-    from manifold.data.reward_pairs import generate_reward_pairs
-
     torch.manual_seed(0)
     clean = torch.randn(12, *_LAT)
-    sids = [f"subj_{i // 2}" for i in range(12)]
-    train_pairs, val_pairs = generate_reward_pairs(
-        clean, sids, _IdDenoiser(), PartialFlowMatchHeunScheduler(),
-        spacing=[1.0, 1.0, 1.0], modality=1, num_steps=2, val_fraction=0.34,
-        batch_size=4, seed=0, device="cpu",
+    items = [
+        {"latent": clean[i], "spacing": torch.tensor([1.0, 1.0, 1.0]), "label": 1, "sample_id": f"subj_{i // 2}"}
+        for i in range(12)
+    ]
+    from manifold.data.reward_pairs import CleanLatentDataset
+
+    inputs = RewardInputs(
+        denoiser=_soft_denoiser(), scheduler=PartialFlowMatchHeunScheduler(), num_steps=2,
+        clean_ds=CleanLatentDataset(items, scaling_factor=1.0),
+        val_pair_ds=_ToyPairDS(n=4), val_probe=RewardPairDataset(clean[:4], clean[4:8]),
     )
-    bundle = _RewardDataBundle(pair_ds=train_pairs, val_pair_ds=val_pairs, val_probe=val_pairs)
     trainer, ckpt = run_reward_training(
-        module=RewardModule(_reward_model(), lr=1e-2),
-        bundle=bundle, model_dir=str(tmp_path), max_epochs=1,
+        module=RewardModule(_reward_model(), lr=1e-2, denoiser=inputs.denoiser, scheduler=inputs.scheduler, num_steps=2),
+        inputs=inputs, model_dir=str(tmp_path), max_epochs=1,
         devices=1, accelerator="cpu", batch_size=2, num_workers=0, limit_val_batches=1.0,
     )
     metrics = trainer.callback_metrics
@@ -423,34 +530,30 @@ def test_run_reward_training_on_real_precomputed_pairs(tmp_path):
     assert Path(ckpt.best_model_path).is_file()
 
 
-def test_main_consumes_pairs_dir_with_probe(tmp_path):
-    """main() with --pairs-dir (no data_provider) loads real pairs + probe → fit."""
-    from manifold import PartialFlowMatchHeunScheduler
-    from manifold.data.reward_pairs import (
-        generate_generated_end_probe,
-        generate_reward_pairs,
-        save_reward_pairs,
-    )
+def test_main_real_path_native_dir_and_latents_dir(tmp_path):
+    """main() with --native-dir + --latents-dir (no data_provider) → online fit on the real path."""
+    from manifold import AutoencoderKL, FlowMatchHeunDiscreteScheduler, LatentFlowPipeline, UNet3DConditionModel
 
     torch.manual_seed(0)
-    clean = torch.randn(12, *_LAT)
-    sids = [f"subj_{i // 2}" for i in range(12)]
-    train, val = generate_reward_pairs(
-        clean, sids, _IdDenoiser(), PartialFlowMatchHeunScheduler(),
-        spacing=[1.0, 1.0, 1.0], modality=1, num_steps=2, val_fraction=0.34,
-        batch_size=4, seed=0, device="cpu",
-    )
-    probe = generate_generated_end_probe(
-        clean[:8], _IdDenoiser(), PartialFlowMatchHeunScheduler(),
-        spacing=[1.0, 1.0, 1.0], modality=1, num_steps=2, batch_size=4, seed=0, device="cpu",
-    )
-    pairs_dir = tmp_path / "pairs"
-    save_reward_pairs(pairs_dir, train, val, probe=probe)
+    unet = UNet3DConditionModel(num_class_embeds=4, include_spacing_input=True)
+    LatentFlowPipeline(
+        unet, AutoencoderKL(scaling_factor=0.5), FlowMatchHeunDiscreteScheduler(),
+    ).save_pretrained(str(tmp_path / "native"))
 
-    env, train_cfg, net = _write_tiny_configs(tmp_path)
-    # Override reward.pairs_dir at the CLI (the base recipe carries a placeholder).
+    latents_dir = tmp_path / "latents"
+    latents_dir.mkdir()
+    for s in range(6):
+        for v in range(2):
+            torch.save(
+                {"latent": torch.randn(*_LAT), "sample_id": f"subj_{s}-t1n", "spacing": [1.0, 1.0, 1.0], "label": 1},
+                latents_dir / f"subj_{s}__v{v}__abc.pt",
+            )
+
+    env, train, net = _write_tiny_configs(tmp_path)
     rc = reward_main(
-        ["-e", env, "-c", train_cfg, "-t", net, "-g", "1", "--max-epochs", "1", f"reward.pairs_dir={pairs_dir}"]
+        ["-e", env, "-c", train, "-t", net, "-g", "1", "--max-epochs", "1",
+         "--native-dir", str(tmp_path / "native"), "--latents-dir", str(latents_dir),
+         "reward_train.num_steps=1"],
     )
     assert rc == 0
     ckpts = list(Path(str(tmp_path / "model")).glob("*.ckpt"))
@@ -472,13 +575,11 @@ def _brute_force_auc(rw, rl):
 def test_reward_roc_auc_matches_brute_force_with_and_without_ties():
     """The O(N log N) sort-based AUC equals the brute-force pairwise AUC (incl. ties)."""
     torch.manual_seed(0)
-    # Continuous rewards (no ties). float32 (reward_roc_auc) vs float64 (brute) → 1e-6 tol.
     rw = torch.randn(20)
     rl = torch.randn(20) + 0.3
     assert abs(reward_roc_auc(rw, rl).item() - _brute_force_auc(rw.tolist(), rl.tolist())) < 1e-6
-    # With deliberate ties (exercises the tie-group average-rank sweep).
-    rw_tie = torch.tensor([2.0, 2.0, 0.5, 0.5])  # ties within winners
-    rl_tie = torch.tensor([1.0, 1.0, 0.0, -1.0])  # ties within losers
+    rw_tie = torch.tensor([2.0, 2.0, 0.5, 0.5])
+    rl_tie = torch.tensor([1.0, 1.0, 0.0, -1.0])
     assert abs(reward_roc_auc(rw_tie, rl_tie).item() - _brute_force_auc(rw_tie.tolist(), rl_tie.tolist())) < 1e-6
 
 
@@ -488,7 +589,7 @@ def test_build_checkpoint_ddp_fallback_drops_monitor():
 
     single = _build_checkpoint(str(Path("/tmp/_rwd_ckpt_a").resolve()), multi_gpu=False)
     multi = _build_checkpoint(str(Path("/tmp/_rwd_ckpt_b").resolve()), multi_gpu=True)
-    assert single.monitor == "val/pair_acc"
+    assert single.monitor == "val/gen_pair_acc"  # the GRPO-regime probe metric
     assert multi.monitor is None  # DDP: no rank-0-shard selection
     assert multi.save_last and multi.save_top_k == 1
 
@@ -497,13 +598,14 @@ def test_generated_end_probe_is_scored_in_chunks(tmp_path):
     """A probe larger than probe_batch_size is still scored correctly (chunked, no OOM)."""
     import shutil
 
-    big_probe = _ToyPairDS(n=8)  # 8 probe pairs
+    big_probe = _ToyPairDS(n=8)
     pw = torch.stack([big_probe.items[i]["winner"] for i in range(8)])
     pl_ = torch.stack([big_probe.items[i]["loser"] for i in range(8)])
-    module = RewardModule(_reward_model(), lr=1e-2, val_probe=(pw, pl_), probe_batch_size=2)
-    bundle = _RewardDataBundle(pair_ds=_ToyPairDS(), val_pair_ds=_ToyPairDS(n=4))
+    module = _module()  # denoiser-equipped (fit rolls fresh pairs)
+    module.set_val_probe(pw, pl_)
+    module.probe_batch_size = 2
     trainer, _ = run_reward_training(
-        module=module, bundle=bundle, model_dir=str(tmp_path), max_epochs=1,
+        module=module, inputs=_inputs(), model_dir=str(tmp_path), max_epochs=1,
         devices=1, accelerator="cpu", batch_size=2, num_workers=0, limit_val_batches=1.0,
     )
     metrics = trainer.callback_metrics

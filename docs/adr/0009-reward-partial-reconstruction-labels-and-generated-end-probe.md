@@ -1,5 +1,15 @@
 # Reward via partial-reconstruction labels — and measuring the train/inference gap with a generated-end probe
 
+> **Amended by [ADR-0010](0010-online-rollout-in-the-loop-preference-pairs.md)** —
+> the preference-pair *definition* changes: pairs are now generated **online each
+> training step** from the **full-range** `[0, 1)` distribution (winner = larger-`t`
+> half, loser = smaller-`t`), not from the disjoint `[0.5, 1) / [0, 0.5)` halves
+> described below. The disjoint split let a single clean-ness threshold separate
+> every pair (`val/pair_acc` saturated at 0.997 in epoch 0); the full-range ordered
+> design makes the winner/loser corruption distributions overlap, destroying that
+> shortcut. The generated-end **probe** rationale here is unchanged and is now the
+> checkpoint's selection metric (`val/gen_pair_acc`).
+
 The GRPO reward model is trained on **preference pairs built from partial
 reconstructions**: noise a clean latent to a flow-time `t`, denoise back to clean
 with the frozen JiT denoiser, and label by corruption level — the **winner** is

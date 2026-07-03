@@ -9,7 +9,13 @@ true two-evaluation Heun, using the
 (:meth:`~manifold.FlowMatchHeunDiscreteScheduler.euler_step` / :meth:`heun_correct`,
 inherited verbatim) are the scheduler's; only the loop lives here. The denoiser is
 the frozen JiT export (ADR-0006) — the GRPO starting policy — run under
-``inference_mode`` so no state is captured.
+``no_grad`` (not ``inference_mode``): the same no-activation-retention, but the
+output is a plain tensor that a downstream discriminator can ``backward`` through
+(an ``inference_mode`` tensor carries a flag PyTorch forbids saving for backward).
+Online reward training feeds this output straight into the discriminator's fit
+step (issue #48/#50); the offline path ``.detach()``'s it regardless. The parity
+with ``sample_latent_flow`` (ADR-0008) is preserved — ``no_grad`` and
+``inference_mode`` run identical math; only the tensor's flag differs.
 
 The caller noises the clean latent via the scheduler's transport
 (``scheduler.add_noise(clean, noise, t_start)``) so the rollout's start matches
@@ -58,8 +64,22 @@ def partial_denoise_rollout(
     device = next(unet.parameters()).device
     dtype = next(unet.parameters()).dtype
     batch_size = z_start.shape[0]
+    # Surface an off-by-one combined-batch as a clear error (not a MAISI-internal
+    # crash): the online fit step concatenates a [2B] winner-first batch, and a
+    # mismatched z_start / t_start / per-sample-spacing would otherwise blow up
+    # deep inside the UNet (issue #50).
+    if t_start.shape[0] != batch_size:
+        raise ValueError(
+            f"z_start batch ({batch_size}) != t_start ({t_start.shape[0]}); "
+            "the combined winner-first batch must align."
+        )
 
     spacing_t = torch.as_tensor(spacing, device=device)
+    if spacing_t.dim() == 2 and spacing_t.shape[0] != batch_size:
+        raise ValueError(
+            f"per-sample spacing rows ({spacing_t.shape[0]}) != batch ({batch_size}); "
+            "a [B,3] spacing must be duplicated to the combined batch size."
+        )
     # modality may be a scalar (broadcast across the batch) or a per-sample
     # ``(B,)`` long tensor (a heterogeneous, multi-contrast cache). spacing may be
     # ``[3]`` (broadcast) or ``[B, 3]`` (per-sample) — the UNet wrapper handles both.
@@ -71,7 +91,11 @@ def partial_denoise_rollout(
 
     z = z_start.to(device=device, dtype=dtype)
     unet.eval()
-    with torch.inference_mode():
+    # no_grad (not inference_mode): the discriminator in the online fit step must
+    # backward through this output, and PyTorch forbids saving an inference_mode
+    # tensor for backward (detach/clone don't clear the flag). no_grad keeps the
+    # no-activation-retention while yielding a backward-safe tensor (issue #49).
+    with torch.no_grad():
         # Autocast the Heun rollout on cuda (mirrors sample_latent_flow); disabled
         # off-cuda so CPU results are bit-identical to the no-autocast path.
         with torch.autocast(device_type=device.type, enabled=device.type == "cuda"):

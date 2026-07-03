@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Sequence
+from typing import Any, Sequence
 
 import torch
 from torch import Tensor
@@ -259,11 +259,140 @@ def load_reward_pairs(
     )
 
 
-def generate_generated_end_probe(
+# -- online real-data wiring (issues #48/#51) --------------------------------
+
+
+def _subject_id(sample_id: str, regex: str | None = None) -> str:
+    """Derive a true subject id from a cache ``sample_id`` / file stem.
+
+    BraTS contrast files of one subject differ in the trailing contrast token
+    (``BraTS-GLI-0000-000-t1n`` vs ``-t1c``); the full id would split one subject
+    across train/val. By default the last ``-<token>`` is stripped (BraTS
+    convention). ``regex`` (one capture group) overrides for other naming.
+    """
+    import re
+
+    if regex:
+        m = re.match(regex, sample_id)
+        return m.group(1) if (m and m.groups()) else sample_id
+    return sample_id.rsplit("-", 1)[0] if "-" in sample_id else sample_id
+
+
+def load_cached_latents(
+    latents_dir: str | Path, subject_regex: str | None = None
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """Load cached ``.pt`` latent items (**unscaled**) + subject ids from a cache dir.
+
+    Shared by the offline generation script and the online real-data path. Items
+    are latent-cache dicts ``{latent (unscaled), spacing, label, sample_id}``; a
+    bare-tensor file yields ``spacing``/``label`` absent (the consumer supplies
+    defaults). The subject id is the dict's ``sample_id`` if present, else the file
+    stem, grouped via :func:`_subject_id`. **Scaling is applied by the consumer**
+    (:class:`CleanLatentDataset` scale-on-read for train; pre-scaled tensor for
+    val/probe gen) — never here, so the cache stays scale-independent (ADR-0003).
+    """
+    latents_dir = Path(latents_dir)
+    files = sorted(p for p in latents_dir.glob("*.pt") if ".tmp.r" not in p.name)
+    if not files:
+        raise FileNotFoundError(f"No .pt latents under {latents_dir}.")
+    items: list[dict[str, Any]] = []
+    subject_ids: list[str] = []
+    for path in files:
+        blob = torch.load(path, map_location="cpu", weights_only=True)
+        if isinstance(blob, dict) and "latent" in blob:
+            sid_raw = str(blob.get("sample_id", path.stem))
+            items.append(
+                {
+                    "latent": blob["latent"].float(),
+                    "spacing": blob.get("spacing"),
+                    "label": blob.get("label"),
+                    "sample_id": sid_raw,
+                }
+            )
+        else:
+            sid_raw = path.stem
+            items.append({"latent": blob.float(), "spacing": None, "label": None, "sample_id": sid_raw})
+        subject_ids.append(_subject_id(sid_raw, subject_regex))
+    return items, subject_ids
+
+
+def partition_subjects(
+    subject_ids: Sequence[str], *, val_fraction: float = 0.2, seed: int = 0
+) -> tuple[set[str], set[str]]:
+    """Seeded held-out-**subject** split → ``(train_subjects, val_subjects)`` sets.
+
+    A subject's contrasts (multiple cache items sharing one subject id) land wholly
+    in train or val — no subject spans both, so validation measures generalization
+    and the discriminator never trains on a validation subject (the leakage guard
+    is enforced at the train-dataloader construction, issue #51).
+    """
+    unique = sorted(set(subject_ids))
+    g = torch.Generator().manual_seed(seed)
+    perm = torch.randperm(len(unique), generator=g).tolist()
+    n_val = max(1, min(len(unique) - 1, int(round(len(unique) * val_fraction)))) if len(unique) > 1 else 0
+    val_subjects = {unique[i] for i in perm[:n_val]}
+    return set(unique) - val_subjects, val_subjects
+
+
+def maybe_per_sample(items: Sequence[Any], fallback: Any) -> Any:
+    """Per-sample tensor if every item is present, else the broadcast fallback.
+
+    A length-``N`` sequence of per-sample conditioning (spacing / label) becomes a
+    stacked ``[N, ...]`` tensor when all entries are present; any ``None`` (a
+    bare-tensor cache file lacking that field) collapses to the scalar/sequence
+    fallback used across the whole batch.
+    """
+    if len(items) > 0 and all(it is not None for it in items):
+        return torch.stack([torch.as_tensor(it) for it in items])
+    return fallback
+
+
+class CleanLatentDataset(Dataset):
+    """In-RAM clean-latent dataset (scale-on-read) for online reward training.
+
+    Reads warmed latent-cache items (**unscaled**) and emits
+    ``{latent (scaled), spacing, label, sample_id}`` — the clean-latent batch the
+    :class:`~manifold.modules.RewardModule` fit-step online rollout consumes. The
+    ``scale_factor`` (the native VAE's) is applied exactly once on read
+    (ADR-0003), so the frozen denoiser sees its training space. Restricted to a
+    subject subset (train subjects) at construction — the held-out-subject split is
+    enforced here, at the data level (no validation subject ever reaches fit).
+    """
+
+    _DEFAULT_SPACING = torch.tensor([1.0, 1.0, 1.0])
+
+    def __init__(self, items: list[dict[str, Any]], scaling_factor: float = 1.0) -> None:
+        self.items = items
+        self.scaling_factor = float(scaling_factor)
+
+    def __len__(self) -> int:
+        return len(self.items)
+
+    def __getitem__(self, index: int) -> dict[str, Any]:
+        item = self.items[index]
+        latent = item["latent"].float() * self.scaling_factor  # scale-on-read (once)
+        label = item["label"]
+        if not torch.is_tensor(label):
+            label = torch.tensor(int(label) if label is not None else 0, dtype=torch.long)
+        spacing = item["spacing"]
+        if spacing is None:
+            spacing = self._DEFAULT_SPACING
+        out: dict[str, Any] = {
+            "latent": latent,
+            "spacing": torch.as_tensor(spacing, dtype=torch.float32),
+            "label": label,
+        }
+        if "sample_id" in item:
+            out["sample_id"] = item["sample_id"]
+        return out
+
+
+def _generate_ordered_pairs(
     clean_latents: Tensor | Sequence[Tensor],
     denoiser,
     scheduler: PartialFlowMatchHeunScheduler,
     *,
+    t_range: tuple[float, float],
     spacing: Sequence[float] | Tensor,
     modality: int | Sequence[int] | Tensor,
     num_steps: int,
@@ -271,16 +400,14 @@ def generate_generated_end_probe(
     seed: int = 0,
     device: torch.device | str | None = None,
 ) -> RewardPairDataset:
-    """Build the generated-end probe: both samples from ``t ∈ [0, 0.5]``, ordered by ``t``.
+    """Ordered preference pairs: ``t_a, t_b ~ U[t_range]``; ``winner_t = max``, ``loser_t = min``.
 
-    Distinct from the reconstruction pairs (winner near-clean, loser near-noise):
-    here **both** samples are heavily corrupted (``t ∈ [0, 0.5)``), with the
-    *winner* the less-corrupted one (higher ``t``). This directly tests whether the
-    reward — calibrated on reconstruction pairs — ranks quality *within the
-    all-generated regime GRPO actually operates in*, not just real-vs-generated.
-
-    For each clean latent two ``t``'s are drawn ``~ U[0, 0.5)``; the larger is the
-    winner's start, the smaller the loser's (both denoised with the shared budget).
+    Shared by :func:`generate_generated_end_probe` (``t_range = [0, 0.5)`` — the
+    generated regime) and :func:`generate_full_range_val_pairs`
+    (``t_range = [0, 1)`` — mirroring the online train distribution). Both halves
+    are noised via the scheduler transport and partial-denoised with the shared
+    budget; the winner is the less-corrupted (higher ``t``) sample. ``torch.rand``
+    is half-open, so ``high`` is never sampled (``t == 1`` is precluded).
     """
     clean = clean_latents if isinstance(clean_latents, Tensor) else torch.stack(list(clean_latents))
     device = torch.device(device) if device is not None else next(denoiser.parameters()).device
@@ -291,14 +418,13 @@ def generate_generated_end_probe(
     if not isinstance(modality, (int, float, Tensor)):
         modality = torch.as_tensor(modality)
 
-    # Device-aware generator (a CPU generator raises when handed to torch.randn on CUDA).
-    gen = torch.Generator(device=device).manual_seed(seed)
+    gen = torch.Generator(device=device).manual_seed(seed)  # device-aware (CPU gen raises on CUDA)
     winners, losers = [], []
     for start in range(0, len(clean), batch_size):
         batch = clean[start : start + batch_size].to(device)
         b = batch.shape[0]
-        t_a = _sample_t(0.0, 0.5, b, gen, device=device)
-        t_b = _sample_t(0.0, 0.5, b, gen, device=device)
+        t_a = _sample_t(*t_range, b, gen, device=device)
+        t_b = _sample_t(*t_range, b, gen, device=device)
         winner_t = torch.maximum(t_a, t_b)
         loser_t = torch.minimum(t_a, t_b)
         noise_w = torch.randn(batch.shape, generator=gen, device=device)
@@ -317,8 +443,65 @@ def generate_generated_end_probe(
             .detach()
             .cpu()
         )
-    _log.info(
-        "generate_generated_end_probe: %d probe pairs (both t ∈ [0, 0.5)).",
-        sum(w.shape[0] for w in winners),
-    )
     return RewardPairDataset(torch.cat(winners), torch.cat(losers))
+
+
+def generate_generated_end_probe(
+    clean_latents: Tensor | Sequence[Tensor],
+    denoiser,
+    scheduler: PartialFlowMatchHeunScheduler,
+    *,
+    spacing: Sequence[float] | Tensor,
+    modality: int | Sequence[int] | Tensor,
+    num_steps: int,
+    batch_size: int = 4,
+    seed: int = 0,
+    device: torch.device | str | None = None,
+) -> RewardPairDataset:
+    """Build the generated-end probe: both samples from ``t ∈ [0, 0.5)``, ordered by ``t``.
+
+    Distinct from the reconstruction pairs (winner near-clean, loser near-noise):
+    here **both** samples are heavily corrupted (``t ∈ [0, 0.5)``), with the
+    *winner* the less-corrupted one (higher ``t``). This directly tests whether the
+    reward — calibrated on the full-range online train distribution — ranks quality
+    *within the all-generated regime GRPO actually operates in*. This is the
+    GRPO-regime metric the checkpoint monitors (``val/gen_pair_acc``).
+    """
+    probe = _generate_ordered_pairs(
+        clean_latents, denoiser, scheduler,
+        t_range=(0.0, 0.5), spacing=spacing, modality=modality, num_steps=num_steps,
+        batch_size=batch_size, seed=seed, device=device,
+    )
+    _log.info("generate_generated_end_probe: %d probe pairs (both t ∈ [0, 0.5)).", len(probe))
+    return probe
+
+
+def generate_full_range_val_pairs(
+    clean_latents: Tensor | Sequence[Tensor],
+    denoiser,
+    scheduler: PartialFlowMatchHeunScheduler,
+    *,
+    spacing: Sequence[float] | Tensor,
+    modality: int | Sequence[int] | Tensor,
+    num_steps: int,
+    batch_size: int = 4,
+    seed: int = 0,
+    device: torch.device | str | None = None,
+) -> RewardPairDataset:
+    """Full-range ``[0, 1)`` ordered validation pairs mirroring the online train distribution.
+
+    For each clean latent two ``t``'s are drawn ``~ U[0, 1)``; the larger is the
+    winner's start, the smaller the loser's — exactly the online fit-step rollout's
+    mechanic (ADR-0010). So ``val/pair_acc`` reflects the new (de-saturated)
+    train distribution for diagnosis, instead of the old disjoint
+    ``[0.5, 1) / [0, 0.5)`` halves that a single clean-ness threshold could
+    trivially separate. Validation is rolled once at startup (the denoiser is
+    frozen ⇒ these pairs are static across epochs), not re-rolled every epoch.
+    """
+    val = _generate_ordered_pairs(
+        clean_latents, denoiser, scheduler,
+        t_range=(0.0, 1.0), spacing=spacing, modality=modality, num_steps=num_steps,
+        batch_size=batch_size, seed=seed, device=device,
+    )
+    _log.info("generate_full_range_val_pairs: %d full-range val pairs.", len(val))
+    return val

@@ -38,66 +38,11 @@ import torch  # noqa: E402
 from manifold.data.reward_pairs import (  # noqa: E402
     generate_generated_end_probe,
     generate_reward_pairs,
+    load_cached_latents,
     load_frozen_denoiser,
+    maybe_per_sample,
     save_reward_pairs,
 )
-
-
-def _subject_id(sample_id: str, regex) -> str:
-    """Derive a true subject id from a cache sample_id / file stem.
-
-    BraTS contrast files of one subject differ in the trailing contrast token
-    (``BraTS-GLI-0000-000-t1n`` vs ``-t1c``); the full id would split one subject
-    across train/val. By default the last ``-<token>`` is stripped (BraTS
-    convention). ``--subject-regex`` (one capture group) overrides for other naming.
-    """
-    import re
-
-    if regex:
-        m = re.match(regex, sample_id)
-        return m.group(1) if (m and m.groups()) else sample_id
-    return sample_id.rsplit("-", 1)[0] if "-" in sample_id else sample_id
-
-
-def _load_clean_latents(
-    latents_dir: Path, subject_regex, scaling_factor: float
-) -> tuple[torch.Tensor, list[str], list, list]:
-    """Load **scaled** clean latents + subject ids + per-sample spacing/label.
-
-    Latent-cache items are ``{"latent", "spacing", "label", "sample_id"}`` storing
-    the **unscaled** latent (scale-on-read happens at training ``__getitem__``);
-    *scaling_factor* (the native VAE's) is applied here so the returned latents are
-    already in the frozen denoiser's training space — no raw, unscaled tensor ever
-    reaches the rollout. Per-sample ``spacing`` / ``label`` are collected so a
-    heterogeneous (multi-contrast) cache conditions each rollout correctly; a
-    plain-tensor file yields ``None`` (fall back to globals).
-    """
-    files = sorted(p for p in latents_dir.glob("*.pt") if not p.name.endswith(".tmp.r0.p0"))
-    if not files:
-        raise FileNotFoundError(f"No .pt latents under {latents_dir}.")
-    latents, subject_ids, spacings, labels = [], [], [], []
-    for path in files:
-        item = torch.load(path, map_location="cpu", weights_only=True)
-        if isinstance(item, dict) and "latent" in item:
-            latent = item["latent"]
-            sid_raw = str(item.get("sample_id", path.stem))
-            spacings.append(item.get("spacing"))
-            labels.append(item.get("label"))
-        else:
-            latent = item
-            sid_raw = path.stem
-            spacings.append(None)
-            labels.append(None)
-        latents.append(latent.float() * float(scaling_factor))  # → denoiser's scaled space
-        subject_ids.append(_subject_id(sid_raw, subject_regex))
-    return torch.stack(latents), subject_ids, spacings, labels
-
-
-def _maybe_per_sample(items, n: int, fallback):
-    """Build a per-sample tensor if every item is present, else the broadcast fallback."""
-    if items and all(it is not None for it in items):
-        return torch.stack([torch.as_tensor(it) for it in items])
-    return fallback
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -127,16 +72,17 @@ def main(argv: list[str] | None = None) -> int:
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     # Load the frozen denoiser first so its VAE scaling_factor scales the cached
-    # latents into the denoiser's training space inside _load_clean_latents (the
-    # latent cache stores UNSCALED latents — ADR-0003).
+    # latents into the denoiser's training space (the latent cache stores UNSCALED
+    # latents — ADR-0003).
     denoiser, scheduler, scaling_factor = load_frozen_denoiser(args.native_dir)
     denoiser.to(device)
-    clean, subject_ids, spacings, labels = _load_clean_latents(
-        Path(args.latents_dir), args.subject_regex, scaling_factor
-    )
-
-    spacing_arg = _maybe_per_sample(spacings, len(clean), args.spacing)
-    modality_arg = _maybe_per_sample(labels, len(clean), args.modality)
+    items, subject_ids = load_cached_latents(Path(args.latents_dir), args.subject_regex)
+    # Pre-scale the clean latents into the denoiser's training space (no raw,
+    # unscaled tensor ever reaches the rollout); per-sample spacing/label condition
+    # a heterogeneous (multi-contrast) cache, falling back to the CLI globals.
+    clean = torch.stack([it["latent"] for it in items]).float() * float(scaling_factor)
+    spacing_arg = maybe_per_sample([it["spacing"] for it in items], args.spacing)
+    modality_arg = maybe_per_sample([it["label"] for it in items], args.modality)
 
     train, val = generate_reward_pairs(
         clean,
