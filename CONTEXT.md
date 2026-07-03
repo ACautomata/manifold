@@ -123,18 +123,35 @@ _Avoid_: discriminator (that denotes the wrapped MONAI class itself), critic.
 
 **Reward Module** (reward-training Module):
 The `spt.Module` owning reward-training-only concerns — preference-pair
-construction, the pairwise preference loss, and its optimizer wiring. Distinct from
-the **Reward Model** (the network it trains) and the JiT **Module** (whose denoiser
-it consumes frozen).
+construction, the pairwise preference loss, and its optimizer wiring. In online
+training (ADR-0010) it **holds the frozen JiT x0-denoiser** (unregistered, so off
+the checkpoint/optimizer) and rolls fresh preference pairs each fit step
+(*online rollout*); validation pairs + the generated-end probe are precomputed
+once. Distinct from the **Reward Model** (the network it trains) and the JiT
+**Module** (whose denoiser it consumes frozen).
 _Avoid_: reward trainer, reward Lightning module.
+
+**Online rollout** (reward):
+The per-fit-step preference-pair rollout the Reward Module runs with the frozen
+JiT denoiser: for each clean latent draw `t_a, t_b ~ U[0, 1)`, noise to each, and
+partial-denoise both — winner = larger-`t` half, loser = smaller-`t` (label by
+input corruption level). Both halves share the `[0, 1)` distribution, so the
+winner/loser corruption ranges **overlap** (de-saturation), and the denoiser
+produces no gradients. Distinct from the one-time **val/probe precompute** (also a
+partial-denoise rollout, but run once at startup over held-out subjects).
+_Avoid_: pair cache, online sampling.
 
 **Preference pair** (winner / loser):
 Two latents built by noising the same clean latent to a flow-time `t` then denoising
-back to clean. The **winner** is lightly corrupted (`t_w ∈ [0.5, 1)`, near-clean);
-the **loser** heavily corrupted (`t_l ∈ [0, 0.5)`, near-noise) — both denoised with
-the same step budget. The ranges are half-open at 1 so `t = 1` is never sampled
-(there the step-start denominator `1 − t` would vanish). Built on the Scheduler's transport and `t→1 = clean`
-convention (ADR-0001), so "more noise" is *smaller* `t`.
+back to clean with the frozen JiT denoiser (ADR-0010). Both `t`'s are drawn from the
+**full-range** `[0, 1)`; the **winner** is the larger-`t` (less-corrupted) half, the
+**loser** the smaller-`t` — labeled by *input* corruption level, both denoised with
+the same Heun step budget. `t` uses half-open `U[0, 1)` so `t = 1` is never sampled
+(there the step-start denominator `1 − t` would vanish). Because the two `t`'s share
+one distribution and are merely ordered, the winner/loser corruption ranges overlap —
+no single threshold separates them. Built on the Scheduler's transport and `t→1 = clean`
+convention (ADR-0001), so "more noise" is *smaller* `t`. (Pre-ADR-0010 these were
+disjoint `[0.5, 1) / [0, 0.5)` halves, which saturated `val/pair_acc` at 0.997.)
 _Avoid_: positive/negative sample (say winner/loser — those name the half-pair, not
 a label).
 

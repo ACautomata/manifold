@@ -174,6 +174,37 @@ def test_partial_rollout_per_sample_t_does_not_mix_samples():
     assert torch.equal(out, z)
 
 
+def test_partial_rollout_output_is_backward_safe():
+    """The rollout output (now under no_grad) feeds a discriminator backward without error.
+
+    The prerequisite for online reward training (#49 → #50): the rollout output is
+    the discriminator's fit-step input, where backward must save it. Previously the
+    rollout ran under ``inference_mode``; an inference tensor cannot be saved for
+    backward (``.detach()``/``.clone()`` do not clear the flag), so a discriminator
+    backward over it crashed. ``no_grad`` keeps the no-activation-retention while
+    yielding a backward-safe tensor. Parity with ``sample_latent_flow`` (ADR-0008)
+    is unaffected — both contexts run identical math; only the tensor flag differs
+    (see test_partial_rollout_degenerates_to_full_at_t_start_zero, still bit-exact).
+    """
+    sched = PartialFlowMatchHeunScheduler()
+    torch.manual_seed(0)
+    z_start = torch.randn(2, *_LAT)
+    t_start = torch.tensor([0.3, 0.7])
+    out = partial_denoise_rollout(
+        _IdentityDenoiser(), sched, z_start, t_start, [1.0, 1.0, 1.0], 1, num_steps=2
+    )
+    # A discriminator head whose weights require grad: the rollout output is the
+    # (constant) input; backward must populate the head's weight grads.
+    disc = nn.Linear(out[0].numel(), 1)
+    flat = out.flatten(1)  # backward-safe (no_grad, not inference_mode)
+    rewards = disc(flat).squeeze(-1)  # [2]
+    loss = -torch.log(torch.sigmoid(rewards[0] - rewards[1]))
+    loss.backward()  # would raise under inference_mode ("cannot be saved for backward")
+    assert disc.weight.grad is not None
+    assert torch.isfinite(disc.weight.grad).all()
+    assert disc.weight.grad.abs().sum() > 0
+
+
 # -- generate_reward_pairs --------------------------------------------------
 
 
@@ -415,13 +446,7 @@ def test_generate_reward_pairs_script_end_to_end(tmp_path):
 
 def test_subject_id_groups_brats_contrasts():
     """_subject_id strips the trailing contrast so one subject's contrasts group together."""
-    import sys
-
-    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
-    try:
-        from generate_reward_pairs import _subject_id
-    finally:
-        sys.path.pop(0)
+    from manifold.data.reward_pairs import _subject_id
 
     # Default (BraTS): last '-<token>' stripped → contrasts of one subject merge.
     # (Cache sample_ids always carry the contrast suffix; the subject id itself is
@@ -523,3 +548,125 @@ def test_generate_reward_pairs_applies_scaling_via_script(tmp_path):
     )
     # Same subject split (seeded) + same scaling + same denoiser → identical winners.
     assert torch.allclose(script_train.winners, direct_train.winners, atol=1e-6)
+
+
+# -- #48/#50/#51: online rollout-in-the-loop + full-range ordered pairs --------
+
+
+def test_partial_rollout_combined_batch_assertion():
+    """A mismatched combined batch raises a clear error (not a MAISI-internal crash)."""
+    sched = PartialFlowMatchHeunScheduler()
+    denoiser = _IdentityDenoiser()
+    z = torch.randn(4, *_LAT)
+    # z_start batch (4) != t_start (3) — the online [2B] winner-first concat off-by-one.
+    with pytest.raises(ValueError, match="t_start"):
+        partial_denoise_rollout(denoiser, sched, z, torch.zeros(3), [1.0, 1.0, 1.0], 1, num_steps=1)
+    # per-sample [B,3] spacing rows (3) != batch (4).
+    with pytest.raises(ValueError, match="spacing"):
+        partial_denoise_rollout(denoiser, sched, z, torch.zeros(4), torch.zeros(3, 3), 1, num_steps=1)
+
+
+def test_full_range_val_pairs_winner_less_corrupted_on_average():
+    """Full-range val pairs: the winner (max t) reconstructs clean better than the loser (min t)."""
+    from manifold.data.reward_pairs import generate_full_range_val_pairs
+
+    torch.manual_seed(0)
+    clean = torch.randn(32, *_LAT)
+    val = generate_full_range_val_pairs(
+        clean, _IdentityDenoiser(), PartialFlowMatchHeunScheduler(),
+        spacing=[1.0, 1.0, 1.0], modality=1, num_steps=2, batch_size=8, seed=0, device="cpu",
+    )
+    assert len(val) == 32 and val.winners.shape[1:] == _LAT
+    assert torch.isfinite(val.winners).all()
+    # Identity denoiser ⇒ winner/loser are the noised starts; higher t (winner) is
+    # closer to clean on average (the label direction holds at the transport level).
+    w_recon = (val.winners - clean).flatten(1).norm(dim=1)
+    l_recon = (val.losers - clean).flatten(1).norm(dim=1)
+    assert w_recon.mean() < l_recon.mean()
+
+
+def test_full_range_pair_design_winner_loser_overlap():
+    """The max/min labeling over shared U[0,1) overlaps — the de-saturation property.
+
+    Unlike the disjoint offline ``[0.5,1) / [0,0.5)`` halves (a single threshold
+    separates every winner from every loser), the full-range ``winner_t = max``,
+    ``loser_t = min`` over two ``U[0,1)`` draws overlap: a loser-t in one pair can
+    exceed a winner-t in another — so the same corruption level can be a winner in
+    one pair and a loser in another (the trivial shortcut is destroyed). ``t < 1``
+    always (``torch.rand`` is half-open ``[0,1)``).
+    """
+    torch.manual_seed(0)
+    n = 4096
+    t_a = torch.rand(n)
+    t_b = torch.rand(n)
+    winner_t = torch.maximum(t_a, t_b)
+    loser_t = torch.minimum(t_a, t_b)
+    assert (winner_t < 1.0).all() and (loser_t < 1.0).all()  # half-open ⇒ t == 1 precluded
+    assert (winner_t >= loser_t).all()  # max/min labeling
+    # The distributions overlap: the largest loser_t exceeds the smallest winner_t.
+    assert loser_t.max() > winner_t.min()
+
+
+def test_partition_subjects_keeps_a_subject_wholly_in_one_split():
+    """The held-out split is by SUBJECT — a subject lands wholly in train or val."""
+    from manifold.data.reward_pairs import partition_subjects
+
+    sids = [f"subj_{s}" for s in range(6) for _ in range(4)]  # 6 subjects × 4 contrasts
+    train, val = partition_subjects(sids, val_fraction=0.34, seed=0)
+    assert train.isdisjoint(val)
+    for s in range(6):
+        sid = f"subj_{s}"
+        assert (sid in train) ^ (sid in val)  # exactly one of train/val
+
+
+def test_no_leakage_train_clean_ds_excludes_val_subjects():
+    """The train clean dataset serves train subjects only — no val subject reaches fit.
+
+    The leakage guard is load-bearing (#51): the held-out-subject split must be
+    enforced at the train-DATASET construction (filter items by train subjects),
+    not only at val-precompute time — otherwise the discriminator trains on
+    validation subjects and val/pair_acc measures memorization.
+    """
+    from manifold.data.reward_pairs import CleanLatentDataset, _subject_id, partition_subjects
+
+    items = [
+        {"latent": torch.randn(*_LAT), "sample_id": f"subj_{s}-t1n", "label": 1, "spacing": torch.tensor([1.0, 1.0, 1.0])}
+        for s in range(10)
+    ]
+    sids = [_subject_id(it["sample_id"], None) for it in items]
+    train_subj, val_subj = partition_subjects(sids, val_fraction=0.3, seed=0)
+    train_items = [it for it, sid in zip(items, sids) if sid in train_subj]
+    val_items = [it for it, sid in zip(items, sids) if sid in val_subj]
+    CleanLatentDataset(train_items)  # constructs over train subjects only
+    train_sids = {_subject_id(it["sample_id"], None) for it in train_items}
+    val_sids = {_subject_id(it["sample_id"], None) for it in val_items}
+    assert train_sids.isdisjoint(val_sids)  # no subject spans both
+    assert train_sids <= train_subj  # every train item is a train subject
+    assert val_sids <= val_subj
+
+
+def test_clean_latent_dataset_applies_scale_once_on_read():
+    """scale_factor is applied exactly once on read (the denoiser sees its training space)."""
+    from manifold.data.reward_pairs import CleanLatentDataset
+
+    items = [{"latent": torch.ones(*_LAT), "spacing": torch.tensor([1.0, 2.0, 3.0]), "label": 1, "sample_id": "x"}]
+    ds = CleanLatentDataset(items, scaling_factor=2.5)
+    b = ds[0]
+    assert torch.allclose(b["latent"], torch.full(_LAT, 2.5))  # scaled exactly once
+    assert torch.allclose(b["spacing"], torch.tensor([1.0, 2.0, 3.0]))
+    assert b["label"].item() == 1
+
+
+def test_load_cached_latents_reads_dict_items_and_groups_subjects(tmp_path):
+    """load_cached_latents reads {latent, spacing, label, sample_id} dicts and groups subjects."""
+    from manifold.data.reward_pairs import load_cached_latents
+
+    for s in range(4):
+        torch.save(
+            {"latent": torch.ones(*_LAT), "sample_id": f"subj_{s}-t1n", "spacing": [1.0, 1.0, 1.0], "label": 1},
+            tmp_path / f"s{s}.pt",
+        )
+    items, sids = load_cached_latents(tmp_path)
+    assert len(items) == 4
+    assert all(it["latent"].shape == _LAT for it in items)
+    assert sids == ["subj_0", "subj_1", "subj_2", "subj_3"]  # contrast suffix stripped

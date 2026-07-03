@@ -1,22 +1,38 @@
-# Reward recipe preset — GRPO reward-model training (issue #39/#40/#43). Composed
-# with a BraTS2023 env + the network config (which carries the `reward_model`
-# block). Pairs are precomputed offline by scripts/generate_reward_pairs.py (the
-# frozen JiT denoiser), so this recipe trains ONLY the discriminator.
+# Reward recipe preset — GRPO reward-model training (online rollout-in-the-loop,
+# ADR-0010 / issues #48/#50/#51). Composed with a BraTS2023 env + the network
+# config (which carries the `reward_model` block). The train set is a clean-latent
+# dataset (the Module rolls fresh preference pairs each step); val + the
+# generated-end probe are precomputed once at startup from --native-dir +
+# --latents-dir (the frozen JiT denoiser ⇒ static across epochs).
 #
-# Consumed by manifold-train-reward (#40). The reward job needs no VAE / JiT-UNet
-# checkpoint path (pairs are pre-made) — only the output model_dir.
+# Consumed by manifold-train-reward. The reward job needs no VAE / JiT-UNet
+# checkpoint path (the denoiser comes from the native export) — only the output
+# model_dir.
 
 reward_train:
   batch_size: 16
   lr: 1.0e-4
   n_epochs: 50
+  # Per-step TRAIN Heun step budget — the rollout-cost lever (every-step online at
+  # num_steps=4 × 50 epochs ≈ 50× the offline one-time rollout). num_steps=2 ⇒ 3
+  # Heun evals/step (vs 4 ⇒ 7); num_steps=4 is reserved for the one-time
+  # val/probe precompute. Measure it/s on euler before committing (issue #52).
+  num_steps: 16
 
-# The precomputed RewardPairDataset directory (written by
-# scripts/generate_reward_pairs.py: pairs.pt + val_pairs.pt [+ probe_pairs.pt]).
-# Override on the CLI: --pairs-dir <dir>  or  reward.pairs_dir=<dir>.
+# Online real-data wiring. The frozen denoiser loads from --native-dir; the clean
+# latent cache from --latents-dir. The held-out-SUBJECT split is partitioned once
+# (seeded) — the train dataloader serves train subjects only (no leakage).
 reward:
-  pairs_dir: ???   # REQUIRED — set via --pairs-dir or dotlist.
+  val_fraction: 0.2        # held-out subject fraction (val pairs + probe).
+  precompute_num_steps: 4  # one-time val/probe precompute rollout budget (accurate, one-off).
+  subject_regex: null      # override the default last-'-<token>' subject-id strip.
+  spacing: [1.0, 1.0, 1.0] # fallback voxel spacing (used if cache items lack one).
+  modality: 1              # fallback class label (used if cache items lack one).
+  gen_batch_size: 4        # one-time val/probe precompute rollout batch size.
+  n_probe: 64              # max val latents for the generated-end probe.
 
-# Stock Lightning ModelCheckpoint: monitor val/pair_acc (max), save top-1 + last.
+# Stock Lightning ModelCheckpoint: monitor val/gen_pair_acc (the GRPO-regime
+# metric, max), save top-1 + last. Under DDP the rank-local monitor is dropped
+# (save_last + save_top_k=1 keep the latest).
 checkpoint:
   save_top_k: 1

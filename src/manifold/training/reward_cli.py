@@ -1,15 +1,22 @@
 """``manifold-train-reward`` console entry + the testable reward-training core.
 
 The console entry composes the experiment config, builds the :class:`RewardModel`
-+ the pair datamodule (real precomputed pairs, or a fake pair cache via the
++ the data inputs (real latent cache + frozen denoiser, or a fake via the
 ``data_provider`` injection seam for the CPU smoke), and calls ``Trainer.fit``.
 The reward job is standalone (issue #39 user story 17): decoupled from JiT
 pretraining and from GRPO, independently resumable.
 
-The integration core :func:`run_reward_training` (Module + pair datamodule +
+The integration core :func:`run_reward_training` (Module + datamodule +
 ``ModelCheckpoint`` + ``build_trainer`` + ``fit``) is split out so a tiny CPU
-smoke can drive it with a fake pair dataset (the issue's testing seam) instead of
-a real precomputed pair cache + a frozen denoiser.
+smoke can drive it with a fake denoiser + toy clean-latent dataset (the issue's
+testing seam) instead of a real latent cache + the frozen JiT denoiser.
+
+**Online rollout-in-the-loop training (ADR-0010, issues #48/#50/#51).** The train
+set is now a **clean-latent** dataset (the Module rolls fresh preference pairs
+each step); validation (full-range pairs) + the generated-end probe are
+precomputed **once at startup** (the denoiser is frozen ⇒ static across epochs)
+and reused. The offline pair-generation script is retained for this one-time
+precompute (and offline inspection); the offline *train*-pair path is superseded.
 """
 
 from __future__ import annotations
@@ -38,34 +45,44 @@ _log = logging.getLogger(__name__)
 
 
 @dataclass
-class _RewardDataBundle:
-    """The pair-data bundle ``main`` passes into :func:`run_reward_training`.
+class RewardInputs:
+    """Module-construction + data inputs for online reward training.
 
-    (Injection seam for the CPU smoke test, which feeds a fake pair dataset
-    instead of a real precomputed pair cache + frozen denoiser.)
+    ``denoiser`` / ``scheduler`` / ``num_steps`` go to the :class:`RewardModule`
+    ctor (the online fit-step rollout); ``clean_ds`` is the train set (clean
+    latents — rolled fresh each step); ``val_pair_ds`` + ``val_probe`` are
+    precomputed once at startup (the denoiser is frozen ⇒ static across epochs).
+    The ``data_provider`` seam injects a fake denoiser + toy datasets for the CPU
+    smoke; the real path (``_real_inputs``) builds this from ``--native-dir`` +
+    ``--latents-dir``.
     """
 
-    pair_ds: Any
-    val_pair_ds: Any
-    val_probe: Any = None  #: optional fixed generated-end probe RewardPairDataset.
+    denoiser: Any
+    scheduler: Any
+    num_steps: int
+    clean_ds: Any  #: train: emits {latent, spacing, label}
+    val_pair_ds: Any  #: precomputed: emits {winner, loser}
+    val_probe: Any = None  #: precomputed RewardPairDataset (generated-end probe).
 
 
 def _build_checkpoint(
     model_dir: str,
     *,
-    monitor_metric: str = "val/pair_acc",
+    monitor_metric: str = "val/gen_pair_acc",
     mode: str = "max",
     save_top_k: int = 1,
     multi_gpu: bool = False,
 ) -> ModelCheckpoint:
-    """Stock Lightning ``ModelCheckpoint`` monitoring the reward val metric.
+    """Stock Lightning ``ModelCheckpoint`` monitoring the generated-end probe.
 
-    Pairwise accuracy is maximized (``mode="max"``); ``auto_insert_metric_name =
-    False`` because the metric key contains a ``/``. ``save_last=True`` for resume.
-    Under DDP (``multi_gpu``) the metric is rank-local to rank 0, so monitoring is
-    dropped (``save_last`` + ``save_top_k=1`` keep the latest) — mirroring the JiT
-    checkpoint's DDP fallback (val/pair_acc is synced for reporting, but the
-    selection signal stays single-GPU).
+    The checkpoint monitors ``val/gen_pair_acc`` (the GRPO-regime metric — ranking
+    within the all-generated regime; ``mode="max"``). ``val/pair_acc`` and
+    ``val/roc_auc`` are logged for diagnosis but are not the selection signal.
+    ``auto_insert_metric_name = False`` because the metric key contains a ``/``.
+    ``save_last=True`` for resume. Under DDP (``multi_gpu``) the metric is
+    rank-local to rank 0, so monitoring is dropped (``save_last`` +
+    ``save_top_k=1`` keep the latest) — mirroring the JiT checkpoint's DDP fallback
+    (the probe is synced for reporting, but the selection signal stays single-GPU).
     """
     if multi_gpu:
         return ModelCheckpoint(
@@ -93,7 +110,7 @@ def _build_checkpoint(
 def run_reward_training(
     *,
     module: RewardModule,
-    bundle: _RewardDataBundle,
+    inputs: RewardInputs,
     model_dir: str,
     max_epochs: int,
     devices: int | str = "auto",
@@ -101,7 +118,7 @@ def run_reward_training(
     batch_size: int = 2,
     num_workers: int = 0,
     save_top_k: int = 1,
-    monitor_metric: str = "val/pair_acc",
+    monitor_metric: str = "val/gen_pair_acc",
     mode: str = "max",
     limit_val_batches: int | float = 1.0,
     seed: int = 0,
@@ -109,30 +126,33 @@ def run_reward_training(
 ) -> tuple[pl.Trainer, ModelCheckpoint]:
     """Assemble callbacks + ``Trainer`` and ``fit`` the reward module (the core seam).
 
-    Builds a stock ``ModelCheckpoint`` (monitoring the reward val metric) and runs
-    ``Trainer.fit`` on the pair datamodule. Returns ``(trainer, ckpt)`` so callers
-    can find the written ``.ckpt``.
+    Builds a stock ``ModelCheckpoint`` (monitoring the generated-end probe) and
+    runs ``Trainer.fit`` on the clean-latent train datamodule (online rollout per
+    step) + the precomputed val pairs. Returns ``(trainer, ckpt)`` so callers can
+    find the written ``.ckpt``.
 
     Args:
-        bundle: the train + val pair datasets (``{"winner","loser"}``-emitting).
+        inputs: the clean-latent train dataset + precomputed val/probe + the
+            frozen denoiser/scheduler (already on-device in the real path).
         ckpt_path: optional warm-start / resume checkpoint passed to ``fit``.
     """
     # Seed deterministically so direct callers (tests, notebooks) get reproducible
-    # runs; ``main`` also seeds, harmlessly, before building the module.
+    # runs; ``main`` also seeds, harmlessly, before building the module. The
+    # per-step t/noise draws then reproduce across runs.
     pl.seed_everything(seed, workers=True)
     multi_gpu = isinstance(devices, int) and devices > 1
     ckpt = _build_checkpoint(
         model_dir, monitor_metric=monitor_metric, mode=mode, save_top_k=save_top_k, multi_gpu=multi_gpu
     )
     # Score the fixed generated-end probe in training-batch-size chunks (bounds
-    # epoch-end memory); attach the probe if the bundle carries one.
+    # epoch-end memory); attach the probe if the inputs carry one.
     module.probe_batch_size = int(batch_size)
-    if bundle.val_probe is not None and getattr(module, "val_probe", None) is None:
-        module.set_val_probe(bundle.val_probe.winners, bundle.val_probe.losers)
+    if inputs.val_probe is not None and getattr(module, "val_probe", None) is None:
+        module.set_val_probe(inputs.val_probe.winners, inputs.val_probe.losers)
     datamodule = build_datamodule(
-        bundle.pair_ds,
+        inputs.clean_ds,
         batch_size=batch_size,
-        val_dataset=bundle.val_pair_ds,
+        val_dataset=inputs.val_pair_ds,
         num_workers=num_workers,
     )
     trainer = build_trainer(
@@ -152,7 +172,7 @@ def run_reward_training(
 
 def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        prog="manifold-train-reward", description="Train the GRPO reward model."
+        prog="manifold-train-reward", description="Train the GRPO reward model (online rollout-in-the-loop)."
     )
     parser.add_argument("-e", "--env", required=True, help="env config YAML (paths).")
     parser.add_argument(
@@ -164,7 +184,14 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument("-g", "--num-gpus", type=int, default=1, help="number of GPUs.")
     parser.add_argument("--max-epochs", type=int, default=None, help="override n_epochs.")
     parser.add_argument(
-        "--pairs-dir", default=None, help="precomputed RewardPairDataset directory."
+        "--native-dir",
+        default=None,
+        help="native JiT export dir (frozen denoiser + VAE scale); required without --data-provider.",
+    )
+    parser.add_argument(
+        "--latents-dir",
+        default=None,
+        help="directory of clean .pt latents (the latent cache); required without --data-provider.",
     )
     parser.add_argument(
         "--resume", default=None, help="resume a Lightning .ckpt (trainer.fit(ckpt_path=...))."
@@ -177,10 +204,11 @@ def main(argv: list[str] | None = None, *, data_provider=None) -> int:
     """Console entry: compose config → build → ``run_reward_training``.
 
     ``data_provider`` is the injection seam for the CPU smoke test: a callable
-    ``(cfg, device) -> _RewardDataBundle`` returning a fake pair dataset so the
-    full ``main`` path runs without a real precomputed pair cache. The real path
-    loads precomputed pairs from ``--pairs-dir`` (written by the offline
-    generation script, issue #42).
+    ``(cfg, device) -> RewardInputs`` returning a fake denoiser + toy clean-latent
+    dataset so the full ``main`` path runs without a real latent cache. The real
+    path loads the frozen denoiser from ``--native-dir`` and the latent cache from
+    ``--latents-dir``, precomputes val/probe once, and rolls fresh train pairs each
+    step (ADR-0010).
     """
     args = _parse_args(argv)
 
@@ -190,8 +218,8 @@ def main(argv: list[str] | None = None, *, data_provider=None) -> int:
 
     cfg = load_config(args.env, args.train, args.network)
     cfg = merge_overrides(cfg, {"num_gpus": args.num_gpus}, list(args.overrides))
-    # The reward job needs no VAE / UNet-checkpoint path (pairs are precomputed);
-    # only the output ``model_dir`` is required.
+    # The reward job needs no VAE / UNet-checkpoint path; only the output
+    # ``model_dir`` is required (the denoiser comes from --native-dir).
     require_paths(cfg, keys=("model_dir",))
     OmegaConf.resolve(cfg)
     if getattr(cfg, "reward_train", None) is None:
@@ -205,9 +233,17 @@ def main(argv: list[str] | None = None, *, data_provider=None) -> int:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     if data_provider is not None:
-        bundle = data_provider(cfg, device)
+        inputs = data_provider(cfg, device)
     else:
-        bundle = _warm_pairs(cfg, args.pairs_dir)
+        # --native-dir / --latents-dir are NOT argparse-required: that would break
+        # the data_provider injection seam (the CPU smoke). Validate them here,
+        # only on the real path.
+        if not args.native_dir or not args.latents_dir:
+            raise ValueError(
+                "Online reward training needs --native-dir <native JiT export> and "
+                "--latents-dir <latent cache> (or inject a data_provider for the smoke)."
+            )
+        inputs = _real_inputs(cfg, args.native_dir, args.latents_dir, device)
 
     reward_cfg = cfg.reward_model
     module = RewardModule(
@@ -219,11 +255,14 @@ def main(argv: list[str] | None = None, *, data_provider=None) -> int:
             norm=str(opt(reward_cfg, "norm", "BATCH")),
         ),
         lr=float(cfg.reward_train.lr),
+        denoiser=inputs.denoiser,
+        scheduler=inputs.scheduler,
+        num_steps=inputs.num_steps,
     )
 
     run_reward_training(
         module=module,
-        bundle=bundle,
+        inputs=inputs,
         model_dir=str(cfg.model_dir),
         max_epochs=int(args.max_epochs or cfg.reward_train.n_epochs),
         devices=args.num_gpus if args.num_gpus > 1 else 1,
@@ -236,21 +275,77 @@ def main(argv: list[str] | None = None, *, data_provider=None) -> int:
     return 0
 
 
-def _warm_pairs(cfg, pairs_dir: str | None) -> _RewardDataBundle:
-    """Load the real precomputed pair cache (the production data path, issue #42).
+def _real_inputs(cfg, native_dir: str, latents_dir: str, device: torch.device) -> RewardInputs:
+    """Build the real online-reward inputs from the native export + latent cache.
 
-    ``RewardPairDataset`` is imported lazily so this module does not require the
-    pair-generation stack at import time (and the CPU smoke, which injects its own
-    fake bundle, never reaches here).
+    Loads the frozen JiT denoiser (``--native-dir``), partitions subjects once
+    (seeded) and constructs the **train** clean-latent dataset over **train
+    subjects only** (no leakage at the dataloader — the discriminator never trains
+    on a validation subject), and precomputes the full-range val pairs + the
+    generated-end probe over val subjects **once** (both static across epochs — the
+    denoiser is frozen). The denoiser/scheduler are returned for the Module ctor.
     """
-    if pairs_dir is None:
-        pairs_dir = str(opt(cfg, "reward.pairs_dir"))
-    if not pairs_dir:
-        raise ValueError(
-            "No reward pairs directory: pass --pairs-dir <dir> (or set reward.pairs_dir), "
-            "the dir scripts/generate_reward_pairs.py wrote."
-        )
-    from ..data.reward_pairs import load_reward_pairs
+    from ..data.reward_pairs import (
+        CleanLatentDataset,
+        generate_full_range_val_pairs,
+        generate_generated_end_probe,
+        load_cached_latents,
+        load_frozen_denoiser,
+        maybe_per_sample,
+        partition_subjects,
+    )
 
-    pair_ds, val_pair_ds, val_probe = load_reward_pairs(pairs_dir)
-    return _RewardDataBundle(pair_ds=pair_ds, val_pair_ds=val_pair_ds, val_probe=val_probe)
+    num_steps = int(opt(cfg, "reward_train.num_steps", 2))  # per-step TRAIN rollout (the cost lever)
+    # The one-time val/probe precompute uses a larger budget (more accurate, one-off
+    # cost) than the every-step train rollout — issue #48: num_steps=4 reserved for
+    # the precompute, num_steps=2 for train.
+    precompute_num_steps = int(opt(cfg, "reward.precompute_num_steps", 4))
+    val_fraction = float(opt(cfg, "reward.val_fraction", 0.2))
+    subject_regex = opt(cfg, "reward.subject_regex", None)
+    default_spacing = opt(cfg, "reward.spacing", [1.0, 1.0, 1.0])
+    default_modality = int(opt(cfg, "reward.modality", 1))
+    gen_batch_size = int(opt(cfg, "reward.gen_batch_size", 4))
+    n_probe = int(opt(cfg, "reward.n_probe", 64))
+
+    denoiser, scheduler, scaling_factor = load_frozen_denoiser(native_dir)
+    denoiser.to(device).eval()
+    for p in denoiser.parameters():
+        p.requires_grad_(False)
+
+    items, subject_ids = load_cached_latents(latents_dir, subject_regex)
+    train_subjects, val_subjects = partition_subjects(
+        subject_ids, val_fraction=val_fraction, seed=int(opt(cfg, "random_seed", 0))
+    )
+    train_items = [it for it, sid in zip(items, subject_ids) if sid in train_subjects]
+    val_items = [it for it, sid in zip(items, subject_ids) if sid in val_subjects]
+    if not train_items or not val_items:
+        raise ValueError(
+            f"Empty train ({len(train_items)}) or val ({len(val_items)}) subject split "
+            f"from {len(items)} latents — adjust reward.val_fraction."
+        )
+    _log.info(
+        "online reward inputs: %d train / %d val subjects (%d / %d latents).",
+        len(train_subjects), len(val_subjects), len(train_items), len(val_items),
+    )
+    clean_ds = CleanLatentDataset(train_items, scaling_factor)
+
+    # Precompute val (full-range, mirroring the train distribution) + probe
+    # ([0, 0.5) generated regime) over VAL subjects once. Clean latents are
+    # pre-scaled into the denoiser's training space (the gen functions expect
+    # scaled inputs; the train path scales on read — scale applied exactly once
+    # in both, ADR-0003).
+    val_clean = torch.stack([it["latent"] for it in val_items]).float() * float(scaling_factor)
+    spacing = maybe_per_sample([it["spacing"] for it in val_items], default_spacing)
+    modality = maybe_per_sample([it["label"] for it in val_items], default_modality)
+    val_pair_ds = generate_full_range_val_pairs(
+        val_clean, denoiser, scheduler, spacing=spacing, modality=modality,
+        num_steps=precompute_num_steps, batch_size=gen_batch_size, seed=int(opt(cfg, "random_seed", 0)), device=device,
+    )
+    probe = generate_generated_end_probe(
+        val_clean[: min(n_probe, len(val_items))], denoiser, scheduler, spacing=spacing, modality=modality,
+        num_steps=precompute_num_steps, batch_size=gen_batch_size, seed=int(opt(cfg, "random_seed", 0)), device=device,
+    )
+    return RewardInputs(
+        denoiser=denoiser, scheduler=scheduler, num_steps=num_steps,
+        clean_ds=clean_ds, val_pair_ds=val_pair_ds, val_probe=probe,
+    )

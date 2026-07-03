@@ -1,0 +1,19 @@
+# euler env profile (single Blackwell RTX PRO 6000; see the euler-deploy skill).
+# Source at /home/junran/manifold; outputs under /data/experiment/junran/manifold.
+# The online reward job needs only model_dir — the frozen denoiser comes from
+# --native-dir (the native JiT export) and the clean latent cache from --latents-dir,
+# so the JiT-specific keys (data_base_dir / trained_autoencoder_path) stay unused.
+# Override any path via CLI/dotlist.
+data_base_dir: null
+json_data_list: null
+val_data_base_dir: null
+val_subset_size: 32
+model_dir: /data/experiment/junran/manifold/reward_online
+model_filename: diff_unet_3d_rflow-brats2023.pt
+output_dir: null
+output_prefix: reward
+trained_autoencoder_path: null
+existing_ckpt_filepath: null
+modality_mapping_path: configs/modality_mapping.json
+dataset_type: brats
+latent_cache_dir: null
