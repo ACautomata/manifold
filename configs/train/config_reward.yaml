@@ -17,7 +17,7 @@ reward_train:
   # num_steps=4 × 50 epochs ≈ 50× the offline one-time rollout). num_steps=2 ⇒ 3
   # Heun evals/step (vs 4 ⇒ 7); num_steps=4 is reserved for the one-time
   # val/probe precompute. Measure it/s on euler before committing (issue #52).
-  num_steps: 2
+  num_steps: 16
 
 # Online real-data wiring. The frozen denoiser loads from --native-dir; the clean
 # latent cache from --latents-dir. The held-out-SUBJECT split is partitioned once
