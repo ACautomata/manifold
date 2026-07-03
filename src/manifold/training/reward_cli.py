@@ -226,7 +226,7 @@ def main(argv: list[str] | None = None, *, data_provider=None) -> int:
         bundle=bundle,
         model_dir=str(cfg.model_dir),
         max_epochs=int(args.max_epochs or cfg.reward_train.n_epochs),
-        devices=args.num_gpus if args.num_gpus > 1 else "auto",
+        devices=args.num_gpus if args.num_gpus > 1 else 1,
         batch_size=int(cfg.reward_train.batch_size),
         save_top_k=int(opt(cfg, "checkpoint.save_top_k", 1)),
         seed=seed,

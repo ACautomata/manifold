@@ -32,7 +32,7 @@ def partial_denoise_rollout(
     z_start: Tensor,
     t_start: Tensor,
     spacing: Tensor | Sequence[float],
-    modality: int,
+    modality: int | Tensor,
     *,
     num_steps: int,
 ) -> Tensor:

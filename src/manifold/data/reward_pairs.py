@@ -158,6 +158,15 @@ def generate_reward_pairs(
         raise ValueError(f"clean_latents ({len(clean)}) and subject_ids ({len(subject_ids)}) must align.")
     device = torch.device(device) if device is not None else next(denoiser.parameters()).device
 
+    # Normalise per-sample conditioning to tensors before the batch loop — the
+    # caller may pass Python sequences (documented), and list-slicing before
+    # ``int(modality_b)`` or ``isinstance(modality,Tensor)`` inside the denoising
+    # path would crash (Codex #45).
+    if not isinstance(spacing, Tensor):
+        spacing = torch.as_tensor(spacing)
+    if not isinstance(modality, (int, float, Tensor)):
+        modality = torch.as_tensor(modality)
+
     unique = sorted(set(subject_ids))
     g_split = torch.Generator().manual_seed(seed)
     perm = torch.randperm(len(unique), generator=g_split).tolist()
@@ -275,6 +284,12 @@ def generate_generated_end_probe(
     """
     clean = clean_latents if isinstance(clean_latents, Tensor) else torch.stack(list(clean_latents))
     device = torch.device(device) if device is not None else next(denoiser.parameters()).device
+
+    # Normalise per-sample conditioning (same as in generate_reward_pairs).
+    if not isinstance(spacing, Tensor):
+        spacing = torch.as_tensor(spacing)
+    if not isinstance(modality, (int, float, Tensor)):
+        modality = torch.as_tensor(modality)
 
     # Device-aware generator (a CPU generator raises when handed to torch.randn on CUDA).
     gen = torch.Generator(device=device).manual_seed(seed)

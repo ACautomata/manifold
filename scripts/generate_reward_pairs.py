@@ -60,15 +60,17 @@ def _subject_id(sample_id: str, regex) -> str:
 
 
 def _load_clean_latents(
-    latents_dir: Path, subject_regex
+    latents_dir: Path, subject_regex, scaling_factor: float
 ) -> tuple[torch.Tensor, list[str], list, list]:
-    """Load clean latents + subject ids + per-sample spacing/label from a ``.pt`` dir.
+    """Load **scaled** clean latents + subject ids + per-sample spacing/label.
 
     Latent-cache items are ``{"latent", "spacing", "label", "sample_id"}`` storing
-    the **unscaled** latent (scale-on-read happens at training ``__getitem__``); the
-    caller scales them by the VAE ``scaling_factor``. Per-sample ``spacing`` /
-    ``label`` are collected so a heterogeneous (multi-contrast) cache conditions
-    each rollout correctly; a plain-tensor file yields ``None`` (fall back to globals).
+    the **unscaled** latent (scale-on-read happens at training ``__getitem__``);
+    *scaling_factor* (the native VAE's) is applied here so the returned latents are
+    already in the frozen denoiser's training space — no raw, unscaled tensor ever
+    reaches the rollout. Per-sample ``spacing`` / ``label`` are collected so a
+    heterogeneous (multi-contrast) cache conditions each rollout correctly; a
+    plain-tensor file yields ``None`` (fall back to globals).
     """
     files = sorted(p for p in latents_dir.glob("*.pt") if not p.name.endswith(".tmp.r0.p0"))
     if not files:
@@ -86,7 +88,7 @@ def _load_clean_latents(
             sid_raw = path.stem
             spacings.append(None)
             labels.append(None)
-        latents.append(latent.float())
+        latents.append(latent.float() * float(scaling_factor))  # → denoiser's scaled space
         subject_ids.append(_subject_id(sid_raw, subject_regex))
     return torch.stack(latents), subject_ids, spacings, labels
 
@@ -94,7 +96,7 @@ def _load_clean_latents(
 def _maybe_per_sample(items, n: int, fallback):
     """Build a per-sample tensor if every item is present, else the broadcast fallback."""
     if items and all(it is not None for it in items):
-        return torch.as_tensor(items)
+        return torch.stack([torch.as_tensor(it) for it in items])
     return fallback
 
 
@@ -124,12 +126,14 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    clean, subject_ids, spacings, labels = _load_clean_latents(Path(args.latents_dir), args.subject_regex)
+    # Load the frozen denoiser first so its VAE scaling_factor scales the cached
+    # latents into the denoiser's training space inside _load_clean_latents (the
+    # latent cache stores UNSCALED latents — ADR-0003).
     denoiser, scheduler, scaling_factor = load_frozen_denoiser(args.native_dir)
     denoiser.to(device)
-    # The latent cache stores UNSCALED latents; the frozen denoiser was trained in
-    # the VAE's scaled latent space, so scale before denoising (ADR-0003).
-    clean = clean * scaling_factor
+    clean, subject_ids, spacings, labels = _load_clean_latents(
+        Path(args.latents_dir), args.subject_regex, scaling_factor
+    )
 
     spacing_arg = _maybe_per_sample(spacings, len(clean), args.spacing)
     modality_arg = _maybe_per_sample(labels, len(clean), args.modality)
