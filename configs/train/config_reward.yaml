@@ -13,11 +13,14 @@ reward_train:
   batch_size: 16
   lr: 1.0e-4
   n_epochs: 50
-  # Per-step TRAIN Heun step budget — the rollout-cost lever (every-step online at
-  # num_steps=4 × 50 epochs ≈ 50× the offline one-time rollout). num_steps=2 ⇒ 3
-  # Heun evals/step (vs 4 ⇒ 7); num_steps=4 is reserved for the one-time
-  # val/probe precompute. Measure it/s on euler before committing (issue #52).
-  num_steps: 16
+  # Per-step TRAIN Heun step budget — the rollout-cost lever. Default 15 matches
+  # the JiT denoiser's production inference count (diffusion_unet_inference.
+  # num_inference_steps=15), i.e. the rollout samples the denoiser at the same step
+  # resolution the model is used at downstream. For fast iteration override down:
+  # num_steps=2 ⇒ 3 Heun evals/step ≈ 0.9 it/s (~3.7 h / 50 epochs, measured on
+  # euler); num_steps=4 ⇒ 7 evals ≈ 0.4 it/s. num_steps=4 is what the one-time
+  # val/probe precompute (reward.precompute_num_steps) uses.
+  num_steps: 15
 
 # Online real-data wiring. The frozen denoiser loads from --native-dir; the clean
 # latent cache from --latents-dir. The held-out-SUBJECT split is partitioned once
