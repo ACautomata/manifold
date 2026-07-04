@@ -199,6 +199,40 @@ def test_fid_callback_same_seed_reproduces(latent_module):
     assert all(torch.equal(a, b) for a, b in zip(cb._real_features(), cb._real_features()))
 
 
+def test_fid_callback_no_ema_logs_val_fid(latent_module):
+    """ema_callback=None (the no-EMA regime, e.g. GRPO) → one no-swap arm logged as val/fid.
+
+    GRPO policy post-training carries no double-EMA (#59: the supervised-decay shadows
+    are useless under RL and hold ~7 GB the rollout needs). The callback must run a
+    single arm with NO EMA swap and log it as ``val/fid`` (the anti-reward-hacking
+    selection metric, #58) — not ``val/fid_avg`` (no EMA exists to swap in) and not
+    crash on the absent ``ema_callback``. This is the GRPO wiring of the existing
+    JiT FID callback (reused verbatim modulo the optional EMA).
+    """
+    import lightning.pytorch as pl
+
+    from manifold import AutoencoderKL
+
+    vae = AutoencoderKL(scaling_factor=0.5)
+    real_latents = torch.randn(6, 4, 4, 4, 4)
+    cb = _make_fid_callback(latent_module, vae, None, real_latents, ridge=1e-2)  # ema_callback=None
+    assert cb.ema_callback is None
+
+    # No EMA callback attached — the no-EMA regime. fit must not call swap_in/restore.
+    trainer = pl.Trainer(
+        accelerator="cpu", devices=1, max_epochs=1, logger=False,
+        enable_progress_bar=False, enable_checkpointing=False, enable_model_summary=False,
+        callbacks=[cb], num_sanity_val_steps=0,
+    )
+    trainer.fit(latent_module, datamodule=_datamodule())
+    metrics = trainer.callback_metrics
+    assert "val/fid" in metrics, "no-EMA arm must log val/fid"
+    assert torch.isfinite(metrics["val/fid"])
+    assert any(k.startswith("val/fid_") and k != "val/fid" for k in metrics), "per-plane must log"
+    # No EMA ⇒ neither two-arm metric is logged.
+    assert "val/fid_avg" not in metrics and "val/fid_raw" not in metrics
+
+
 def test_fid_callback_logs_raw_alongside_slow(latent_module):
     """log_raw_fid (default) logs val/fid_raw (+ per-plane) alongside val/fid_avg."""
     from manifold import AutoencoderKL

@@ -369,6 +369,102 @@ def test_run_grpo_training_multi_step_inner_loop_runs(tmp_path):
     assert torch.isfinite(trainer.callback_metrics["val/mean_reward"])
 
 
+class _FakeFeatureNet(nn.Module):
+    """Deterministic 2D-plane → feature: flatten + a fixed linear (no RNG).
+
+    Mirrors tests/test_fid.py._FakeFeatureNet (not importable across test modules).
+    The VAE decodes an 8×8×8 latent to a 16×16×16 image ⇒ 16×16 = 256-d planes;
+    the net keeps the first 64 dims (≥64 ⇒ no pad).
+    """
+
+    def __init__(self):
+        super().__init__()
+        self.proj = nn.Linear(64, 6, bias=False)
+        with torch.no_grad():
+            self.proj.weight.copy_(
+                torch.linspace(0.01, 0.06, self.proj.weight.numel()).reshape_as(self.proj.weight)
+            )
+
+    def forward(self, plane: torch.Tensor) -> torch.Tensor:
+        b = plane.shape[0]
+        flat = plane.reshape(b, -1)[:, :64]
+        if flat.shape[1] < 64:
+            flat = torch.nn.functional.pad(flat, (0, 64 - flat.shape[1]))
+        return self.proj(flat)
+
+
+def test_run_grpo_training_with_fid_logs_val_fid_and_selects_on_it(tmp_path):
+    """The FID triple ⇒ FIDCallback (no EMA) logs val/fid; ckpt monitors val/fid (#58).
+
+    The anti-reward-hacking screen: when ``GRPOInputs`` carries ``vae`` +
+    ``real_latents`` + ``feature_net``, ``run_grpo_training`` attaches
+    ``FIDCallback(ema_callback=None)`` which generates via the deployed Heun
+    (``GRPOModule.sample``) and logs ``val/fid``; the checkpoint switches its monitor
+    to ``val/fid`` (mode ``min``) — a higher-reward-but-higher-FID checkpoint is NOT
+    selected. The PatchGAN ``val/mean_reward`` stays logged (validation_step's own
+    generation pass — the RL progress signal). No new metric code: the existing JiT
+    FIDCallback + the unbiased Fréchet primitive are reused verbatim.
+    """
+    from manifold import AutoencoderKL, UNet3DConditionModel
+    from manifold.modules import GRPOModule
+    from manifold.training.grpo_cli import GRPOInputs, run_grpo_training
+
+    torch.manual_seed(0)
+    policy = UNet3DConditionModel(num_class_embeds=4, include_spacing_input=True)
+    inputs = GRPOInputs(
+        policy=policy, reward_model=_reward_model(), scheduler=FlowMatchGRPOScheduler(eta=0.5),
+        train_ds=_ToyCondDS(), val_ds=_ToyCondDS(), latent_shape=_LAT,
+        vae=AutoencoderKL(scaling_factor=0.5),
+        real_latents=torch.randn(6, *_LAT),
+        feature_net=_FakeFeatureNet(),
+    )
+    module = GRPOModule(
+        inputs.policy, inputs.reward_model, inputs.scheduler,
+        G=2, eta_step_list=(0,), num_steps=3, latent_shape=_LAT, lr=1e-3,
+    )
+    trainer, ckpt = run_grpo_training(
+        module=module, inputs=inputs, model_dir=str(tmp_path),
+        max_epochs=1, devices=1, accelerator="cpu", batch_size=2,
+        num_synth=3, cov_ridge=1e-2,
+    )
+    metrics = trainer.callback_metrics
+    assert "val/fid" in metrics, "FIDCallback (no EMA) must log val/fid"
+    assert torch.isfinite(metrics["val/fid"])
+    assert "val/mean_reward" in metrics, "the PatchGAN progress signal stays logged"
+    assert torch.isfinite(metrics["val/mean_reward"])
+    # The selection metric flips to val/fid (min) — the anti-reward-hacking screen.
+    assert ckpt.monitor == "val/fid"
+    assert ckpt.mode == "min"
+
+
+def test_grpo_module_sample_is_deployed_heun_not_the_sde(unet):
+    """GRPOModule.sample is the deployed two-eval Heun — η does NOT leak into val gen (#58).
+
+    Validation must measure the distribution JiT ships, so ``sample`` delegates to
+    the shared ``sample_latent_flow`` primitive (the deployed Heun), NOT the rollout
+    SDE. The GRPO scheduler's η knob only affects ``sde_step_mean`` (the exploration
+    step); the inherited ``euler_step``/``heun_correct`` that ``sample_latent_flow``
+    calls are η-agnostic. So same noise + the GRPO(η=0.9) scheduler produces a latent
+    bit-identical to the plain Heun scheduler — the parity guard that the FID
+    callback's generation path is the deployed sampler.
+    """
+    from manifold import FlowMatchHeunDiscreteScheduler
+    from manifold.modules import GRPOModule
+
+    mod = GRPOModule(
+        unet, _reward_model(), FlowMatchGRPOScheduler(eta=0.9),
+        G=2, eta_step_list=(0,), num_steps=3, latent_shape=_LAT, lr=1e-3,
+    )
+    spacing = [1.0, 1.0, 1.0]
+    out = mod.sample((1, *_LAT), spacing, 1, 3, generator=torch.Generator().manual_seed(0))
+    # Same noise rebuilt from the same seed; reference runs the PLAIN Heun scheduler.
+    noise = torch.randn(1, *_LAT, generator=torch.Generator().manual_seed(0))
+    ref = sample_latent_flow(
+        unet, FlowMatchHeunDiscreteScheduler(), noise, spacing, 1, num_inference_steps=3
+    )
+    assert torch.equal(out, ref)  # η-agnostic deployed Heun — no SDE leak into val gen
+
+
 _TINY_NETWORK_YAML = "spatial_dims: 3\nlatent_channels: 4\n"
 
 
