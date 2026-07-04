@@ -214,7 +214,10 @@ def singular_branch_rollout(
             )
             z_K = suffix[-1]  # (B·G, *spatial)
 
-            rewards = reward_model(z_K).reshape(B, G)  # (B, G)
+            # float(): under cuda autocast the PatchGAN emits fp16 rewards; the
+            # group-normalization (std / (r−mean)) must run in fp32 to avoid the
+            # fp16 square overflowing for large rewards (mirrors validation_step).
+            rewards = reward_model(z_K).float().reshape(B, G)  # (B, G)
             advantage = group_advantage(rewards, adv_clip_max=adv_clip_max)  # (B, G)
             buffer.append({
                 "z_k": z_k.detach(),
@@ -274,15 +277,12 @@ class GRPOModule(spt.Module):
         scheduler: a stateless :class:`FlowMatchGRPOScheduler`.
         G: the group size (siblings per conditioning).
         eta_step_list: the perturbed step indices (the noisy-half, e.g. ``[0..7]``).
-        eta: the diffusion scale η (the SDE exploration knob).
         clip_range: ε for the clipped surrogate (the tight PPO trust region).
         lr: the Adam LR over the policy UNet.
         adv_clip_max: the advantage-magnitude clip.
-        num_steps: the anchor grid resolution (train rollout Heun steps).
+        num_steps: the anchor grid resolution (train rollout + validation Heun steps).
         latent_shape: the rollout latent shape ``(C, D, H, W)`` (GRPO is generative —
             the Module samples the group noise of this shape).
-        val_num_steps: the deployed-Heun step budget for validation generation
-            (defaults to ``num_steps``).
     """
 
     def __init__(
@@ -293,20 +293,23 @@ class GRPOModule(spt.Module):
         *,
         G: int = 8,
         eta_step_list: Sequence[int] = (0, 1, 2, 3, 4, 5, 6, 7),
-        eta: float = 0.7,
         clip_range: float = 1e-4,
         lr: float = 1e-6,
         adv_clip_max: float = 5.0,
         num_steps: int = 15,
         latent_shape: Sequence[int] = (4, 64, 64, 32),
-        val_num_steps: int | None = None,
     ):
+        if G < 2:
+            # group_advantage normalizes over the G siblings via torch.std (Bessel,
+            # needs ≥2 samples); G=1 ⇒ std=NaN ⇒ NaN advantage ⇒ NaN grads destroy
+            # the policy in one step. GRPO needs ≥2 siblings by definition.
+            raise ValueError(f"G must be >= 2 (need >= 2 siblings per group), got {G}.")
         # NOTE: forward is NOT passed to spt.Module — training_step is overridden
         # directly (the multi-step inner loop cannot fit the single-loss seam).
-        super().__init__(hparams={"lr": lr, "G": G, "eta": eta, "clip_range": clip_range,
+        super().__init__(hparams={"lr": lr, "G": G, "clip_range": clip_range,
                                   "num_steps": num_steps, "adv_clip_max": adv_clip_max})
         self.unet = policy  # registered → the only optimized / checkpointed arm
-        self.scheduler = scheduler
+        self.scheduler = scheduler  # carries η (the SDE exploration knob)
         # Frozen reward, held UNregistered (object.__setattr__ bypasses nn.Module
         # registration) → absent from parameters()/state_dict()/optimizer/DDP, moved
         # to the device manually in on_fit_start (mirrors RewardModule's denoiser).
@@ -317,13 +320,11 @@ class GRPOModule(spt.Module):
 
         self.G = int(G)
         self.eta_step_list = tuple(int(k) for k in eta_step_list)
-        self.eta = float(eta)
         self.clip_range = float(clip_range)
         self.lr = float(lr)
         self.adv_clip_max = float(adv_clip_max)
         self.num_steps = int(num_steps)
         self.latent_shape = tuple(int(s) for s in latent_shape)
-        self.val_num_steps = int(val_num_steps or num_steps)
 
     # -- frozen-reward lifecycle ---------------------------------------------
 
@@ -370,31 +371,17 @@ class GRPOModule(spt.Module):
         mean_new, std_new = self.scheduler.sde_step_mean(x0, z_k, step["t_k"], step["t_next"])
         return gaussian_log_prob(step["z_kplus1"], mean_new, std_new)  # (B, G)
 
-    def _maybe_clip_grads(self, opt) -> None:
-        """Respect the Trainer's ``gradient_clip_val`` if set (no-op by default).
-
-        v1's trust region is the ratio clip + a tiny LR (no ``gradient_clip_val`` set);
-        this mirrors the spt default-step skeleton (ADR-0012) without adding a clip the
-        recipe does not call for.
-        """
-        try:
-            trainer = self.trainer
-        except RuntimeError:
-            return
-        if trainer is None:
-            return
-        val = getattr(trainer, "gradient_clip_val", None)
-        if val is not None:
-            self.clip_gradients(opt, gradient_clip_val=val, gradient_clip_algorithm="norm")
-
     def training_step(self, batch: GRPOBatch, batch_idx: int):
         """One GRPO update: no-grad singular-branch rollout → multi-step PPO inner loop.
 
         The rollout (anchor + G SDE branches + Heun suffix + reward + group advantage)
         runs under ``no_grad`` and fills the buffer; the inner loop then runs one PPO
         update per perturbed step — recompute ``new_log_prob`` under grad, clipped
-        surrogate, ``manual_backward``, (grad-clip), ``opt.step``, ``zero_grad`` — so
-        the ratio drifts off 1 from the second step on and the clip binds (ADR-0012).
+        surrogate, ``manual_backward``, ``opt.step``, ``zero_grad`` — so the ratio
+        drifts off 1 from the second step on and the clip binds (ADR-0012). The trust
+        region is the ratio clip + the tiny LR (no grad-clip; Trainer
+        ``accumulate_grad_batches`` is assumed 1 — the per-step inner loop is
+        load-bearing for the clip, so accumulation > 1 would break it).
         """
         if not isinstance(batch, dict):
             raise ValueError(f"batch is expected to be a dict, not {type(batch)}")
@@ -422,7 +409,6 @@ class GRPOModule(spt.Module):
                 new_lp, step["old_log_prob"], step["advantage"], self.clip_range
             )
             self.manual_backward(loss)
-            self._maybe_clip_grads(opt)
             opt.step()
             if sched is not None:
                 for s in sched:
@@ -441,14 +427,16 @@ class GRPOModule(spt.Module):
         #56 logs the progress signal only; #58 wires the fixed-sample FID (the
         anti-reward-hacking selection metric) on this same generated batch. Generation
         uses the deployed two-eval Heun (NOT the SDE) so the reward reflects the
-        distribution JiT ships.
+        distribution JiT ships. ``sample_latent_flow`` takes a scalar modality, so a
+        mixed-label val batch is generated under ``label[0]`` — the single-modality
+        case (#56's smoke); per-sample generation lands with #58's real FID.
         """
         batch["batch_idx"] = batch_idx
         spacing_t, class_labels, B = self._conditioning_tensors(batch)
         noise = torch.randn(B, *self.latent_shape, device=self.device, dtype=self._policy_dtype())
         z_K = sample_latent_flow(
             self.unet, self.scheduler, noise, spacing_t, int(class_labels[0].item()),
-            num_inference_steps=self.val_num_steps,
+            num_inference_steps=self.num_steps,
         )
         rewards = self.reward_model(z_K).float()
         self.log("val/mean_reward", rewards.mean(), on_epoch=True, prog_bar=True, batch_size=B)

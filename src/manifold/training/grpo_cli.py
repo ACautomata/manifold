@@ -234,7 +234,6 @@ def main(argv: list[str] | None = None, *, data_provider=None) -> int:
         inputs.scheduler if inputs.scheduler is not None else FlowMatchGRPOScheduler(eta=float(opt(gcfg, "eta", 0.7))),
         G=int(opt(gcfg, "G", 8)),
         eta_step_list=list(opt(gcfg, "eta_step_list", [0, 1, 2, 3, 4, 5, 6, 7])),
-        eta=float(opt(gcfg, "eta", 0.7)),
         clip_range=float(opt(gcfg, "clip_range", 1e-4)),
         lr=float(gcfg.lr),
         adv_clip_max=float(opt(gcfg, "adv_clip_max", 5.0)),

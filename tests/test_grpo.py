@@ -285,6 +285,16 @@ def test_module_advantage_group_normalized_in_buffer():
     assert torch.allclose(A.mean(dim=1), torch.zeros(1), atol=1e-6)
 
 
+def test_module_rejects_degenerate_group_size():
+    """G < 2 raises: torch.std (Bessel) needs ≥2 siblings, else NaN advantage → NaN grads."""
+    from manifold import UNet3DConditionModel
+    from manifold.modules import GRPOModule
+
+    policy = UNet3DConditionModel(num_class_embeds=4, include_spacing_input=True)
+    with pytest.raises(ValueError, match="G must be >= 2"):
+        GRPOModule(policy, _reward_model(), FlowMatchGRPOScheduler(), G=1, latent_shape=_LAT)
+
+
 # -- CLI smoke (the end-to-end seam) -----------------------------------------
 
 
