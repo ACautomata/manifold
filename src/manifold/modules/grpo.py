@@ -419,17 +419,52 @@ class GRPOModule(spt.Module):
         self.log("train/loss", mean_loss, on_step=True, on_epoch=True, prog_bar=True, batch_size=B)
         return {"loss": mean_loss}
 
+    # -- generation (the FID callback drives this; ADR-0005) -------------------
+
+    def sample(
+        self,
+        target_shape,
+        spacing,
+        modality: int,
+        num_inference_steps: int,
+        *,
+        guidance_scale: float = 1.0,
+        cfg_interval: tuple[float, float] | None = None,
+        generator: torch.Generator | None = None,
+    ) -> Tensor:
+        """Generate a latent ``[B, C, D, H, W]`` from pure noise via the deployed Heun.
+
+        The FID callback (#58) generates through the Module — never the inference
+        Pipeline — delegating to the shared :func:`~manifold.modules.sample_latent_flow`
+        primitive. Generation uses the deployed two-eval Heun (NOT the rollout SDE)
+        so ``val/fid`` measures the distribution JiT ships. No EMA swap: GRPO
+        evaluates the **raw** policy (#59 — the double-EMA callback is not attached).
+
+        Args mirror :meth:`~manifold.modules.LatentFlowModule.sample`: same generator
+        + shape produces a bit-identical latent (parity with the JiT path).
+        """
+        device = next(self.unet.parameters()).device
+        dtype = next(self.unet.parameters()).dtype
+        noise = torch.randn(target_shape, generator=generator, device=device, dtype=dtype)
+        return sample_latent_flow(
+            self.unet, self.scheduler, noise, spacing, modality,
+            num_inference_steps=num_inference_steps,
+            guidance_scale=guidance_scale, cfg_interval=cfg_interval,
+        )
+
     # -- validation: deployed-Heun generation + reward (val/mean_reward) ------
 
     def validation_step(self, batch: GRPOBatch, batch_idx: int):
         """Generate from noise via the deployed Heun sampler, score → ``val/mean_reward``.
 
-        #56 logs the progress signal only; #58 wires the fixed-sample FID (the
-        anti-reward-hacking selection metric) on this same generated batch. Generation
-        uses the deployed two-eval Heun (NOT the SDE) so the reward reflects the
-        distribution JiT ships. ``sample_latent_flow`` takes a scalar modality, so a
-        mixed-label val batch is generated under ``label[0]`` — the single-modality
-        case (#56's smoke); per-sample generation lands with #58's real FID.
+        The RL progress signal: generate via the deployed two-eval Heun (NOT the
+        rollout SDE) so the reward reflects the distribution JiT ships, then score
+        with the frozen PatchGAN. The anti-reward-hacking selection metric
+        (``val/fid``, #58) is a SEPARATE generation pass driven by the FID callback
+        (:meth:`sample`) — a higher-reward-but-higher-FID checkpoint is thus not
+        selected over a lower-FID one. ``sample_latent_flow`` takes a scalar
+        modality, so a mixed-label val batch is generated under ``label[0]`` (the
+        single-modality regime); per-sample generation is out of scope for v1.
         """
         batch["batch_idx"] = batch_idx
         spacing_t, class_labels, B = self._conditioning_tensors(batch)

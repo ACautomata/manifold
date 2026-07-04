@@ -33,7 +33,7 @@ from lightning.pytorch.callbacks import ModelCheckpoint
 
 from ..config import opt
 from ..data.datamodule import build_datamodule
-from ..models.reward_model import RewardModel
+from ..metrics import FIDCallback
 from ..modules.grpo import GRPOModule
 from ..schedulers.scheduling_flow_match_grpo import FlowMatchGRPOScheduler
 from .trainer import build_trainer
@@ -51,6 +51,12 @@ class GRPOInputs:
     samples the group noise). The ``data_provider`` seam injects a fake policy + toy
     conditioning for the CPU smoke; the real path (``_real_inputs``, #59) loads the
     raw JiT arm + the trained reward.
+
+    Optional FID-validation inputs (#58): when ``vae`` / ``real_latents`` /
+    ``feature_net`` are ALL present, :func:`run_grpo_training` attaches
+    :class:`~manifold.metrics.FIDCallback` (no EMA) and selects the checkpoint on
+    ``val/fid`` (mode ``min``) — the anti-reward-hacking screen. When any is ``None``
+    (the CPU smoke, or a reward-only run) validation stays ``val/mean_reward`` only.
     """
 
     policy: Any
@@ -59,6 +65,11 @@ class GRPOInputs:
     train_ds: Any
     val_ds: Any
     latent_shape: Sequence[int]
+    vae: Any = None
+    real_latents: Any = None
+    feature_net: Any = None
+    fid_modality: int = 1
+    fid_spacing: Sequence[float] = (1.0, 1.0, 1.0)
 
 
 def _build_checkpoint(
@@ -71,12 +82,14 @@ def _build_checkpoint(
 ) -> ModelCheckpoint:
     """Stock Lightning ``ModelCheckpoint`` monitoring the GRPO progress signal.
 
-    #56 monitors ``val/mean_reward`` (mode ``max``) — the only metric this slice
-    logs. #58 switches selection to ``val/fid`` (mode ``min``, the anti-reward-hacking
-    screen). ``auto_insert_metric_name = False`` because the metric key contains a
-    ``/``. ``save_last=True`` for resume. Under DDP the metric is rank-local, so
-    monitoring is dropped (``save_last`` + ``save_top_k=1`` keep the latest) —
-    mirroring the JiT / reward checkpoint DDP fallback.
+    #58 selects on ``val/fid`` (mode ``min``) — the anti-reward-hacking screen (a
+    reward-hacked checkpoint scores high reward but high FID, so it is not selected)
+    — when the FID callback is attached; #56 monitored ``val/mean_reward`` (mode
+    ``max``) for the reward-only tracer. ``auto_insert_metric_name = False`` because
+    the metric key contains a ``/``. ``save_last=True`` for resume. Under DDP the
+    metric is rank-local, so monitoring is dropped (``save_last`` +
+    ``save_top_k=1`` keep the latest) — mirroring the JiT / reward checkpoint DDP
+    fallback.
     """
     if multi_gpu:
         return ModelCheckpoint(
@@ -112,33 +125,76 @@ def run_grpo_training(
     batch_size: int = 2,
     num_workers: int = 0,
     save_top_k: int = 1,
-    monitor_metric: str = "val/mean_reward",
-    mode: str = "max",
+    monitor_metric: str | None = None,
+    mode: str | None = None,
     limit_val_batches: int | float = 1.0,
     seed: int = 0,
     ckpt_path: str | None = None,
+    num_synth: int = 16,
+    center_slices_ratio: float = 0.5,
+    cov_ridge: float = 1e-6,
 ) -> tuple[pl.Trainer, ModelCheckpoint]:
     """Assemble callbacks + ``Trainer`` and ``fit`` the GRPO module (the core seam).
 
-    Builds a stock ``ModelCheckpoint`` (monitoring ``val/mean_reward``) and runs
-    ``Trainer.fit`` on the conditioning train datamodule + the val set. Returns
-    ``(trainer, ckpt)`` so callers can find the written ``.ckpt``.
+    Builds a stock ``ModelCheckpoint`` (monitoring ``val/fid`` when the FID callback
+    is attached, else ``val/mean_reward``) — and, when ``inputs`` carries the FID
+    triple (``vae`` / ``real_latents`` / ``feature_net``), attaches
+    :class:`~manifold.metrics.FIDCallback` with **no EMA** (GRPO evaluates the raw
+    policy, #59) — then runs ``Trainer.fit`` on the conditioning datamodule + the val
+    set. Returns ``(trainer, ckpt)`` so callers can find the written ``.ckpt``.
 
     Args:
-        inputs: the train/val conditioning datasets + the policy/reward/scheduler.
+        inputs: the train/val conditioning datasets + the policy/reward/scheduler
+            (+ optional FID triple).
+        monitor_metric / mode: ``None`` (the default) auto-selects ``val/fid`` (min)
+            when the FID triple is present, else ``val/mean_reward`` (max). Pass
+            explicitly to override.
         ckpt_path: optional warm-start / resume checkpoint passed to ``fit``.
     """
     pl.seed_everything(seed, workers=True)
-    multi_gpu = isinstance(devices, int) and devices > 1
+    # Mirror build_trainer's DDP detection: ``devices="auto"`` on a multi-GPU host
+    # also selects DDP, so the rank-local FID monitor must be dropped there too
+    # (else the checkpoint would monitor a rank-0-only metric under DDP).
+    multi_gpu = (isinstance(devices, int) and devices > 1) or (
+        devices == "auto" and torch.cuda.device_count() > 1
+    )
+    fid_active = (
+        inputs.vae is not None and inputs.real_latents is not None and inputs.feature_net is not None
+    )
+    if monitor_metric is None:
+        monitor_metric = "val/fid" if fid_active else "val/mean_reward"
+    if mode is None:
+        # Derive from the FINAL metric (not fid_active): a caller who overrides
+        # monitor_metric back to val/mean_reward must get mode=max, not the FID min.
+        mode = "min" if monitor_metric == "val/fid" else "max"
     ckpt = _build_checkpoint(
         model_dir, monitor_metric=monitor_metric, mode=mode, save_top_k=save_top_k, multi_gpu=multi_gpu
     )
+    callbacks: list[pl.Callback] = [ckpt]
+    if fid_active:
+        callbacks.append(
+            FIDCallback(
+                module=module,
+                vae=inputs.vae,
+                ema_callback=None,  # GRPO has no double-EMA (#59)
+                real_latents=inputs.real_latents,
+                feature_net=inputs.feature_net,
+                latent_shape=(1, *module.latent_shape),
+                spacing=inputs.fid_spacing,
+                modality=int(inputs.fid_modality),
+                num_inference_steps=module.num_steps,
+                num_synth=num_synth,
+                center_slices_ratio=center_slices_ratio,
+                cov_ridge=cov_ridge,
+                seed=seed,
+            )
+        )
     datamodule = build_datamodule(
         inputs.train_ds, batch_size=batch_size, val_dataset=inputs.val_ds, num_workers=num_workers
     )
     trainer = build_trainer(
         max_epochs=max_epochs,
-        callbacks=[ckpt],
+        callbacks=callbacks,
         model_dir=model_dir,
         devices=devices,
         accelerator=accelerator,

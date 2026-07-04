@@ -51,7 +51,9 @@ class FIDCallback(pl.Callback):
             decodes both arms (no Pipeline).
         ema_callback: the :class:`~manifold.training.DoubleEMACallback`; the slow
             shadow is swapped in around generation so reported quality reflects
-            the published EMA model.
+            the published EMA model. ``None`` selects the no-EMA regime (e.g. GRPO
+            policy post-training, #59): a single arm with no swap, logged as
+            ``val/fid`` (the anti-reward-hacking selection metric, #58).
         real_latents: the FIXED real reference subset ``[N, C, D, H, W]`` (scaled
             latents — the seeded-shuffle prefix of ``val_subset_size``). Decoded
             once and cached.
@@ -237,22 +239,36 @@ class FIDCallback(pl.Callback):
         try:
             if self._real_planes is None:
                 self._real_planes = self._real_features()
-            # Slow-EMA(0.9999) arm — the published model (matches hope's policy).
-            self._compute_and_log(module, raw=False)
-            # Raw-optimizer arm — decoupled from the slow EMA's convergence lag,
-            # so it tracks whether the model is actually learning. Monitored for
-            # the best checkpoint (a lagging EMA otherwise hides raw progress).
-            if self.log_raw_fid:
-                self._compute_and_log(module, raw=True)
+            if self.ema_callback is None:
+                # No-EMA regime (e.g. GRPO policy post-training, #59: the supervised-
+                # decay shadows are useless under RL). One arm, no swap, logged as
+                # ``val/fid`` — the anti-reward-hacking selection metric (#58).
+                self._compute_and_log(module, raw=True, total_key="val/fid", plane_key="val/fid")
+            else:
+                # Slow-EMA(0.9999) arm — the published model (matches hope's policy).
+                self._compute_and_log(
+                    module, raw=False, total_key="val/fid_avg", plane_key="val/fid"
+                )
+                # Raw-optimizer arm — decoupled from the slow EMA's convergence lag,
+                # so it tracks whether the model is actually learning. Monitored for
+                # the best checkpoint (a lagging EMA otherwise hides raw progress).
+                if self.log_raw_fid:
+                    self._compute_and_log(
+                        module, raw=True, total_key="val/fid_raw", plane_key="val/fid_raw"
+                    )
         finally:
             self._restore_eval_to_cpu()
 
-    def _compute_and_log(self, module, *, raw: bool) -> None:
+    def _compute_and_log(self, module, *, raw: bool, total_key: str, plane_key: str) -> None:
         """Generate one arm + log its per-plane unbiased FID vs the cached real.
 
-        raw=False -> ``val/fid_avg`` (+ ``val/fid_{xy,yz,zx}``), the slow-EMA arm.
-        raw=True  -> ``val/fid_raw`` (+ ``val/fid_raw_{xy,yz,zx}``), the raw arm
-        sampled without the EMA swap. No-op when no plane has ≥2 features.
+        ``total_key`` is the metric logged for the arm's mean FID; ``plane_key`` is
+        the prefix for the per-plane diagnostics (``f"{plane_key}_{xy,yz,zx}"``).
+        The JiT two-arm regime uses ``val/fid_avg`` (+ ``val/fid_{axis}``) for the
+        slow-EMA arm and ``val/fid_raw`` (+ ``val/fid_raw_{axis}``) for the raw arm;
+        the no-EMA regime (#58) uses a single ``val/fid`` (+ ``val/fid_{axis}``).
+        ``raw=True`` skips the EMA swap (absent under no-EMA). No-op when no plane
+        has ≥2 features.
         """
         synth_planes = self._synth_features(raw=raw)
         per_plane: dict[str, float] = {}
@@ -268,11 +284,6 @@ class FIDCallback(pl.Callback):
             n += 1
         if not n:
             return
-        if raw:
-            module.log("val/fid_raw", total / n)
-            for name, val in per_plane.items():
-                module.log(f"val/fid_raw_{name}", val)
-        else:
-            module.log("val/fid_avg", total / n)
-            for name, val in per_plane.items():
-                module.log(f"val/fid_{name}", val)
+        module.log(total_key, total / n)
+        for name, val in per_plane.items():
+            module.log(f"{plane_key}_{name}", val)
