@@ -437,6 +437,40 @@ def test_run_grpo_training_with_fid_logs_val_fid_and_selects_on_it(tmp_path):
     assert ckpt.mode == "min"
 
 
+def test_run_grpo_training_monitor_override_derives_correct_mode(tmp_path):
+    """Overriding monitor_metric=val/mean_reward keeps mode=max even with FID attached (codex #62).
+
+    The mode auto-derives from the FINAL monitor_metric, not from fid_active: a caller
+    who keeps the FID triple but selects back on the reward signal must get mode=max
+    (else the checkpoint would select the LOWEST reward — a silent footgun).
+    """
+    from manifold import AutoencoderKL, UNet3DConditionModel
+    from manifold.modules import GRPOModule
+    from manifold.training.grpo_cli import GRPOInputs, run_grpo_training
+
+    torch.manual_seed(0)
+    policy = UNet3DConditionModel(num_class_embeds=4, include_spacing_input=True)
+    inputs = GRPOInputs(
+        policy=policy, reward_model=_reward_model(), scheduler=FlowMatchGRPOScheduler(eta=0.5),
+        train_ds=_ToyCondDS(), val_ds=_ToyCondDS(), latent_shape=_LAT,
+        vae=AutoencoderKL(scaling_factor=0.5),
+        real_latents=torch.randn(6, *_LAT),
+        feature_net=_FakeFeatureNet(),
+    )
+    module = GRPOModule(
+        inputs.policy, inputs.reward_model, inputs.scheduler,
+        G=2, eta_step_list=(0,), num_steps=3, latent_shape=_LAT, lr=1e-3,
+    )
+    _, ckpt = run_grpo_training(
+        module=module, inputs=inputs, model_dir=str(tmp_path),
+        max_epochs=1, devices=1, accelerator="cpu", batch_size=2,
+        num_synth=3, cov_ridge=1e-2,
+        monitor_metric="val/mean_reward",  # override back to the reward signal; mode=None
+    )
+    assert ckpt.monitor == "val/mean_reward"
+    assert ckpt.mode == "max", "overriding monitor_metric must derive mode from the metric, not fid_active"
+
+
 def test_grpo_module_sample_is_deployed_heun_not_the_sde(unet):
     """GRPOModule.sample is the deployed two-eval Heun — η does NOT leak into val gen (#58).
 

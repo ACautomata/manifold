@@ -152,14 +152,21 @@ def run_grpo_training(
         ckpt_path: optional warm-start / resume checkpoint passed to ``fit``.
     """
     pl.seed_everything(seed, workers=True)
-    multi_gpu = isinstance(devices, int) and devices > 1
+    # Mirror build_trainer's DDP detection: ``devices="auto"`` on a multi-GPU host
+    # also selects DDP, so the rank-local FID monitor must be dropped there too
+    # (else the checkpoint would monitor a rank-0-only metric under DDP).
+    multi_gpu = (isinstance(devices, int) and devices > 1) or (
+        devices == "auto" and torch.cuda.device_count() > 1
+    )
     fid_active = (
         inputs.vae is not None and inputs.real_latents is not None and inputs.feature_net is not None
     )
     if monitor_metric is None:
         monitor_metric = "val/fid" if fid_active else "val/mean_reward"
     if mode is None:
-        mode = "min" if fid_active else "max"
+        # Derive from the FINAL metric (not fid_active): a caller who overrides
+        # monitor_metric back to val/mean_reward must get mode=max, not the FID min.
+        mode = "min" if monitor_metric == "val/fid" else "max"
     ckpt = _build_checkpoint(
         model_dir, monitor_metric=monitor_metric, mode=mode, save_top_k=save_top_k, multi_gpu=multi_gpu
     )
