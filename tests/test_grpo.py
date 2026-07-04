@@ -499,6 +499,59 @@ def test_grpo_module_sample_is_deployed_heun_not_the_sde(unet):
     assert torch.equal(out, ref)  # η-agnostic deployed Heun — no SDE leak into val gen
 
 
+# -- launch readiness (#59): no EMA + measurement harness -------------------
+
+
+def test_run_grpo_training_attaches_no_ema_callback(tmp_path):
+    """GRPO runs WITHOUT DoubleEMACallback (#59).
+
+    The double-EMA's supervised-decay shadows are useless under RL (no supervised
+    gradient feeds them) and hold ~7 GB the rollout needs; the FID callback's
+    EMA-swap is a no-op so ``val/fid`` evaluates the RAW policy (ADR-0012). The
+    checkpoint + the (optional) FID callback are the only callbacks attached."""
+    from manifold.modules import GRPOModule
+    from manifold.training import DoubleEMACallback
+    from manifold.training.grpo_cli import run_grpo_training
+
+    inputs = _inputs()
+    module = GRPOModule(
+        inputs.policy, inputs.reward_model, inputs.scheduler,
+        G=2, eta_step_list=(0,), num_steps=3, latent_shape=inputs.latent_shape, lr=1e-3,
+    )
+    trainer, _ = run_grpo_training(
+        module=module, inputs=inputs, model_dir=str(tmp_path),
+        max_epochs=1, devices=1, accelerator="cpu", batch_size=2,
+    )
+    assert not any(isinstance(c, DoubleEMACallback) for c in trainer.callbacks), (
+        "GRPO must NOT attach DoubleEMACallback (#59) — the shadows are useless under "
+        "RL and val/fid evaluates the raw policy."
+    )
+
+
+def test_run_grpo_measurement_reports_it_per_s(tmp_path):
+    """run_grpo_measurement times a fit + reports it/s (peak GPU is 0 off-CUDA) (#59).
+
+    The launch-gate harness: sizes G / eta_step_list / n_epochs by measuring the real
+    budget's throughput + peak GPU memory on the target cluster. Off-CUDA the peak
+    memory read is 0 (the read is GPU-only); the it/s + elapsed are real on any host.
+    """
+    from manifold.modules import GRPOModule
+    from manifold.training.grpo_cli import run_grpo_measurement
+
+    inputs = _inputs()
+    module = GRPOModule(
+        inputs.policy, inputs.reward_model, inputs.scheduler,
+        G=2, eta_step_list=(0,), num_steps=3, latent_shape=inputs.latent_shape, lr=1e-3,
+    )
+    it_per_s, peak, elapsed = run_grpo_measurement(
+        module=module, inputs=inputs, model_dir=str(tmp_path),
+        devices=1, accelerator="cpu", batch_size=2,
+    )
+    assert it_per_s > 0, f"it/s must be a positive real, got {it_per_s}"  # nan fails >
+    assert elapsed > 0
+    assert peak == 0  # off-CUDA: torch.cuda.max_memory_allocated() is 0
+
+
 _TINY_NETWORK_YAML = "spatial_dims: 3\nlatent_channels: 4\n"
 
 
