@@ -223,6 +223,79 @@ def test_clipped_surrogate_loss_clips_ratio_beyond_bound():
     assert new.grad.abs().item() < 1e-8  # clipped branch ⇒ no gradient flows
 
 
+def test_multi_step_inner_loop_ratio_drifts_off_one_so_clip_binds(tmp_path):
+    """From the 2nd inner step on the ratio drifts off 1 → the clip binds (#57).
+
+    The multi-step inner loop is load-bearing, not cosmetic: at step 0 the policy
+    is unchanged since rollout, so the re-evaluated ``new_log_prob`` == ``old``,
+    giving ``ratio == 1`` (no clip). After the first ``opt.step()`` the weights
+    moved, so step ≥1 recomputes a ratio off 1 — past the tight ``clip_range`` the
+    clipped branch freezes the gradient (a real PPO trust region). A single
+    aggregated step would leave ``ratio == 1`` always and the clip a permanent
+    no-op (→ REINFORCE). The large LR makes one Adam step move the ratio past
+    ``clip_range`` demonstratively; the assertion is the mechanism, not the
+    production LR (1e-6). Verifies #57 acceptance: the clip binds, verified by a
+    test (not just asserted in prose).
+    """
+    import manifold.modules.grpo as grpo_mod
+
+    from manifold import UNet3DConditionModel
+    from manifold.modules import GRPOModule
+    from manifold.training.grpo_cli import GRPOInputs, run_grpo_training
+
+    torch.manual_seed(0)
+    policy = UNet3DConditionModel(num_class_embeds=4, include_spacing_input=True)
+    inputs = GRPOInputs(
+        policy=policy, reward_model=_reward_model(), scheduler=FlowMatchGRPOScheduler(eta=0.5),
+        train_ds=_ToyCondDS(), val_ds=_ToyCondDS(), latent_shape=_LAT,
+    )
+    module = GRPOModule(
+        inputs.policy, inputs.reward_model, inputs.scheduler,
+        G=2, eta_step_list=(0, 1), num_steps=3, latent_shape=_LAT, lr=1e-2,  # large LR → visible drift
+    )
+    #: Per inner step: (mean|r−1|, clip_active?). Captured by spying on the loss.
+    captured: list[tuple[float, bool]] = []
+    real_loss = grpo_mod.clipped_surrogate_loss
+
+    def spy(new_lp, old_lp, advantage, clip_range):
+        with torch.no_grad():
+            ratio = torch.exp(new_lp - old_lp)
+            eps = float(clip_range)
+            clipped_ratio = ratio.clamp(1.0 - eps, 1.0 + eps)
+            # PPO binds where the clipped term is the min — i.e. the gradient is
+            # frozen — which happens ONLY on the side selected by the advantage sign
+            # (ratio>1+eps for A>0; ratio<1-eps for A<0). Checking ratio bounds alone
+            # would mark the clip "active" even when every element still uses the
+            # unclipped term, so the test could pass without the trust region ever
+            # engaging (codex #61 P2). This is the exact binding condition.
+            binds = (clipped_ratio * advantage) < (ratio * advantage)
+            captured.append((float((ratio - 1.0).abs().mean()), bool(binds.any())))
+        return real_loss(new_lp, old_lp, advantage, clip_range)
+
+    # Patch the module global training_step looks up (NOT the test's local import,
+    # which bound a separate reference). Safe per-test: pytest workers are separate
+    # processes, and the finally restores it even on exception within a worker.
+    grpo_mod.clipped_surrogate_loss = spy
+    try:
+        run_grpo_training(
+            module=module, inputs=inputs, model_dir=str(tmp_path),
+            max_epochs=1, devices=1, accelerator="cpu", batch_size=2,
+        )
+    finally:
+        grpo_mod.clipped_surrogate_loss = real_loss
+
+    # Step 0: weights unchanged since rollout ⇒ ratio == 1 ⇒ no drift, clip idle.
+    assert len(captured) >= 2, "expected ≥2 inner steps (eta_step_list=(0,1))"
+    assert captured[0][0] < 1e-9, f"step-0 ratio must be 1 (unchanged weights), got drift {captured[0][0]}"
+    assert not captured[0][1], "step-0 clip must be idle (ratio == 1)"
+    # Step 1: opt.step() moved the policy ⇒ ratio off 1, past clip_range ⇒ clip binds.
+    assert captured[1][1], (
+        f"step-1 clip must bind (ratio drifted past clip_range={module.clip_range} after opt.step); "
+        f"drift={captured[1][0]}"
+    )
+    assert captured[1][0] > captured[0][0], "ratio drift must increase after the first opt.step"
+
+
 # -- GRPOModule (the policy learner) -----------------------------------------
 
 
@@ -439,3 +512,69 @@ def test_main_uses_committed_default_grpo_recipe(tmp_path):
     assert rc == 0
     ckpts = list(Path(str(tmp_path / "model")).glob("*.ckpt"))
     assert any(p.name == "last.ckpt" for p in ckpts)
+
+
+# -- full v1 rollout budget (#57) --------------------------------------------
+#
+# The numerics (σ_t equimarginal, noise-end clamp 1/n, clean-end t_eps, per-sample
+# (B,) parity) ship in #56 with their own tests. #57's remaining acceptance is the
+# full-v1-budget feasibility: the real G=8 / eta_step_list=[0..7] / num_steps=15
+# rollout is finite across the whole trajectory (no NaN/Inf from either blowup) and
+# runs end-to-end via per-term manual_backward (peak autograd = one UNet-forward).
+
+
+def test_full_v1_budget_rollout_is_finite_across_trajectory(unet):
+    """G=8, eta_step_list=[0..7], num_steps=15: every buffer entry finite (#57).
+
+    The full noisy-half budget walks the whole grid, so it exercises both the
+    noise-end σ_t blowup (node 0, t=0 → clamped to 1/n) and the clean-end
+    1/(1−t) blowup (node 14→15, t_next=1 → the Heun final-step Euler). The
+    acceptance: no NaN/Inf anywhere in the trajectory — every z_kplus1, log-prob,
+    advantage, and reward is finite. (CPU cannot measure GPU OOM, but finiteness
+    across the trajectory is the numerics half of the budget acceptance; the
+    end-to-end fit below is the per-term-manual_backward half.)
+    """
+    torch.manual_seed(0)
+    noise = torch.randn(2, *_LAT)
+    buf = singular_branch_rollout(
+        unet, FlowMatchGRPOScheduler(eta=0.7), _reward_model(), noise,
+        [1.0, 1.0, 1.0], 1, G=8, eta_step_list=list(range(8)), num_steps=15,
+    )
+    assert len(buf) == 8  # one entry per perturbed step in [0..7]
+    for e in buf:
+        for key in ("z_kplus1", "old_log_prob", "advantage", "rewards"):
+            assert torch.isfinite(e[key]).all(), f"{key} has NaN/Inf in the full-budget rollout"
+        assert e["t_k"] < e["t_next"]
+
+
+def test_full_v1_budget_runs_end_to_end(tmp_path):
+    """The real v1 budget (G=8, [0..7], num_steps=15) completes a fit without OOM (#57).
+
+    End-to-end via ``run_grpo_training``: the per-term ``manual_backward`` frees each
+    inner step's graph before the next, so peak autograd memory is one UNet-forward
+    at G·N = 8·15 (the 3D-feasibility invariant, ADR-0011/0012). CPU cannot measure
+    GPU OOM, but completing the fit (finite loss + checkpoint written) is the
+    tractability signal the budget pass requires.
+    """
+    from manifold import UNet3DConditionModel
+    from manifold.modules import GRPOModule
+    from manifold.training.grpo_cli import GRPOInputs, run_grpo_training
+
+    torch.manual_seed(0)
+    policy = UNet3DConditionModel(num_class_embeds=4, include_spacing_input=True)
+    inputs = GRPOInputs(
+        policy=policy, reward_model=_reward_model(), scheduler=FlowMatchGRPOScheduler(eta=0.7),
+        train_ds=_ToyCondDS(), val_ds=_ToyCondDS(), latent_shape=_LAT,
+    )
+    module = GRPOModule(
+        inputs.policy, inputs.reward_model, inputs.scheduler,
+        G=8, eta_step_list=tuple(range(8)), num_steps=15, latent_shape=_LAT, lr=1e-3,
+    )
+    trainer, ckpt = run_grpo_training(
+        module=module, inputs=inputs, model_dir=str(tmp_path),
+        max_epochs=1, devices=1, accelerator="cpu", batch_size=2,
+    )
+    assert torch.isfinite(trainer.callback_metrics["val/mean_reward"])
+    ckpts = list(Path(str(tmp_path)).glob("*.ckpt"))
+    assert any(p.name == "last.ckpt" for p in ckpts)
+    assert ckpt.best_model_path and Path(ckpt.best_model_path).is_file()
