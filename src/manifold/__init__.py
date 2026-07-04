@@ -11,6 +11,7 @@ from .models import AutoencoderKL, ModelMixin, RewardModel, UNet3DConditionModel
 from .modules import LatentFlowModule
 from .pipelines import DiffusionPipeline, LatentFlowPipeline
 from .schedulers import (
+    FlowMatchGRPOScheduler,
     FlowMatchHeunDiscreteScheduler,
     PartialFlowMatchHeunScheduler,
     SchedulerMixin,
@@ -22,6 +23,7 @@ __all__ = [
     "AutoencoderKL",
     "ConfigMixin",
     "DiffusionPipeline",
+    "FlowMatchGRPOScheduler",
     "FlowMatchHeunDiscreteScheduler",
     "LatentFlowModule",
     "LatentFlowPipeline",

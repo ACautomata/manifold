@@ -1,0 +1,46 @@
+# GRPO recipe preset — Granular-GRPO policy post-training of the JiT x0-denoiser
+# (ADR-0011 / ADR-0012 / issues #55/#56). Composed with a BraTS2023 env + the network
+# config (latent metadata). The train/val sets carry manifold conditioning (spacing +
+# label); the policy rollout samples the group noise (GRPO is generative — there is no
+# clean-latent target).
+#
+# Consumed by manifold-train-grpo. The GRPO job needs no VAE / image data — the
+# reward scores the terminal latent (no VAE decode per branch). The real-data launch
+# (raw JiT arm + trained reward) is gated on the reward model clearing
+# val/gen_pair_acc > 0.8 + a tiny-config measurement (#59).
+
+grpo_train:
+  batch_size: 2
+  lr: 1.0e-6
+  n_epochs: 50
+  # The anchor grid resolution (two-eval Heun steps over t: 0 → 1). Default 15 matches
+  # the JiT denoiser's production inference count, so the rollout samples the policy at
+  # the resolution it deploys at.
+  num_steps: 15
+  # The group size — transition-rollout siblings sharing one (conditioning, noise) pair,
+  # over whose terminal rewards the advantage is normalized.
+  G: 8
+  # The perturbed step indices (the noisy-half) — one stochastic SDE step off the
+  # anchor at each, then a deterministic Heun suffix to the terminal latent.
+  eta_step_list: [0, 1, 2, 3, 4, 5, 6, 7]
+  # The diffusion scale η (σ_t = η·sqrt((1−t)/t)) — the single exploration knob.
+  eta: 0.7
+  # The PPO clipped-surrogate ε — tight, so each update is microscopic and stable.
+  clip_range: 1.0e-4
+  # The advantage-magnitude clip (a single spoofed-reward outlier cannot dominate a step).
+  adv_clip_max: 5.0
+  # The rollout latent shape (C, D, H, W). GRPO is generative — the Module samples the
+  # group noise of this shape; override per dataset.
+  latent_shape: [4, 64, 64, 32]
+
+# Real-data wiring (the #59 launch). The raw-arm JiT policy loads from --native-dir
+# (ADR-0006); the trained RewardModel from --reward-path; the conditioning from the
+# latent cache. Placeholder until #59.
+grpo:
+  val_fraction: 0.2  # held-out subject fraction (val conditioning).
+
+# Stock Lightning ModelCheckpoint: monitor val/mean_reward (the progress signal, max)
+# in #56; #58 switches selection to val/fid (min, the anti-reward-hacking screen).
+# Under DDP the rank-local monitor is dropped (save_last + save_top_k=1 keep the latest).
+checkpoint:
+  save_top_k: 1

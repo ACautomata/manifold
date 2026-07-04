@@ -55,6 +55,9 @@ manifold-train = "manifold.training.cli:main"
 # The standalone reward-training launcher (issue #39/#40): precomputed pairs -> fit.
 # Pair generation is scripts/generate_reward_pairs.py (loads the frozen JiT export).
 manifold-train-reward = "manifold.training.reward_cli:main"
+# The GRPO policy-post-training launcher (issue #55/#56): the frozen reward steers a
+# Granular-GRPO singular-branch update of the raw-arm JiT x0-denoiser (the policy).
+manifold-train-grpo = "manifold.training.grpo_cli:main"
 
 [project.urls]
 Homepage = "https://github.com/junran/manifold"
