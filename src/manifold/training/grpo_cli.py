@@ -424,12 +424,16 @@ def _real_inputs(
         norm=str(opt(reward_cfg, "norm", "BATCH")),
     )
     # weights_only=True first (no arbitrary-code-execution risk); fall back to False
-    # only for full Lightning ckpts whose callback/optimizer state carries non-tensor
-    # objects. reward_path is the user's OWN trained reward (trusted — mirroring
+    # only for the weights_only restriction itself (non-allowlisted globals in a full
+    # Lightning ckpt's callback/optimizer state), NOT for file/IO errors (which must
+    # surface). reward_path is the user's OWN trained reward (trusted — mirroring
     # export_to_native; never point this at an untrusted .ckpt).
+    import pickle
+
     try:
         ckpt = torch.load(str(reward_path), map_location="cpu", weights_only=True)
-    except Exception:
+    except (pickle.UnpicklingError, ValueError):
+        _log.warning("reward ckpt %s needs weights_only=False (non-tensor state); loading trusted.", reward_path)
         ckpt = torch.load(str(reward_path), map_location="cpu", weights_only=False)
     state = ckpt.get("state_dict", ckpt)
     reward_sd = {k[len("reward_model."):]: v for k, v in state.items() if k.startswith("reward_model.")}
