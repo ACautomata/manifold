@@ -155,6 +155,58 @@ disjoint `[0.5, 1) / [0, 0.5)` halves, which saturated `val/pair_acc` at 0.997.)
 _Avoid_: positive/negative sample (say winner/loser — those name the half-pair, not
 a label).
 
+### GRPO policy learning
+
+**Anchor trajectory** (GRPO):
+The deterministic (noise-free) reverse-time rollout run once per group to furnish
+the branch points — the latent `z_k` at each step `k` from which a single stochastic
+step is taken. Uses the JiT inference sampler (two-eval Heun) under no gradient, so
+its branch points lie on the deployed generation manifold. Distinct from the
+**stochastic branch** (one SDE step off the anchor) and the **ODE suffix** (the
+deterministic Heun continuation from the perturbed `z_{k+1}` to the terminal `z_K`).
+_Avoid_: baseline trajectory, reference rollout.
+
+**Singular branching**:
+The Granular-GRPO exploration scheme — for each step `k` in a list, branch exactly
+*one* stochastic SDE step off the anchor at `z_k`, then roll deterministically to the
+terminal `z_K` for a reward. Because only one step is perturbed per branch, the
+terminal reward is faithful to that single step's transition log-prob (fine-grained
+credit), and the autograd graph holds only that one step's UNet eval (memory-tractable
+on 3D volumes). Distinct from vanilla trajectory GRPO (every step stochastic, terminal
+reward broadcast across all step ratios — infeasible here on `[4,64,64,32]` latents).
+_Avoid_: per-step GRPO (ambiguous), token-level GRPO.
+
+**Transition policy** (GRPO):
+The Gaussian transition kernel of the one stochastic SDE step,
+`π_θ(z_{k+1} | z_k, t_k) = N(z_k + Δt·b_θ, σ²_t·Δt·I)` with drift
+`b_θ = (x_θ − z_k)/(1 − t_k) + (σ²_t / 2t_k)·x_θ` — the x-pred form of the equimarginal
+reverse-time SDE of the JiT transport. Its log-density (mean-reduced over non-batch
+dims) is the quantity whose old/new ratio the GRPO objective clips. Distinct from the
+**Reward Model** (which scores the terminal `z_K`, not a transition) and from the UNet
+itself (the *parameter* of this policy, not the policy).
+_Avoid_: policy network, actor.
+
+**Group** (GRPO):
+The `G` transition-rollout siblings sharing one (conditioning, initial-noise) pair,
+over whose terminal rewards the advantage is normalized:
+`A_i = (R_i − mean R) / (std R + ε)`. The conditioning is the manifold conditioning
+tensor (spacing + label); the initial noise is shared so siblings differ only in the
+stochastic SDE draw. Distinct from the **preference pair** (winner/loser — a
+reward-training artifact).
+_Avoid_: prompt (that is the text-to-image analog; manifold has no text), batch.
+
+**Policy Module** (GRPO-policy-training Module):
+The `spt.Module` owning GRPO-policy-learning concerns — the singular-branch rollout
+(ADR-0011), the multi-step PPO inner loop, the group-relative advantage, and the
+clipped-surrogate loss. It holds the **trainable JiT x0-denoiser** (the policy — the only
+params it optimizes) and the **frozen Reward Model** (unregistered, like the reward Module
+holds its denoiser). It overrides `training_step` (not `forward` — GRPO is multi-term,
+multi-step, so the single-loss seam the Reward Module uses cannot hold), runs no EMA, and
+resumes / selects / exports the **raw** arm (ADR-0006). Distinct from the JiT **Module**
+(the supervised x0 trainer it post-trains) and the **Reward Module** (whose frozen
+denoiser it instead unfreezes and optimizes against the reward the Reward Module trained).
+_Avoid_: GRPO trainer, actor.
+
 ### Configuration
 
 **Experiment config**:
