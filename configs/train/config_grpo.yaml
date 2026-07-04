@@ -35,15 +35,10 @@ grpo_train:
 
 # Real-data wiring (the #59 launch). The raw-arm JiT policy loads from --native-dir
 # (ADR-0006); the trained RewardModel from --reward-path; the conditioning + the FID
-# real reference from --latents-dir. Set to match the trained reward (load_state_dict
-# is strict) — the defaults mirror the standard PatchGAN reward config.
-reward_model:
-  spatial_dims: 3
-  in_channels: 4
-  channels: 64
-  num_layers_d: 3
-  norm: BATCH
-
+# real reference from --latents-dir. The RewardModel architecture (``reward_model``
+# block) comes from the network config (``-t``) — it is NOT repeated here: load_config
+# merges env → train → network, so a network file's ``reward_model`` would overwrite
+# one placed here (config_network.yaml defines it).
 grpo:
   val_fraction: 0.2  # held-out subject fraction (val conditioning + FID real reference).
   modality: 1  # the FID generation recipe's class label (single-modality v1).

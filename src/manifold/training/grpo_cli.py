@@ -415,7 +415,9 @@ def _real_inputs(
     scaling_factor = float(vae.scaling_factor)
 
     # 2. Trained RewardModel (frozen) from its RewardModule Lightning checkpoint.
-    reward_cfg = cfg.reward_model
+    # The reward_model architecture comes from the network config (``-t``) — opt()
+    # falls back to the RewardModel defaults if a non-standard network file omits it.
+    reward_cfg = opt(cfg, "reward_model", {})
     reward_model = RewardModel(
         spatial_dims=int(opt(reward_cfg, "spatial_dims", 3)),
         in_channels=int(opt(reward_cfg, "in_channels", 4)),
@@ -467,7 +469,12 @@ def _real_inputs(
     )
 
     class _CondDS(Dataset):
-        """Manifold conditioning only (GRPO is generative — the rollout samples noise)."""
+        """Manifold conditioning only (GRPO is generative — the rollout samples noise).
+
+        ``spacing`` / ``label`` are normalized to tensors on read so the default
+        collate batches them: cache files may store ``spacing`` as a plain list,
+        which the default collate would transpose into a list-of-tensors and break
+        ``_conditioning_tensors``'s ``torch.as_tensor``."""
 
         def __init__(self, items):
             self.items = items
@@ -476,22 +483,38 @@ def _real_inputs(
             return len(self.items)
 
         def __getitem__(self, i):
-            return {"spacing": self.items[i]["spacing"], "label": self.items[i]["label"]}
+            return {
+                "spacing": torch.as_tensor(self.items[i]["spacing"], dtype=torch.float32),
+                "label": torch.as_tensor(self.items[i]["label"], dtype=torch.long),
+            }
 
-    real_latents = torch.stack([it["latent"] for it in val_items]).float() * scaling_factor
+    # Cap the FID real-reference subset (mirrors the JiT cli): FIDCallback decodes the
+    # whole ``real_latents`` tensor in ONE _real_features() pass, so an unbounded val
+    # set would OOM the FID phase. Seeded prefix ⇒ the reference is fixed across runs.
+    val_subset_size = int(opt(cfg, "val_subset_size", 32))
+    g = torch.Generator().manual_seed(0)
+    val_idx = torch.randperm(len(val_items), generator=g)[:val_subset_size].tolist()
+    real_latents = torch.stack([val_items[i]["latent"] for i in val_idx]).float() * scaling_factor
 
-    # 4. RadImageNet feature_net (the FID backbone); FID disabled if unavailable.
-    try:
-        feature_net = make_feature_network("resnet50")
-    except Exception as exc:  # pragma: no cover — torch.hub/network only on the cluster.
-        _log.warning("RadImageNet backbone unavailable (%r); FID disabled.", exc)
-        feature_net = None
+    # The FID backbone IS the anti-reward-hacking screen — fail closed if it cannot
+    # load (the launch requires it). The data_provider smoke bypasses _real_inputs.
+    feature_net = make_feature_network("resnet50")
+
+    # Preserve the native scheduler's transport settings (the t_eps /
+    # num_train_timesteps the JiT checkpoint trained/exported with); only eta is the
+    # GRPO addition. Building with defaults would mismatch a non-default t_eps export.
+    sched_cfg = pipe.scheduler.config
+    scheduler = FlowMatchGRPOScheduler(
+        num_train_timesteps=int(sched_cfg.get("num_train_timesteps", 1000)),
+        t_eps=float(sched_cfg.get("t_eps", 0.05)),
+        eta=float(opt(cfg.grpo_train, "eta", 0.7)),
+    )
 
     latent_shape = tuple(int(s) for s in opt(cfg.grpo_train, "latent_shape", [4, 64, 64, 32]))
     return GRPOInputs(
         policy=policy,
         reward_model=reward_model,
-        scheduler=FlowMatchGRPOScheduler(eta=float(opt(cfg.grpo_train, "eta", 0.7))),
+        scheduler=scheduler,
         train_ds=_CondDS(train_items),
         val_ds=_CondDS(val_items),
         latent_shape=latent_shape,
