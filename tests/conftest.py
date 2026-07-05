@@ -16,6 +16,7 @@ from manifold import (
     FlowMatchHeunDiscreteScheduler,
     LatentFlowModule,
     LatentFlowPipeline,
+    PairedLatentFlowPipeline,
     UNet3DConditionModel,
 )
 
@@ -56,3 +57,26 @@ def latent_module() -> LatentFlowModule:
         train_batch_size=2,
         n_epochs=2,
     )
+
+
+# -- Paired JiT (src→tgt flow) fixtures --------------------------------------
+# A paired UNet doubles the input channels: concat([z_t, x_src]) → 2·C_latent = 8.
+# ``vae`` above is reused (one frozen VAE for both endpoints — ADR-0014).
+
+
+@pytest.fixture
+def paired_unet() -> UNet3DConditionModel:
+    torch.manual_seed(0)
+    return UNet3DConditionModel(
+        in_channels=8, out_channels=4, num_class_embeds=4, include_spacing_input=True
+    )
+
+
+@pytest.fixture
+def paired_scheduler() -> FlowMatchHeunDiscreteScheduler:
+    return FlowMatchHeunDiscreteScheduler()
+
+
+@pytest.fixture
+def paired_pipeline(paired_unet, vae, paired_scheduler) -> PairedLatentFlowPipeline:
+    return PairedLatentFlowPipeline(paired_unet, vae, paired_scheduler)

@@ -66,6 +66,49 @@ The spacing tensor + class-label vector the UNet consumes — medical geometry a
 modality, not text embeddings.
 _Avoid_: context, encoder hidden states (those are diffusers text-conditioned terms).
 
+### Paired JiT (src→tgt flow)
+
+**Paired JiT**:
+The latent-flow formulation that connects *two data latents* — a source latent at
+`t = 0` and a target latent at `t = 1` — over the SAME rectified-flow transport as
+the (noise→data) JiT (`z = t·x_tgt + (1−t)·x_src`, i.e. `add_noise(x_tgt, x_src, t)`).
+The network predicts the target latent `x_tgt` (x0-prediction, unchanged); the Heun
+rollout starts from `z_0 = x_src` instead of Gaussian noise. Sibling of the JiT
+x0-denoiser — it shares the scheduler, transport, and integrator verbatim; only the
+`t = 0` endpoint is a data latent instead of noise.
+_Avoid_: image-to-image JiT, translation flow, paired flow (say Paired JiT — it
+reuses the JiT transport and Heun, not a new flow family).
+
+**src latent / tgt latent**:
+The paired scaled VAE latents at the `t = 0` / `t = 1` endpoints of the Paired JiT
+transport. The model maps src → tgt; both come from one frozen VAE, so a single
+`scale_factor` (estimated over both pooled) applies to both.
+_Avoid_: input/output latent, condition/target (say src/tgt — they name endpoints,
+not roles).
+
+**Summed-label conditioning**:
+The translation-direction encoding in Paired JiT — `embed(src_contrast) +
+embed(tgt_contrast)` fed through the existing class-label embedding pathway, so one
+model learns every contrast direction (the direction is the sum, not a fresh row
+per pair).
+_Avoid_: direction embedding, pair label.
+
+**any-to-any pairing**:
+The BraTS pair-enumeration scheme — within each subject, all ordered
+`(src_contrast, tgt_contrast)` pairs excluding self (12 per 4-contrast subject);
+latents are cached per (subject, contrast) and shared across the pairs that
+reference them. The Paired JiT dataset sees only `(src, tgt, src_label, tgt_label)`
+pairs; which contrasts those are is BraTS-builder knowledge.
+_Avoid_: cross-modality pairs, direction set.
+
+**Paired dataset contract**:
+The decoupled seam the Paired JiT Module consumes — a dataset emitting
+`(src_latent, tgt_latent, src_label, tgt_label, spacing)`. BraTS-specific pairing
+(any-to-any, contrast detection) lives in a builder that emits a pair manifest; the
+dataset class itself is dataset-agnostic (mirrors how `NiftiVolumeDataset` +
+`LabelProvider` decouple the noise→data JiT).
+_Avoid_: pair loader, translation dataset.
+
 ### Persistence
 
 **Checkpoint** (native):
