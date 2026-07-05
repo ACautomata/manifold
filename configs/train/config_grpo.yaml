@@ -34,10 +34,15 @@ grpo_train:
   latent_shape: [4, 64, 64, 32]
 
 # Real-data wiring (the #59 launch). The raw-arm JiT policy loads from --native-dir
-# (ADR-0006); the trained RewardModel from --reward-path; the conditioning from the
-# latent cache. Placeholder until #59.
+# (ADR-0006); the trained RewardModel from --reward-path; the conditioning + the FID
+# real reference from --latents-dir. The RewardModel architecture (``reward_model``
+# block) comes from the network config (``-t``) — it is NOT repeated here: load_config
+# merges env → train → network, so a network file's ``reward_model`` would overwrite
+# one placed here (config_network.yaml defines it).
 grpo:
-  val_fraction: 0.2  # held-out subject fraction (val conditioning).
+  val_fraction: 0.2  # held-out subject fraction (val conditioning + FID real reference).
+  modality: 1  # the FID generation recipe's class label (single-modality v1).
+  spacing: [1.0, 1.0, 1.0]  # the FID generation recipe's voxel spacing.
 
 # Stock Lightning ModelCheckpoint: monitor val/mean_reward (the progress signal, max)
 # in #56; #58 switches selection to val/fid (min, the anti-reward-hacking screen).

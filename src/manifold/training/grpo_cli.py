@@ -230,7 +230,19 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument(
         "--reward-path",
         default=None,
-        help="trained RewardModel checkpoint dir; required without --data-provider.",
+        help="trained RewardModel checkpoint (.ckpt); required without --data-provider.",
+    )
+    parser.add_argument(
+        "--latents-dir",
+        default=None,
+        help="latent cache dir (conditioning + the FID real reference); "
+        "required without --data-provider.",
+    )
+    parser.add_argument(
+        "--measure",
+        action="store_true",
+        help="run a tiny-config measurement (it/s + peak GPU memory) and exit — the "
+        "#59 launch gate; size G / eta_step_list / n_epochs before the full run.",
     )
     parser.add_argument(
         "--resume", default=None, help="resume a Lightning .ckpt (trainer.fit(ckpt_path=...))."
@@ -272,15 +284,16 @@ def main(argv: list[str] | None = None, *, data_provider=None) -> int:
     if data_provider is not None:
         inputs = data_provider(cfg, device)
     else:
-        # --native-dir / --reward-path are NOT argparse-required: that would break
-        # the data_provider injection seam (the CPU smoke). Validate them here, only
-        # on the real path.
-        if not args.native_dir or not args.reward_path:
+        # --native-dir / --reward-path / --latents-dir are NOT argparse-required: that
+        # would break the data_provider injection seam (the CPU smoke). Validate them
+        # here, only on the real path.
+        if not args.native_dir or not args.reward_path or not args.latents_dir:
             raise ValueError(
-                "GRPO needs --native-dir <native JiT export (raw arm)> and "
-                "--reward-path <trained RewardModel> (or inject a data_provider for the smoke)."
+                "GRPO needs --native-dir <native JiT export (raw arm)>, "
+                "--reward-path <trained RewardModel .ckpt>, and "
+                "--latents-dir <latent cache> (or inject a data_provider for the smoke)."
             )
-        inputs = _real_inputs(cfg, args.native_dir, args.reward_path, device)
+        inputs = _real_inputs(cfg, args.native_dir, args.reward_path, args.latents_dir, device)
 
     gcfg = cfg.grpo_train
     latent_shape = tuple(int(s) for s in opt(gcfg, "latent_shape", [4, 64, 64, 32]))
@@ -297,6 +310,23 @@ def main(argv: list[str] | None = None, *, data_provider=None) -> int:
         latent_shape=latent_shape,
     )
 
+    if args.measure:
+        # The #59 launch-gate measurement: a 1-epoch fit timing + peak GPU memory,
+        # to size G / eta_step_list / n_epochs on the target cluster before the full run.
+        it_per_s, peak, elapsed = run_grpo_measurement(
+            module=module,
+            inputs=inputs,
+            model_dir=str(cfg.model_dir),
+            devices=args.num_gpus if args.num_gpus > 1 else 1,
+            batch_size=int(gcfg.batch_size),
+            seed=seed,
+        )
+        print(
+            f"[manifold-train-grpo] measure: {it_per_s:.3f} it/s | "
+            f"peak GPU {peak / 1e9:.2f} GB | {elapsed:.1f}s"
+        )
+        return 0
+
     run_grpo_training(
         module=module,
         inputs=inputs,
@@ -312,15 +342,185 @@ def main(argv: list[str] | None = None, *, data_provider=None) -> int:
     return 0
 
 
-def _real_inputs(cfg, native_dir: str, reward_path: str, device: torch.device) -> GRPOInputs:
+def run_grpo_measurement(
+    *,
+    module: GRPOModule,
+    inputs: GRPOInputs,
+    model_dir: str,
+    devices: int | str = 1,
+    accelerator: str = "auto",
+    batch_size: int = 2,
+    seed: int = 0,
+) -> tuple[float, int, float]:
+    """Time a 1-epoch GRPO fit + report it/s + peak GPU memory (the #59 launch gate).
+
+    Sizes ``G`` / ``eta_step_list`` / ``n_epochs`` by measuring the real budget's
+    throughput + peak GPU memory on the target cluster before committing to the full
+    run. Returns ``(it_per_s, peak_gpu_bytes, elapsed_s)``. Peak memory is 0 off-CUDA
+    (the read is GPU-only); a tiny ``--measure`` run on the cluster is the real signal.
+    """
+    import time
+
+    if torch.cuda.is_available():
+        torch.cuda.reset_peak_memory_stats()
+    start = time.perf_counter()
+    trainer, _ = run_grpo_training(
+        module=module,
+        inputs=inputs,
+        model_dir=model_dir,
+        max_epochs=1,
+        devices=devices,
+        accelerator=accelerator,
+        batch_size=batch_size,
+        seed=seed,
+    )
+    elapsed = time.perf_counter() - start
+    it_per_s = float(trainer.global_step) / elapsed if elapsed > 0 else float("nan")
+    peak = int(torch.cuda.max_memory_allocated()) if torch.cuda.is_available() else 0
+    return it_per_s, peak, elapsed
+
+
+def _real_inputs(
+    cfg, native_dir: str, reward_path: str, latents_dir: str, device: torch.device
+) -> GRPOInputs:
     """Build the real GRPO inputs from the raw JiT arm + the trained reward (#59).
 
-    Loads the raw-arm JiT UNet (the policy — ADR-0006), the trained
-    :class:`RewardModel`, and wires the latent-cache conditioning. Gated on the ns15
-    reward model clearing ``val/gen_pair_acc > 0.8`` + a tiny-config measurement
-    (#59 launch readiness); not built in the #56 tracer.
+    The raw-arm JiT UNet (ADR-0006 — NOT the EMA shadow; ``export_to_native``'s default
+    ``prefer_ema=False`` baked the raw ``state_dict`` weights) is the **trainable**
+    policy. The trained :class:`RewardModel` (a ``RewardModule`` Lightning checkpoint —
+    its ``reward_model.*`` state_dict) is the **frozen** reward. The latent cache
+    furnishes the manifold conditioning (``{spacing, label}`` — GRPO is generative, so
+    there is no clean-latent target) over train subjects AND the fixed real-reference
+    latents (val subjects, scaled) the FID callback decodes. The RadImageNet
+    ``feature_net`` completes the FID triple (#58).
+
+    Launch is gated on the ns15 reward clearing ``val/gen_pair_acc > 0.8`` + a
+    ``--measure`` run on the target cluster (#59) — not exercisable here (no real
+    artifacts on the dev machine), so this mirrors ``reward_cli._real_inputs``'s
+    pattern (the data_provider seam covers the CPU smoke).
     """
-    raise NotImplementedError(
-        "GRPO real-data launch is wired in #59 (launch readiness: raw JiT arm + trained "
-        "reward + no-EMA + measurement gate). Inject a data_provider for the #56 CPU smoke."
+    from torch.utils.data import Dataset
+
+    from ..data.reward_pairs import load_cached_latents, partition_subjects
+    from ..metrics import make_feature_network
+    from ..models.reward_model import RewardModel
+    from ..pipelines.latent_flow import LatentFlowPipeline
+
+    # 1. Raw-arm JiT UNet (the trainable policy) + VAE (carries scaling_factor).
+    pipe = LatentFlowPipeline.from_pretrained(str(native_dir))
+    policy = pipe.unet.to(device)
+    for p in policy.parameters():  # GRPO post-trains the policy (the reward is frozen).
+        p.requires_grad_(True)
+    vae = pipe.vae
+    scaling_factor = float(vae.scaling_factor)
+
+    # 2. Trained RewardModel (frozen) from its RewardModule Lightning checkpoint.
+    # The reward_model architecture comes from the network config (``-t``) — opt()
+    # falls back to the RewardModel defaults if a non-standard network file omits it.
+    reward_cfg = opt(cfg, "reward_model", {})
+    reward_model = RewardModel(
+        spatial_dims=int(opt(reward_cfg, "spatial_dims", 3)),
+        in_channels=int(opt(reward_cfg, "in_channels", 4)),
+        channels=int(opt(reward_cfg, "channels", 64)),
+        num_layers_d=int(opt(reward_cfg, "num_layers_d", 3)),
+        norm=str(opt(reward_cfg, "norm", "BATCH")),
+    )
+    # weights_only=True first (no arbitrary-code-execution risk); fall back to False
+    # only for the weights_only restriction itself (non-allowlisted globals in a full
+    # Lightning ckpt's callback/optimizer state), NOT for file/IO errors (which must
+    # surface). reward_path is the user's OWN trained reward (trusted — mirroring
+    # export_to_native; never point this at an untrusted .ckpt).
+    import pickle
+
+    try:
+        ckpt = torch.load(str(reward_path), map_location="cpu", weights_only=True)
+    except (pickle.UnpicklingError, ValueError):
+        _log.warning("reward ckpt %s needs weights_only=False (non-tensor state); loading trusted.", reward_path)
+        ckpt = torch.load(str(reward_path), map_location="cpu", weights_only=False)
+    state = ckpt.get("state_dict", ckpt)
+    reward_sd = {k[len("reward_model."):]: v for k, v in state.items() if k.startswith("reward_model.")}
+    if not reward_sd:
+        raise ValueError(
+            f"No 'reward_model.*' keys in {reward_path} — not a trained RewardModule checkpoint."
+        )
+    reward_model.load_state_dict(reward_sd, strict=True)
+    reward_model.eval().to(device)
+    for p in reward_model.parameters():
+        p.requires_grad_(False)
+
+    # 3. Conditioning ({spacing, label}) + real_latents (val subjects, scaled) from cache.
+    subject_regex = opt(cfg, "grpo.subject_regex", None)
+    items, subject_ids = load_cached_latents(str(latents_dir), subject_regex)
+    train_subjects, val_subjects = partition_subjects(
+        subject_ids,
+        val_fraction=float(opt(cfg, "grpo.val_fraction", 0.2)),
+        seed=int(opt(cfg, "random_seed", 0)),
+    )
+    train_items = [it for it, sid in zip(items, subject_ids) if sid in train_subjects]
+    val_items = [it for it, sid in zip(items, subject_ids) if sid in val_subjects]
+    if not train_items or not val_items:
+        raise ValueError(
+            f"Empty train ({len(train_items)}) / val ({len(val_items)}) subject split "
+            f"from {len(items)} latents — adjust grpo.val_fraction."
+        )
+    _log.info(
+        "GRPO real inputs: %d train / %d val conditioning subjects (%d / %d latents).",
+        len(train_subjects), len(val_subjects), len(train_items), len(val_items),
+    )
+
+    class _CondDS(Dataset):
+        """Manifold conditioning only (GRPO is generative — the rollout samples noise).
+
+        ``spacing`` / ``label`` are normalized to tensors on read so the default
+        collate batches them: cache files may store ``spacing`` as a plain list,
+        which the default collate would transpose into a list-of-tensors and break
+        ``_conditioning_tensors``'s ``torch.as_tensor``."""
+
+        def __init__(self, items):
+            self.items = items
+
+        def __len__(self):
+            return len(self.items)
+
+        def __getitem__(self, i):
+            return {
+                "spacing": torch.as_tensor(self.items[i]["spacing"], dtype=torch.float32),
+                "label": torch.as_tensor(self.items[i]["label"], dtype=torch.long),
+            }
+
+    # Cap the FID real-reference subset (mirrors the JiT cli): FIDCallback decodes the
+    # whole ``real_latents`` tensor in ONE _real_features() pass, so an unbounded val
+    # set would OOM the FID phase. Seeded prefix ⇒ the reference is fixed across runs.
+    val_subset_size = int(opt(cfg, "val_subset_size", 32))
+    g = torch.Generator().manual_seed(0)
+    val_idx = torch.randperm(len(val_items), generator=g)[:val_subset_size].tolist()
+    real_latents = torch.stack([val_items[i]["latent"] for i in val_idx]).float() * scaling_factor
+
+    # The FID backbone IS the anti-reward-hacking screen — fail closed if it cannot
+    # load (the launch requires it). The data_provider smoke bypasses _real_inputs.
+    feature_net = make_feature_network("resnet50")
+
+    # Preserve the native scheduler's transport settings (the t_eps /
+    # num_train_timesteps the JiT checkpoint trained/exported with); only eta is the
+    # GRPO addition. Building with defaults would mismatch a non-default t_eps export.
+    sched_cfg = pipe.scheduler.config
+    scheduler = FlowMatchGRPOScheduler(
+        num_train_timesteps=int(sched_cfg.get("num_train_timesteps", 1000)),
+        t_eps=float(sched_cfg.get("t_eps", 0.05)),
+        eta=float(opt(cfg.grpo_train, "eta", 0.7)),
+    )
+
+    latent_shape = tuple(int(s) for s in opt(cfg.grpo_train, "latent_shape", [4, 64, 64, 32]))
+    return GRPOInputs(
+        policy=policy,
+        reward_model=reward_model,
+        scheduler=scheduler,
+        train_ds=_CondDS(train_items),
+        val_ds=_CondDS(val_items),
+        latent_shape=latent_shape,
+        vae=vae,
+        real_latents=real_latents,
+        feature_net=feature_net,
+        fid_modality=int(opt(cfg, "grpo.modality", 1)),
+        fid_spacing=list(opt(cfg, "grpo.spacing", [1.0, 1.0, 1.0])),
     )
