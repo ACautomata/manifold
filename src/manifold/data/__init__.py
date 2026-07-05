@@ -28,6 +28,12 @@ from .latent_pipeline import (
     load_vae,
     warm_latent_pipeline,
 )
+from .paired_brats import build_brats_pair_manifest
+from .paired_latent_dataset import (
+    PairedLatentDataset,
+    estimate_paired_scale_factor,
+)
+from .paired_volume_dataset import PairedNiftiVolumeDataset
 from .reward_pairs import (
     RewardPairDataset,
     generate_generated_end_probe,
@@ -51,13 +57,17 @@ __all__ = [
     "ManifestLabelProvider",
     "MedicalDataset",
     "NiftiVolumeDataset",
+    "PairedLatentDataset",
+    "PairedNiftiVolumeDataset",
     "RewardPairDataset",
     "SampleDict",
+    "build_brats_pair_manifest",
     "build_datamodule",
     "build_encode_pipeline",
     "build_volume_dataset",
     "collect_nifti_paths",
     "detect_brats_contrast",
+    "estimate_paired_scale_factor",
     "estimate_scale_factor",
     "floor_to_divisible",
     "generate_generated_end_probe",
