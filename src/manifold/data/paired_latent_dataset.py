@@ -155,23 +155,32 @@ class PairedLatentDataset(MedicalDataset):
                 "(the VAE encodes each unique volume once, then __getitem__ serves "
                 "from the shared RAM cache)."
             )
-        pair = self.source[index]
-        src_item = self._ram[pair["src_id"]]
-        tgt_item = self._ram[pair["tgt_id"]]
+        # pair_meta skips the volume dataset's __getitem__ (which loads both NIfTIs)
+        # — a training-batch fetch is pure RAM lookup once the cache is warm.
+        meta = self.source.pair_meta(index)
+        src_item = self._ram[meta["src_id"]]
+        tgt_item = self._ram[meta["tgt_id"]]
         # Scale-on-read (ADR-0003 addendum): the Module receives SCALED latents,
-        # applied to BOTH endpoints (one scale_factor pooled over src∪tgt).
+        # applied to BOTH endpoints (one scale_factor pooled over src∪tgt). Spacing
+        # comes from the cached src volume (BraTS src/tgt are co-registered).
         return {
             "src_latent": src_item["latent"] * self.scaling_factor,
             "tgt_latent": tgt_item["latent"] * self.scaling_factor,
-            "src_label": pair["src_label"],
-            "tgt_label": pair["tgt_label"],
-            "spacing": pair["spacing"],
+            "src_label": meta["src_label"],
+            "tgt_label": meta["tgt_label"],
+            "spacing": src_item["spacing"],
         }
 
     # -- internals -----------------------------------------------------------
 
     def _materialize(self, sample_id: str, device: torch.device) -> dict[str, Any]:
-        """Disk-cache hit → return; else encode the unique volume once and save."""
+        """Disk-cache hit → return; else encode the unique volume once and save.
+
+        Stores the volume's ``spacing`` alongside the latent so a training
+        ``__getitem__`` never has to re-open the NIfTI (the affine lives only in
+        the file) — the spacing is captured here at warm time and read from RAM
+        thereafter.
+        """
         if self.cache_dir is not None:
             hit = _load_cache(self.cache_dir, sample_id, self.cache_tag)
             if hit is not None:
@@ -186,7 +195,11 @@ class PairedLatentDataset(MedicalDataset):
         sample = self.source._load_volume(sample_id)
         image = sample["image"].unsqueeze(0).to(device)  # [1, 1, D0, D1, D2]
         latent = self._encode(image, device).squeeze(0).cpu()  # [C, d0, d1, d2] UNSCALED
-        item: dict[str, Any] = {"latent": latent, "sample_id": sample_id}
+        item: dict[str, Any] = {
+            "latent": latent,
+            "sample_id": sample_id,
+            "spacing": sample["spacing"],  # captured once → no NIfTI read at train time
+        }
         if self.cache_dir is not None:
             _save_cache(self.cache_dir, sample_id, self.cache_tag, item)
         return item

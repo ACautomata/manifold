@@ -153,6 +153,24 @@ class PairedNiftiVolumeDataset(MedicalDataset):
             "tgt_id": pair["tgt_id"],
         }
 
+    def pair_meta(self, index: int) -> dict[str, Any]:
+        """The pair's metadata WITHOUT loading volumes (the latent dataset's hot path).
+
+        Returns ``{src_id, tgt_id, src_label, tgt_label}`` from the in-memory pair
+        list — no NIfTI read, no transforms. :class:`PairedLatentDataset.__getitem__`
+        uses this (not :meth:`__getitem__`) once the cache is warm, so a training-
+        batch fetch is pure RAM lookup: the latents and spacing already live in the
+        shared ``{sample_id: item}`` cache. :meth:`__getitem__` (which loads both
+        volumes) stays for the image contract + inspection.
+        """
+        pair = self._pairs[index]
+        return {
+            "src_id": pair["src_id"],
+            "tgt_id": pair["tgt_id"],
+            "src_label": torch.tensor(pair["src_label"], dtype=torch.long),
+            "tgt_label": torch.tensor(pair["tgt_label"], dtype=torch.long),
+        }
+
     # -- introspection -------------------------------------------------------
 
     def unique_sample_ids(self) -> list[str]:

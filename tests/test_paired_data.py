@@ -195,6 +195,43 @@ def test_scale_on_read_applies_to_both_src_and_tgt(tmp_path) -> None:
     assert torch.allclose(item["tgt_latent"], ds.raw_latent(pair["tgt_id"]) * 2.5)
 
 
+def test_getitem_serves_from_ram_without_loading_volumes(tmp_path) -> None:
+    """A warmed ``__getitem__`` does ZERO NIfTI reads (the training hot path).
+
+    Once the shared cache is warm, fetching a training batch must be pure RAM
+    lookup — ``pair_meta`` skips the volume dataset's volume-loading ``__getitem__``
+    and the spacing is read from the cached latent item. Spying on the volume
+    dataset's ``_load_volume`` asserts the train-time fetch never touches disk.
+    """
+    src = tmp_path / "a-t1n.nii.gz"
+    tgt = tmp_path / "a-t1c.nii.gz"
+    _write_nifti(str(src))
+    _write_nifti(str(tgt))
+    manifest = [{"src": str(src), "tgt": str(tgt), "src_label": 34, "tgt_label": 35}]
+    vol = PairedNiftiVolumeDataset(manifest, target_dim=(8, 8, 8), divisor=4)
+
+    torch.manual_seed(0)
+    ds = PairedLatentDataset(vol, encode_fn=_mock_encode_fn())
+    ds.warm_cache(torch.device("cpu"), show_progress=False)
+
+    calls = {"n": 0}
+    real = vol._load_volume
+
+    def spy(sample_id):  # noqa: ANN001
+        calls["n"] += 1
+        return real(sample_id)
+
+    vol._load_volume = spy
+    try:
+        item = ds[0]  # a train-time fetch
+    finally:
+        vol._load_volume = real
+    assert calls["n"] == 0  # no NIfTI read at train time
+    # Spacing still arrives (from the cached src volume, captured at warm time).
+    assert item["spacing"].shape == (3,)
+    assert torch.isfinite(item["spacing"]).all()
+
+
 # -- Shared cache: encode each unique volume once -----------------------------
 
 
