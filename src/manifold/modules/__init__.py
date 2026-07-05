@@ -15,6 +15,8 @@ from .grpo import (
     singular_branch_rollout,
 )
 from .latent_flow import LatentFlowModule, SampleDict
+from .paired_latent_flow import PairedLatentFlowModule, PairedSampleDict
+from .paired_sampler import sample_paired_latent_flow
 from .partial_denoise import partial_denoise_rollout
 from .reward import RewardBatch, RewardModule, bradley_terry_loss, reward_roc_auc
 from .sampler import sample_latent_flow
@@ -23,6 +25,8 @@ __all__ = [
     "GRPOBatch",
     "GRPOModule",
     "LatentFlowModule",
+    "PairedLatentFlowModule",
+    "PairedSampleDict",
     "RewardBatch",
     "RewardModule",
     "RolloutStep",
@@ -34,5 +38,6 @@ __all__ = [
     "partial_denoise_rollout",
     "reward_roc_auc",
     "sample_latent_flow",
+    "sample_paired_latent_flow",
     "singular_branch_rollout",
 ]

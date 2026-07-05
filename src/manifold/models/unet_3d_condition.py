@@ -12,6 +12,17 @@ UNet expects timesteps in ``[0, num_train_timesteps]``; callers pass flow-time
 ``t ∈ [0, 1]`` and the wrapper scales internally) and the spacing conditioning
 range (``spacing`` is multiplied by ``1e2`` internally, matching the range the
 MAISI spacing MLP was trained in — a property of the wrapped backbone).
+
+Paired JiT (ADR-0014): the wrapper additionally accepts a ``(src, tgt)`` contrast-
+label pair and injects ``embed(src) + embed(tgt)`` at the backbone's native
+class-embedding injection point. The MAISI backbone builds its ``class_embedding``
+(``nn.Embedding(num_class_embeds, time_embed_dim)``) internally and adds the looked-
+up embedding to the time embedding inside ``_get_time_and_class_embedding``; rather
+than reimplement that private assembly, the paired path transiently swaps the
+backbone's ``class_embedding`` module for :class:`_PinnedClassEmbedding` — a thin
+stand-in that returns the precomputed summed vector — around the single backbone
+forward (try/finally restored). The noise→data callers (a single ``class_labels``
+tensor) never enter this branch and are byte-unchanged.
 """
 
 from __future__ import annotations
@@ -23,6 +34,7 @@ from monai.apps.generation.maisi.networks.diffusion_model_unet_maisi import (
     DiffusionModelUNetMaisi,
 )
 from torch import Tensor
+from torch import nn
 
 from ..configuration import register_to_config
 from .modeling_utils import ModelMixin
@@ -30,6 +42,29 @@ from .modeling_utils import ModelMixin
 #: Spacing is fed to the MAISI conditioning MLP in this scaled range (voxel
 #: spacing × 100), matching how the backbone was trained.
 _SPACING_SCALE = 1e2
+
+
+class _PinnedClassEmbedding(nn.Module):
+    """Transient stand-in for the MAISI ``class_embedding`` (Paired JiT, ADR-0014).
+
+    Returns a **precomputed** embedding vector regardless of the label index passed
+    in. Installed on the backbone (``backbone.class_embedding = ...``) only for the
+    duration of one Paired-JiT forward, so the backbone's internal
+    ``self.class_embedding(class_labels)`` call — which it then adds to the time
+    embedding — yields ``embed(src) + embed(tgt)``. The vector is a plain attribute
+    (not a ``Parameter``/``Buffer``): it carries autograd history from where it was
+    computed (the real ``nn.Embedding`` rows, summed), so gradients still reach the
+    embedding table; and because it is not a registered parameter/buffer it never
+    enters a ``state_dict`` (the swap is instantaneous and restored in ``finally``).
+    """
+
+    def __init__(self, embedding: Tensor):
+        super().__init__()
+        self.embedding = embedding
+
+    def forward(self, class_labels: Tensor) -> Tensor:  # noqa: ANN001
+        # The label index is ignored — the summed vector was computed by the caller.
+        return self.embedding
 
 
 class UNet3DConditionModel(ModelMixin):
@@ -120,20 +155,65 @@ class UNet3DConditionModel(ModelMixin):
         spacing: Tensor,
         class_labels: Tensor | None = None,
         context: Tensor | None = None,
+        *,
+        class_labels_src: Tensor | None = None,
+        class_labels_tgt: Tensor | None = None,
     ) -> Tensor:
         """Predict the clean latent x0 given a noised latent and medical conditions.
 
         Args:
-            sample: the noised latent ``z`` ``[B, C, D, H, W]``.
+            sample: the noised latent ``z`` ``[B, C, D, H, W]`` (Paired JiT passes
+                ``concat([z_t, x_src])`` with ``C = 2·C_latent``).
             timestep: flow-time ``t ∈ [0, 1]`` (scalar or ``(B,)``); scaled to the
                 backbone's embedding grid internally.
             spacing: raw voxel spacing ``[3]`` or ``[B, 3]``; scaled ×1e2 internally.
-            class_labels: optional modality label ``[B]`` (long).
+            class_labels: optional modality label ``[B]`` (long) — the noise→data
+                JiT path. Byte-unchanged when the paired kwargs are absent.
             context: optional cross-attention context.
+            class_labels_src / class_labels_tgt: the Paired JiT (src, tgt) contrast
+                pair ``[B]`` (long). When **both** are passed the wrapper injects
+                ``embed(src) + embed(tgt)`` at the backbone's class-embedding
+                injection point (ADR-0014); they must be passed together and require
+                ``num_class_embeds`` to be set.
         """
         b = sample.shape[0]
         timesteps = self._scaled_timesteps(timestep, b, sample.device, sample.dtype)
         spacing_tensor = self._batched_spacing(spacing, b)
+
+        if class_labels_src is not None or class_labels_tgt is not None:
+            # Paired JiT summed-label path (ADR-0014). Requires both endpoints and
+            # a class-embedding table (num_class_embeds set on the backbone).
+            if class_labels_src is None or class_labels_tgt is None:
+                raise ValueError(
+                    "class_labels_src and class_labels_tgt must be passed together "
+                    "(Paired JiT summed-label conditioning, ADR-0014)."
+                )
+            embedding = getattr(self.unet, "class_embedding", None)
+            if embedding is None:
+                raise ValueError(
+                    "Paired JiT summed-label conditioning requires num_class_embeds "
+                    "to be set on the UNet (the backbone has no class_embedding table)."
+                )
+            # cond carries autograd history through the real nn.Embedding rows, so
+            # gradients still reach class_embedding.weight despite the swap below.
+            cond = embedding(class_labels_src) + embedding(class_labels_tgt)
+            pinned = _PinnedClassEmbedding(cond)
+            original = self.unet.class_embedding
+            self.unet.class_embedding = pinned
+            try:
+                # class_labels=src is a sentinel: the pinned module ignores it and
+                # returns cond, which the backbone adds to the time embedding —
+                # net effect emb += embed(src) + embed(tgt).
+                return self.unet(
+                    x=sample,
+                    timesteps=timesteps,
+                    context=context,
+                    class_labels=class_labels_src,
+                    spacing_tensor=spacing_tensor,
+                )
+            finally:
+                self.unet.class_embedding = original
+
         return self.unet(
             x=sample,
             timesteps=timesteps,
