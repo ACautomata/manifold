@@ -231,6 +231,33 @@ def test_backward_updates_unet_parameters(paired_module, paired_batch, paired_un
     assert with_grad > total // 2
 
 
+def test_swap_grad_reaches_class_embedding_rows(paired_unet_trainable, paired_scheduler):
+    """The _PinnedClassEmbedding swap must not detach the autograd path: backward
+    through the paired forward must populate ``class_embedding.weight`` at exactly
+    the looked-up rows (src=0, tgt=1) and nowhere else.
+
+    This pins the riskiest mechanism in the slice (ADR-0014 wiring): ``cond`` is
+    computed from the real ``nn.Embedding`` rows before the swap and returned by the
+    stand-in without ``detach()``, so gradients still reach the embedding table.
+    """
+    module = PairedLatentFlowModule(paired_unet_trainable, paired_scheduler)
+    batch = {
+        "src_latent": torch.randn(1, C_LATENT, 4, 4, 4),
+        "tgt_latent": torch.randn(1, C_LATENT, 4, 4, 4),
+        "src_label": torch.tensor([0]),
+        "tgt_label": torch.tensor([1]),
+        "spacing": torch.tensor([1.0, 1.0, 1.0]),
+    }
+    paired_unet_trainable.zero_grad()
+    module(batch, "fit")["loss"].backward()
+    grad = paired_unet_trainable.unet.class_embedding.weight.grad
+    assert grad is not None
+    assert grad[0].abs().sum() > 0  # src row (looked up for cond)
+    assert grad[1].abs().sum() > 0  # tgt row (looked up for cond)
+    assert grad[2].abs().sum() == 0  # unreferenced row untouched
+    assert grad[3].abs().sum() == 0  # unreferenced row untouched
+
+
 def test_configure_optimizers_is_adam_over_unet(paired_unet_trainable, paired_scheduler):
     """Adam over all paired-UNet params (the cosine schedule + grad-norm hook land in Slice 4)."""
     module = PairedLatentFlowModule(paired_unet_trainable, paired_scheduler)
