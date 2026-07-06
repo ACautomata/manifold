@@ -18,6 +18,7 @@ the reward model clearing its probe + a tiny-config measurement (#59); the
 from __future__ import annotations
 
 import argparse
+import copy
 import logging
 from dataclasses import dataclass
 from typing import Any, Sequence
@@ -65,6 +66,7 @@ class GRPOInputs:
     train_ds: Any
     val_ds: Any
     latent_shape: Sequence[int]
+    reference_policy: Any = None  # the frozen KL anchor (ADR-0015); None ⇒ no KL (v1)
     vae: Any = None
     real_latents: Any = None
     feature_net: Any = None
@@ -128,6 +130,7 @@ def run_grpo_training(
     monitor_metric: str | None = None,
     mode: str | None = None,
     limit_val_batches: int | float = 1.0,
+    limit_train_batches: int | float | None = None,
     seed: int = 0,
     ckpt_path: str | None = None,
     num_synth: int = 16,
@@ -199,6 +202,11 @@ def run_grpo_training(
         devices=devices,
         accelerator=accelerator,
         limit_val_batches=limit_val_batches,
+        extra_kwargs=(
+            {"limit_train_batches": limit_train_batches}
+            if limit_train_batches is not None
+            else None
+        ),
     )
     trainer.fit(module, datamodule=datamodule, ckpt_path=ckpt_path)
     return trainer, ckpt
@@ -246,6 +254,13 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--resume", default=None, help="resume a Lightning .ckpt (trainer.fit(ckpt_path=...))."
+    )
+    parser.add_argument(
+        "--limit-train-batches",
+        type=int,
+        default=None,
+        help="cap train batches/epoch (a debug knob for the fast v2 re-measure; the full "
+             "run leaves it unset).",
     )
     parser.add_argument("overrides", nargs="*", help="Hydra-style dotlist overrides.")
     return parser.parse_args(argv)
@@ -308,6 +323,10 @@ def main(argv: list[str] | None = None, *, data_provider=None) -> int:
         adv_clip_max=float(opt(gcfg, "adv_clip_max", 5.0)),
         num_steps=int(opt(gcfg, "num_steps", 15)),
         latent_shape=latent_shape,
+        reference_policy=inputs.reference_policy,
+        kl_coef=float(opt(gcfg, "kl_coef", 0.0)),
+        reward_bound=str(opt(gcfg, "reward_bound", "none")),
+        reward_temp=float(opt(gcfg, "reward_temp", 8.0)),
     )
 
     if args.measure:
@@ -337,6 +356,7 @@ def main(argv: list[str] | None = None, *, data_provider=None) -> int:
         save_top_k=int(opt(cfg, "checkpoint.save_top_k", 1)),
         seed=seed,
         ckpt_path=args.resume,
+        limit_train_batches=args.limit_train_batches,
     )
     print(f"[manifold-train-grpo] done; checkpoints under {cfg.model_dir}")
     return 0
@@ -413,6 +433,10 @@ def _real_inputs(
         p.requires_grad_(True)
     vae = pipe.vae
     scaling_factor = float(vae.scaling_factor)
+    # The frozen KL anchor (ADR-0015): a snapshot of the pretrained policy taken BEFORE
+    # any GRPO update. ``copy.deepcopy`` (not a second from_pretrained) so it is
+    # bit-identical to the trainable arm's starting weights; the Module freezes + unregisters it.
+    reference_policy = copy.deepcopy(policy)
 
     # 2. Trained RewardModel (frozen) from its RewardModule Lightning checkpoint.
     # The reward_model architecture comes from the network config (``-t``) — opt()
@@ -518,6 +542,7 @@ def _real_inputs(
         train_ds=_CondDS(train_items),
         val_ds=_CondDS(val_items),
         latent_shape=latent_shape,
+        reference_policy=reference_policy,
         vae=vae,
         real_latents=real_latents,
         feature_net=feature_net,

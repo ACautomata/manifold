@@ -32,6 +32,18 @@ grpo_train:
   # The rollout latent shape (C, D, H, W). GRPO is generative — the Module samples the
   # group noise of this shape; override per dataset.
   latent_shape: [4, 64, 64, 32]
+  # v2 anti-reward-hacking knobs (ADR-0015). The v1 recipe hacked in one epoch
+  # (val/mean_reward −13.75 → 3370, val/fid 3.98 → 12.50): the PatchGAN reward is an
+  # unbounded raw logit and the policy had no anchor. Calibration scored REAL val/train
+  # latents at −9.7~−11.2 ±8 (range [−21, +26]), so the policy's 3370 was a ~130× OOD
+  # exploit. Both knobs default-off in code (kl_coef=0 / reward_bound=none ⇒ v1); this
+  # recipe commits the fix.
+  # kl_coef: β for the equal-variance KL-to-pretrained-policy anchor (ADR-0015).
+  # reward_bound: "tanh" caps the raw logit into (−1, 1) — monotone, so sibling rewards
+  #   stay distinct; reward_temp ≈ the real-data reward std (~8 from calibration).
+  kl_coef: 0.1
+  reward_bound: "tanh"
+  reward_temp: 8.0
 
 # Real-data wiring (the #59 launch). The raw-arm JiT policy loads from --native-dir
 # (ADR-0006); the trained RewardModel from --reward-path; the conditioning + the FID

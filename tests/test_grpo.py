@@ -329,7 +329,7 @@ def test_module_backward_updates_unet_only():
     spacing_t = torch.tensor([1.0, 1.0, 1.0])
     class_labels = torch.tensor([1, 1], dtype=torch.long)
     # Recompute new_log_prob under grad (the inner-loop grad eval) + loss + backward.
-    new_lp = mod._new_log_prob(step, spacing_t, class_labels)
+    new_lp, _mean_new, _std_new = mod._new_log_prob(step, spacing_t, class_labels)
     loss = clipped_surrogate_loss(new_lp, step["old_log_prob"], step["advantage"], mod.clip_range)
     loss.backward()
     # Policy UNet: every param got a finite grad.
@@ -366,6 +366,121 @@ def test_module_rejects_degenerate_group_size():
     policy = UNet3DConditionModel(num_class_embeds=4, include_spacing_input=True)
     with pytest.raises(ValueError, match="G must be >= 2"):
         GRPOModule(policy, _reward_model(), FlowMatchGRPOScheduler(), G=1, latent_shape=_LAT)
+
+
+# -- v2: bounded reward + KL anchor (ADR-0015; the v1 reward-hacking fix) -----
+
+
+def test_bounded_reward_is_monotonic_and_bounded():
+    """_bound_reward: 'none' is identity; 'tanh' maps into (−1, 1) monotonically (v2).
+
+    The bound caps the unbounded PatchGAN logit so the policy cannot profit from OOD
+    latents (ADR-0015). It must be MONOTONIC so distinct sibling rewards stay distinct
+    (a hard clamp would collapse them and break the group signal), and bounded so an OOD
+    extreme (the v1 raw 3370) saturates instead of dominating the advantage.
+    """
+    mod_none = _module(reward_bound="none")
+    r = torch.linspace(-30.0, 30.0, 13)  # spans the real-data range [−21, +26] and beyond
+    assert torch.equal(mod_none._bound_reward(r), r), "'none' must be the identity"
+
+    mod_tanh = _module(reward_bound="tanh", reward_temp=8.0)
+    b = mod_tanh._bound_reward(r)
+    assert (b.abs() < 1.0).all(), "tanh bound must map into the open interval (−1, 1)"
+    # Monotonic non-decreasing ⇒ a sorted input yields a sorted output (siblings distinct).
+    assert (b.diff() >= -1e-7).all(), "tanh bound must be monotonic"
+    # The v1 hacking magnitude saturates near +1 instead of dominating (the cap).
+    assert mod_tanh._bound_reward(torch.tensor([3370.0])).item() > 0.999999
+
+
+def test_kl_is_zero_at_init_and_grows_with_drift():
+    """The KL anchor is ~0 at init (policy==reference) and >0 once the policy drifts (v2).
+
+    The equal-variance per-transition KL ``0.5·‖μ_θ − μ_ref‖²/σ²`` (ADR-0015; σ_t depends
+    only on t ⇒ the two transitions share variance) must (a) read ~0 while the trainable
+    policy still equals its frozen reference deepcopy, (b) turn positive once the policy
+    weights move, (c) flow gradient to the policy ONLY (the reference is frozen +
+    unregistered, mirroring the reward invariant), and (d) keep the reference off the
+    checkpoint/optimizer.
+    """
+    import copy as _copy
+
+    from manifold import UNet3DConditionModel
+    from manifold.modules import GRPOModule
+
+    torch.manual_seed(0)
+    policy = UNet3DConditionModel(num_class_embeds=4, include_spacing_input=True)
+    reference = _copy.deepcopy(policy)
+    mod = GRPOModule(
+        policy, _reward_model(), FlowMatchGRPOScheduler(eta=0.5),
+        G=2, eta_step_list=(0,), num_steps=3, latent_shape=_LAT, lr=1e-3,
+        reference_policy=reference, kl_coef=0.1,
+    )
+    torch.manual_seed(1)
+    noise = torch.randn(2, *_LAT)
+    buf = singular_branch_rollout(
+        mod.unet, mod.scheduler, mod.reward_model, noise, [1.0, 1.0, 1.0], 1,
+        G=2, eta_step_list=[0], num_steps=3, adv_clip_max=mod.adv_clip_max,
+    )
+    step = buf[0]
+    spacing_t = torch.tensor([1.0, 1.0, 1.0])
+    class_labels = torch.tensor([1, 1], dtype=torch.long)
+
+    # (a) at init μ_θ == μ_ref ⇒ KL ≈ 0.
+    new_lp, mean_new, std_new = mod._new_log_prob(step, spacing_t, class_labels)
+    kl0 = mod._transition_kl(step, mean_new, std_new, spacing_t, class_labels)
+    assert kl0 is not None and kl0.shape == (2,)
+    assert kl0.abs().max().item() < 1e-6, f"KL must be ~0 at init (policy==reference), got {kl0}"
+
+    # (b) drift the policy ⇒ μ_θ diverges from μ_ref ⇒ KL > 0 + grad reaches the policy only.
+    with torch.no_grad():
+        for p in mod.unet.parameters():
+            p.add_(0.5 * torch.randn_like(p))
+    _, mean_new2, std_new2 = mod._new_log_prob(step, spacing_t, class_labels)
+    kl = mod._transition_kl(step, mean_new2, std_new2, spacing_t, class_labels)
+    assert kl is not None
+    (0.1 * kl.mean()).backward()
+    assert kl.mean().item() > 1e-8, "KL must grow after the policy drifts off the reference"
+    # (c) grad flows to the policy UNet, NEVER to the frozen reference.
+    assert all(p.grad is not None and torch.isfinite(p.grad).all() for p in mod.unet.parameters())
+    assert all(p.grad is None for p in mod.reference_unet.parameters()), "reference must stay frozen"
+    # (d) the reference is unregistered: off the checkpoint + the optimizer.
+    assert "reference_unet" not in mod.state_dict()
+    opt_ids = {id(p) for p in mod.configure_optimizers()["optimizer"].param_groups[0]["params"]}
+    assert opt_ids.isdisjoint({id(p) for p in mod.reference_unet.parameters()})
+
+
+def test_kl_coef_zero_yields_no_kl_term():
+    """kl_coef=0 (the backward-compat default) ⇒ _transition_kl returns None (no KL).
+
+    Guards that the v2 KL term is opt-in: with the default kl_coef=0.0 the inner-loop loss
+    is exactly the v1 clipped surrogate (no reference forward, no KL), so all v1 tests and
+    the locked-recipe default behavior are preserved.
+    """
+    import copy as _copy
+
+    from manifold import UNet3DConditionModel
+    from manifold.modules import GRPOModule
+
+    policy = UNet3DConditionModel(num_class_embeds=4, include_spacing_input=True)
+    # Reference provided BUT kl_coef=0 ⇒ the anchor is dormant.
+    mod = GRPOModule(
+        policy, _reward_model(), FlowMatchGRPOScheduler(eta=0.5),
+        G=2, eta_step_list=(0,), num_steps=3, latent_shape=_LAT, lr=1e-3,
+        reference_policy=_copy.deepcopy(policy), kl_coef=0.0,
+    )
+    torch.manual_seed(0)
+    noise = torch.randn(2, *_LAT)
+    buf = singular_branch_rollout(
+        mod.unet, mod.scheduler, mod.reward_model, noise, [1.0, 1.0, 1.0], 1,
+        G=2, eta_step_list=[0], num_steps=3, adv_clip_max=mod.adv_clip_max,
+    )
+    step = buf[0]
+    spacing_t = torch.tensor([1.0, 1.0, 1.0])
+    class_labels = torch.tensor([1, 1], dtype=torch.long)
+    new_lp, mean_new, std_new = mod._new_log_prob(step, spacing_t, class_labels)
+    assert mod._transition_kl(step, mean_new, std_new, spacing_t, class_labels) is None, (
+        "kl_coef=0 must short-circuit the KL term (backward-compat with v1)"
+    )
 
 
 # -- CLI smoke (the end-to-end seam) -----------------------------------------
@@ -641,7 +756,8 @@ def _write_tiny_configs(tmp_path):
     train.write_text(
         "grpo_train: {batch_size: 2, lr: 1.0e-3, n_epochs: 1, num_steps: 3, "
         "G: 2, eta: 0.5, clip_range: 1.0e-4, adv_clip_max: 5.0, "
-        "eta_step_list: [0], latent_shape: [4, 8, 8, 8]}\n"
+        "eta_step_list: [0], latent_shape: [4, 8, 8, 8], "
+        "kl_coef: 0.0, reward_bound: none, reward_temp: 8.0}\n"
     )
     return str(env), str(train), str(net)
 
