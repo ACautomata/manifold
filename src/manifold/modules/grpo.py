@@ -27,7 +27,7 @@ autograd cleanly.
 from __future__ import annotations
 
 import math
-from typing import Any, Sequence
+from typing import Any, Callable, Sequence
 
 import stable_pretraining as spt
 import torch
@@ -130,6 +130,7 @@ def singular_branch_rollout(
     eta_step_list: Sequence[int],
     num_steps: int,
     adv_clip_max: float = 5.0,
+    reward_transform: Callable[[Tensor], Tensor] | None = None,
 ) -> list[RolloutStep]:
     """One Granular-GRPO singular-branch rollout (no_grad) → per-step buffer.
 
@@ -153,6 +154,8 @@ def singular_branch_rollout(
             ``[0..7]`` of ``num_steps=15``).
         num_steps: the anchor grid resolution (Heun steps over ``t: 0 → 1``).
         adv_clip_max: the advantage-magnitude clip.
+        reward_transform: optional monotone bound applied to the raw rewards before the
+            group normalization (the v2 tanh cap, ADR-0015); ``None`` ⇒ raw logit (v1).
 
     Returns:
         One :data:`RolloutStep` per ``k`` in ``eta_step_list`` (sorted ascending).
@@ -218,6 +221,8 @@ def singular_branch_rollout(
             # group-normalization (std / (r−mean)) must run in fp32 to avoid the
             # fp16 square overflowing for large rewards (mirrors validation_step).
             rewards = reward_model(z_K).float().reshape(B, G)  # (B, G)
+            if reward_transform is not None:  # the v2 bound (ADR-0015) — caps the raw logit
+                rewards = reward_transform(rewards)
             advantage = group_advantage(rewards, adv_clip_max=adv_clip_max)  # (B, G)
             buffer.append({
                 "z_k": z_k.detach(),
@@ -283,6 +288,11 @@ class GRPOModule(spt.Module):
         num_steps: the anchor grid resolution (train rollout + validation Heun steps).
         latent_shape: the rollout latent shape ``(C, D, H, W)`` (GRPO is generative —
             the Module samples the group noise of this shape).
+        reference_policy: optional frozen deepcopy of the pretrained JiT UNet — the KL
+            anchor (ADR-0015). ``None`` ⇒ no KL (the v1 default).
+        kl_coef: β for the KL-to-reference penalty; ``≤ 0`` disables it (v1 default 0.0).
+        reward_bound: ``"none"`` (raw logit, v1) or ``"tanh"`` (soft-clip, ADR-0015).
+        reward_temp: the tanh temperature (≈ the real-data reward std, ~8 from calibration).
     """
 
     def __init__(
@@ -298,6 +308,10 @@ class GRPOModule(spt.Module):
         adv_clip_max: float = 5.0,
         num_steps: int = 15,
         latent_shape: Sequence[int] = (4, 64, 64, 32),
+        reference_policy: Any = None,
+        kl_coef: float = 0.0,
+        reward_bound: str = "none",
+        reward_temp: float = 8.0,
     ):
         if G < 2:
             # group_advantage normalizes over the G siblings via torch.std (Bessel,
@@ -318,6 +332,18 @@ class GRPOModule(spt.Module):
             p.requires_grad_(False)
         object.__setattr__(self, "reward_model", reward_model)
 
+        # Frozen reference policy (the KL anchor, ADR-0015): a deepcopy of the pretrained
+        # JiT UNet, held UNregistered exactly like the reward → off parameters()/
+        # state_dict()/optimizer/DDP, moved to the device in on_fit_start. ``None`` ⇒ no
+        # KL term (the v1 default; backward-compat). ``kl_coef ≤ 0`` also disables it.
+        if reference_policy is not None:
+            reference_policy = reference_policy.eval()
+            for p in reference_policy.parameters():
+                p.requires_grad_(False)
+            object.__setattr__(self, "reference_unet", reference_policy)
+        else:
+            object.__setattr__(self, "reference_unet", None)
+
         self.G = int(G)
         self.eta_step_list = tuple(int(k) for k in eta_step_list)
         self.clip_range = float(clip_range)
@@ -325,17 +351,22 @@ class GRPOModule(spt.Module):
         self.adv_clip_max = float(adv_clip_max)
         self.num_steps = int(num_steps)
         self.latent_shape = tuple(int(s) for s in latent_shape)
+        self.kl_coef = float(kl_coef)
+        self.reward_bound = str(reward_bound)
+        self.reward_temp = float(reward_temp)
 
     # -- frozen-reward lifecycle ---------------------------------------------
 
     def on_fit_start(self) -> None:
-        """Move the unregistered frozen reward to the device (Lightning won't).
+        """Move the unregistered frozen reward (and reference policy) to the device.
 
-        The ``object.__setattr__`` bypass keeps the reward off Lightning's books, so
-        its automatic ``.to(device)`` skips it. The real path moves it already; this
+        The ``object.__setattr__`` bypass keeps these off Lightning's books, so its
+        automatic ``.to(device)`` skips them. The real path moves them already; this
         is the safety net for direct ``fit`` calls.
         """
         self.reward_model.to(self.device)
+        if self.reference_unet is not None:
+            self.reference_unet.to(self.device)
 
     # -- optimizer ------------------------------------------------------------
 
@@ -358,18 +389,62 @@ class GRPOModule(spt.Module):
             class_labels = torch.full((1,), int(label), dtype=torch.long, device=self.device)
         return spacing_t, class_labels, int(class_labels.shape[0])
 
-    def _new_log_prob(self, step: RolloutStep, spacing_t: Tensor, class_labels: Tensor) -> Tensor:
+    def _new_log_prob(
+        self, step: RolloutStep, spacing_t: Tensor, class_labels: Tensor
+    ) -> tuple[Tensor, Tensor, Tensor | float]:
         """Recompute the transition log-prob under grad (the inner-loop grad eval).
 
         Re-evaluates the UNet at the stored anchor node ``z_k`` (the single live grad
         eval per branch — peak autograd memory is one UNet-forward) and forms the
         Gaussian transition density at the stored ``z_{k+1}``. ``old_log_prob`` was
         computed at rollout time; the ratio ``exp(new − old)`` is what the clip bounds.
+        Returns ``(log_prob, mean_new, std_new)`` so the caller can reuse ``mean_new``
+        for the KL term (no second policy forward) — ADR-0015.
         """
         z_k = step["z_k"]  # (B, *spatial) — detached anchor node
         x0 = self.unet(sample=z_k, timestep=step["t_k"], spacing=spacing_t, class_labels=class_labels)
         mean_new, std_new = self.scheduler.sde_step_mean(x0, z_k, step["t_k"], step["t_next"])
-        return gaussian_log_prob(step["z_kplus1"], mean_new, std_new)  # (B, G)
+        log_prob = gaussian_log_prob(step["z_kplus1"], mean_new, std_new)  # (B, G)
+        return log_prob, mean_new, std_new
+
+    def _transition_kl(
+        self, step: RolloutStep, mean_new: Tensor, std_new, spacing_t: Tensor, class_labels: Tensor
+    ) -> Tensor | None:
+        """The per-transition KL anchor ``0.5·‖μ_θ − μ_ref‖²/σ²`` (ADR-0015), or ``None``.
+
+        The GRPO transition ``π_θ(z_{k+1}|z_k) = N(μ_θ, σ²_t·Δt·I)`` and the reference
+        transition share **equal variance** (``σ_t = η·sqrt((1−t)/t)`` depends only on
+        ``t``, not on the policy weights), so the diagonal-Gaussian KL collapses to the
+        squared-mean difference over ``σ²`` (the trace / log-det terms cancel). The
+        reference mean is a frozen, no-grad forward at the stored ``z_k``; grad flows
+        through ``μ_θ`` only. Returns ``None`` (no KL added) when the reference is absent
+        or ``kl_coef ≤ 0`` — the v1 backward-compat default. ``mean_new`` / ``std_new``
+        are the caller's grad-bearing policy outputs (reused, not recomputed).
+        """
+        if self.reference_unet is None or self.kl_coef <= 0.0:
+            return None
+        with torch.no_grad():
+            x0_ref = self.reference_unet(
+                sample=step["z_k"], timestep=step["t_k"], spacing=spacing_t, class_labels=class_labels
+            )
+        mean_ref, _ = self.scheduler.sde_step_mean(x0_ref, step["z_k"], step["t_k"], step["t_next"])
+        var = max(float(std_new) ** 2, 1e-12)  # the η=0 degenerate floor (mirrors gaussian_log_prob)
+        return 0.5 * ((mean_new - mean_ref) ** 2 / var).flatten(start_dim=1).mean(dim=1)  # (B,)
+
+    def _bound_reward(self, r: Tensor) -> Tensor:
+        """Bound the raw PatchGAN reward so OOD latents cannot dominate (ADR-0015).
+
+        ``none`` is the identity (the v1 raw logit). ``tanh`` maps ``tanh(r / reward_temp)``
+        into the open interval (−1, 1) — a MONOTONIC soft-clip, so distinct sibling rewards
+        stay distinct (the group signal survives) while an OOD extreme (the v1 raw 3370)
+        saturates near ±1 instead of dominating the advantage. ``reward_temp`` ≈ the
+        real-data reward std (~8 from calibration) spreads the in-distribution range.
+        """
+        if self.reward_bound == "none":
+            return r
+        if self.reward_bound == "tanh":
+            return torch.tanh(r / self.reward_temp)
+        raise ValueError(f"unknown reward_bound {self.reward_bound!r} (expected 'none' or 'tanh')")
 
     def training_step(self, batch: GRPOBatch, batch_idx: int):
         """One GRPO update: no-grad singular-branch rollout → multi-step PPO inner loop.
@@ -389,10 +464,13 @@ class GRPOModule(spt.Module):
         spacing_t, class_labels, B = self._conditioning_tensors(batch)
         # One shared group noise (identical across the G siblings ⇒ a shared anchor).
         noise = torch.randn(B, *self.latent_shape, device=self.device, dtype=self._policy_dtype())
+        # The v2 reward bound (ADR-0015): None for the v1 raw-logit default (no-op),
+        # else ``_bound_reward`` (tanh) caps the reward the rollout scores + groups.
+        reward_transform = self._bound_reward if self.reward_bound != "none" else None
         buffer = singular_branch_rollout(
             self.unet, self.scheduler, self.reward_model, noise, spacing_t, class_labels,
             G=self.G, eta_step_list=self.eta_step_list, num_steps=self.num_steps,
-            adv_clip_max=self.adv_clip_max,
+            adv_clip_max=self.adv_clip_max, reward_transform=reward_transform,
         )
 
         opt = self.optimizers()
@@ -404,10 +482,15 @@ class GRPOModule(spt.Module):
         self.unet.eval()
         losses = []
         for step in buffer:
-            new_lp = self._new_log_prob(step, spacing_t, class_labels)
+            new_lp, mean_new, std_new = self._new_log_prob(step, spacing_t, class_labels)
             loss = clipped_surrogate_loss(
                 new_lp, step["old_log_prob"], step["advantage"], self.clip_range
             )
+            # The v2 KL anchor (ADR-0015): a separate term outside the PPO ratio clip —
+            # ``None`` (kl_coef=0 / no reference) adds nothing, preserving v1 behavior.
+            kl = self._transition_kl(step, mean_new, std_new, spacing_t, class_labels)
+            if kl is not None:
+                loss = loss + self.kl_coef * kl.mean()
             self.manual_backward(loss)
             opt.step()
             if sched is not None:
@@ -473,6 +556,8 @@ class GRPOModule(spt.Module):
             self.unet, self.scheduler, noise, spacing_t, int(class_labels[0].item()),
             num_inference_steps=self.num_steps,
         )
-        rewards = self.reward_model(z_K).float()
+        # The same bound the rollout applies (ADR-0015) — val/mean_reward is reported on
+        # the bounded scale so it tracks the training signal (raw logit otherwise).
+        rewards = self._bound_reward(self.reward_model(z_K).float())
         self.log("val/mean_reward", rewards.mean(), on_epoch=True, prog_bar=True, batch_size=B)
         return {"mean_reward": rewards.mean()}

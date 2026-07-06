@@ -1,5 +1,12 @@
 # GRPO Module: `training_step` override, multi-step inner loop, raw / no-EMA
 
+> **Partial supersede (2026-07-06): the "No KL for v1" decision below was reversed by
+> [ADR-0015](0015-grpo-kl-anchor-and-bounded-reward.md).** v1 hacked in one epoch
+> (`val/mean_reward` −13.75 → 3370, `val/fid` 3.98 → 12.50), proving the FID-only screen
+> insufficient against an unbounded raw-logit PatchGAN reward. ADR-0015 adds a KL anchor +
+> a bounded reward. The rest of this ADR (training_step override, multi-step inner loop,
+> no-EMA, raw arm, val/fid selection) stands.
+
 The GRPO policy learner is a **`GRPOModule(spt.Module)`** that overrides
 **`training_step`** (not `forward` — a deliberate deviation from the `RewardModule` seam,
 justified by GRPO's multi-term, multi-step structure), holds the **trainable JiT UNet**
@@ -44,7 +51,8 @@ unchanged, monitored on `val/fid`; `val/mean_reward` is logged as the progress s
   first escalation if reward rises without FID gain. Granular runs without KL; the medical /
   spoofable-reward risk is covered operationally by FID selection rather than preemptively
   by a `β·KL` term (Simplicity First; KL is cheap to add later — one frozen ref UNet + one
-  buffer field + one loss term).
+  buffer field + one loss term). **Reversed 2026-07-06 by
+  [ADR-0015](0015-grpo-kl-anchor-and-bounded-reward.md): v1 hacked without it.**
 
 ## Considered options (rejected)
 
@@ -58,6 +66,8 @@ unchanged, monitored on `val/fid`; `val/mean_reward` is logged as the progress s
   non-deployed distribution.
 - **KL-to-reference from v1.** Rejected as a v1 default: low reversal cost, so building it
   preemptively violates Simplicity First; FID selection already screens for hacking.
+  **Adopted 2026-07-06 by [ADR-0015](0015-grpo-kl-anchor-and-bounded-reward.md)** (with a
+  bounded reward) after v1 hacked.
 
 ## Consequences
 
