@@ -11,12 +11,13 @@ cannot drift; the scheduler class is shared unchanged, ADR-0013), runs the UNet 
 to predict ``x_tgt``, and forms the ``(1 − t)⁻²``-weighted x0-MSE against it.
 
 The module owns **no** ``scale_factor`` (ADR-0003): both src and tgt latents in
-the batch are already scaled (the VAE's ``encode`` scaled them; Slice 2 estimates
-one ``scale_factor`` over src+tgt pooled). The manual-optimization wiring a
-Lightning ``Trainer`` needs to ``fit`` it (Adam over the UNet) is included; the
-cosine-with-warmup schedule, AMP-aware grad-norm hook, and in-training
-:meth:`sample` land with the training stack (Slice 4) and the PSNR/SSIM callback
-(Slice 3) respectively — they consume the same shared rollout primitive.
+the batch are already scaled (the VAE's ``encode`` scaled them; the data stack
+estimates one ``scale_factor`` over src+tgt pooled). It wires the manual-
+optimization training a Lightning ``Trainer`` needs to ``fit`` it: Adam over the
+UNet + a cosine-with-warmup schedule (horizon in optimizer steps, divided by
+world size), and an AMP-aware grad-norm hook (mirrors ``LatentFlowModule``). The
+:meth:`sample` method delegates to the shared rollout primitive so in-training
+generation (the PSNR/SSIM callback, Slice 3) and inference cannot drift.
 
 The objective mirrors :class:`manifold.modules.LatentFlowModule`; only the
 transport endpoints (data src at ``t = 0``, data tgt at ``t = 1``), the doubled
@@ -25,7 +26,7 @@ input (``concat``), and the summed-label conditioning differ.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Iterable
 
 import stable_pretraining as spt
 import torch
@@ -34,6 +35,8 @@ from torch import Tensor
 
 from ..models.unet_3d_condition import UNet3DConditionModel
 from ..schedulers.scheduling_flow_match_heun import FlowMatchHeunDiscreteScheduler
+from .latent_flow import cosine_with_warmup
+from .paired_sampler import sample_paired_latent_flow
 
 #: A Paired JiT training batch: scaled src + tgt latents, contrast labels, spacing.
 #: The data stack (Slice 2) produces these; this module only consumes them.
@@ -55,6 +58,11 @@ class PairedLatentFlowModule(spt.Module):
         t_eps: floor on ``1 − t`` in the loss denominator (matches the sampler's
             endpoint clamp), avoiding the singularity as ``t → 1``.
         lr: Adam learning rate (paired is trained from scratch, ADR-0014).
+        lr_warmup_steps: cosine-schedule warmup, in optimizer steps.
+        num_train_examples: ``len(train paired dataset)`` — together with
+            ``train_batch_size`` / ``n_epochs`` it fixes the cosine horizon.
+        train_batch_size: per-device (per-rank) batch size.
+        n_epochs: the schedule's epoch horizon.
     """
 
     def __init__(
@@ -66,6 +74,10 @@ class PairedLatentFlowModule(spt.Module):
         p_std: float = 0.8,
         t_eps: float = 0.05,
         lr: float = 1.0e-4,
+        lr_warmup_steps: int = 1000,
+        num_train_examples: int | None = None,
+        train_batch_size: int | None = None,
+        n_epochs: int = 1,
     ):
         # NOTE: forward is NOT passed to spt.Module — it would double-bind self.
         # Overriding forward directly is the supported pattern (mirrors LatentFlowModule).
@@ -75,6 +87,7 @@ class PairedLatentFlowModule(spt.Module):
                 "p_std": p_std,
                 "t_eps": t_eps,
                 "lr": lr,
+                "lr_warmup_steps": lr_warmup_steps,
             }
         )
         self.unet = unet
@@ -83,6 +96,15 @@ class PairedLatentFlowModule(spt.Module):
         self.p_std = float(p_std)
         self.t_eps = float(t_eps)
         self.lr = float(lr)
+        self.lr_warmup_steps = int(lr_warmup_steps)
+        self.num_train_examples = (
+            None if num_train_examples is None else int(num_train_examples)
+        )
+        self.train_batch_size = None if train_batch_size is None else int(train_batch_size)
+        self.n_epochs = int(n_epochs)
+        #: Last AMP-corrected grad norm (stashed by ``after_manual_backward``) so
+        #: it is unit-testable without a Trainer / logger.
+        self._last_grad_norm: float | None = None
 
     def _sample_timesteps(self, batch_size: int, device: torch.device) -> Tensor:
         """Logit-normal ``t ~ sigmoid(N(p_mean, p_std))`` in ``(0, 1)``."""
@@ -121,15 +143,115 @@ class PairedLatentFlowModule(spt.Module):
             out["target"] = x_tgt.detach()  # the target latent x_tgt
         return out
 
-    def configure_optimizers(self):
-        """Adam over every UNet param.
+    def sample(
+        self,
+        src_latent,
+        spacing,
+        src_label: int,
+        tgt_label: int,
+        num_inference_steps: int,
+    ) -> Tensor:
+        """Translate ``src_latent`` → a predicted tgt latent (ADR-0005).
 
-        Full fine-tune from scratch (ADR-0014 — no warm-start). The cosine-with-
-        warmup schedule + AMP-aware grad-norm hook are wired by the training stack
-        (Slice 4), which extends this method verbatim from ``LatentFlowModule``.
+        In-training generation (the PSNR/SSIM callback) goes through the Module —
+        never the inference Pipeline. This delegates to the shared
+        :func:`~manifold.modules.sample_paired_latent_flow` primitive the Pipeline
+        also uses, so the train and infer paths cannot drift.
+
+        Because generation shares ``self.unet`` with training, an EMA shadow
+        swapped into ``self.unet`` in place (the EMA callback, around eval) is
+        seen here with no extra wiring — reported quality reflects the EMA model.
+        """
+        return sample_paired_latent_flow(
+            self.unet,
+            self.scheduler,
+            src_latent,
+            spacing,
+            src_label,
+            tgt_label,
+            num_inference_steps=num_inference_steps,
+        )
+
+    # -- optimizer + grad-norm wiring (mirrors LatentFlowModule) ---------------
+
+    def _total_optimizer_steps(self) -> int:
+        """Cosine horizon in **optimizer steps**, divided by ``world_size``.
+
+        ``steps_per_epoch = num_train_examples // (batch_size * world_size)`` and
+        ``total = n_epochs * steps_per_epoch`` — so warmup/cosine are not slowed
+        ``world_size``× under DDP. Returns a 1-step horizon when the dataset/batch
+        are unset (unit tests / a quick smoke).
+        """
+        world = torch.distributed.get_world_size() if torch.distributed.is_initialized() else 1
+        if self.num_train_examples and self.train_batch_size:
+            denom = self.train_batch_size * world
+            steps_per_epoch = max(1, self.num_train_examples // denom)
+            return max(1, self.n_epochs * steps_per_epoch)
+        return 1
+
+    def configure_optimizers(self):
+        """Adam over every UNet param + a step-interval cosine-with-warmup.
+
+        Full fine-tune from scratch (ADR-0014 — no warm-start); the schedule
+        horizon is in optimizer steps (see :meth:`_total_optimizer_steps`).
         """
         optimizer = torch.optim.Adam(self.unet.parameters(), lr=self.lr)
-        return {"optimizer": optimizer}
+        scheduler = cosine_with_warmup(
+            optimizer, self.lr_warmup_steps, self._total_optimizer_steps()
+        )
+        return {
+            "optimizer": optimizer,
+            "lr_scheduler": {"scheduler": scheduler, "interval": "step", "frequency": 1},
+        }
+
+    def _trainer_or_none(self):
+        """The attached Trainer, or ``None`` (the ``trainer`` property raises when unset)."""
+        try:
+            return self.trainer
+        except RuntimeError:
+            return None
+
+    def _amp_scale(self) -> float:
+        """The current AMP loss-scaler value, or ``1.0`` off-GPU / without a Trainer.
+
+        Under ``16-mixed`` Lightning scales the loss before backward, so the raw
+        gradient norm is inflated by this factor — dividing by it recovers the
+        true magnitude.
+        """
+        trainer = self._trainer_or_none()
+        if trainer is None:
+            return 1.0
+        plugin = getattr(trainer, "precision_plugin", None)
+        scaler = getattr(plugin, "scaler", None) if plugin is not None else None
+        if scaler is None:
+            return 1.0
+        scale = scaler.get_scale()
+        return float(scale) if scale else 1.0
+
+    def after_manual_backward(self):
+        """AMP-corrected grad-norm hook (stashed + logged each step).
+
+        Runs immediately after ``manual_backward`` (gradients populated, before
+        the optimizer step). The raw L2 norm of the UNet gradients is divided by
+        the AMP scale to recover the true gradient magnitude; the value is
+        stashed on ``self._last_grad_norm`` (unit-testable without a Trainer) and
+        logged as ``train/grad_norm`` (on step) when a Trainer is attached.
+        """
+        grad_norm = _grad_norm(self.unet.parameters()) / self._amp_scale()
+        self._last_grad_norm = float(grad_norm)
+        if self._trainer_or_none() is not None:
+            self.log("train/grad_norm", grad_norm, on_step=True, on_epoch=False, prog_bar=False)
+
+
+def _grad_norm(parameters: Iterable[torch.nn.Parameter]) -> Tensor:
+    """L2 norm of all populated ``.grad`` tensors (the UNet's, here)."""
+    grads = [p.grad.detach().float() for p in parameters if p.grad is not None]
+    if not grads:
+        return torch.tensor(0.0)
+    total = torch.zeros((), dtype=torch.float32)
+    for g in grads:
+        total = total + g.pow(2).sum()
+    return total.sqrt()
 
 
 __all__ = ["PairedLatentFlowModule", "PairedSampleDict"]

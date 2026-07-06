@@ -58,6 +58,9 @@ manifold-train-reward = "manifold.training.reward_cli:main"
 # The GRPO policy-post-training launcher (issue #55/#56): the frozen reward steers a
 # Granular-GRPO singular-branch update of the raw-arm JiT x0-denoiser (the policy).
 manifold-train-grpo = "manifold.training.grpo_cli:main"
+# The Paired JiT (src→tgt flow) launcher (issue #69): warms the paired BraTS
+# latent cache (Slice 2) and fits the paired Module + double-EMA + PSNR/SSIM.
+manifold-train-paired = "manifold.training.paired_cli:main"
 
 [project.urls]
 Homepage = "https://github.com/junran/manifold"

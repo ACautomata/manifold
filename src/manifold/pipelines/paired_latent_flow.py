@@ -16,7 +16,9 @@ the ``2·C_latent`` UNet config) lands with the training stack (Slice 4).
 
 from __future__ import annotations
 
-from typing import Sequence
+import json
+import os
+from typing import Any, Sequence
 
 import torch
 from torch import Tensor
@@ -26,6 +28,9 @@ from ..models.unet_3d_condition import UNet3DConditionModel
 from ..modules.paired_sampler import sample_paired_latent_flow
 from ..schedulers.scheduling_flow_match_heun import FlowMatchHeunDiscreteScheduler
 from .pipeline_utils import DiffusionPipeline
+
+#: Top-level index naming the pipeline and its per-component layout.
+_MODEL_INDEX_FILE = "model_index.json"
 
 
 class PairedLatentFlowPipeline(DiffusionPipeline):
@@ -40,6 +45,54 @@ class PairedLatentFlowPipeline(DiffusionPipeline):
         self.unet = unet
         self.vae = vae
         self.scheduler = scheduler
+        # No serializable ctor args (the components are objects, not config);
+        # persistence enumerates them in model_index.json (mirrors LatentFlowPipeline).
+        self._internal_dict: dict = {}
+
+    # -- persistence (native per-component format; mirrors LatentFlowPipeline) --
+
+    def save_pretrained(self, save_directory: str) -> None:
+        """Write the pipeline as a per-component directory layout.
+
+        ``model_index.json`` identifies the pipeline; each component writes its
+        own ``config.json`` (and, for models, ``diffusion_pytorch_model.pt``)
+        into its subdirectory. The UNet's ``in_channels = 2·C_latent`` config
+        round-trips through its own ``config.json`` (seam #6, ADR-0014).
+        """
+        os.makedirs(save_directory, exist_ok=True)
+        index = {
+            "format": "manifold",
+            "pipeline_class": type(self).__name__,
+            "components": {
+                "unet": _qualname(self.unet),
+                "vae": _qualname(self.vae),
+                "scheduler": _qualname(self.scheduler),
+            },
+        }
+        with open(os.path.join(save_directory, _MODEL_INDEX_FILE), "w") as f:
+            json.dump(index, f, indent=2, sort_keys=True)
+        self.unet.save_pretrained(os.path.join(save_directory, "unet"))
+        self.vae.save_pretrained(os.path.join(save_directory, "vae"))
+        # The scheduler is stateless (config only — no weights).
+        self.scheduler.to_json_file(
+            os.path.join(save_directory, "scheduler", self.scheduler.config_name)
+        )
+
+    @classmethod
+    def from_pretrained(cls, save_directory: str) -> "PairedLatentFlowPipeline":
+        """Load a pipeline written by :meth:`save_pretrained` (native format only)."""
+        index_path = os.path.join(save_directory, _MODEL_INDEX_FILE)
+        if not os.path.isdir(save_directory) or not os.path.isfile(index_path):
+            raise FileNotFoundError(
+                f"{save_directory!r} is not a manifold pipeline directory "
+                f"(missing {_MODEL_INDEX_FILE})."
+            )
+        unet = UNet3DConditionModel.from_pretrained(os.path.join(save_directory, "unet"))
+        vae = AutoencoderKL.from_pretrained(os.path.join(save_directory, "vae"))
+        scheduler = FlowMatchHeunDiscreteScheduler.from_json_file(
+            os.path.join(save_directory, "scheduler", FlowMatchHeunDiscreteScheduler.config_name)
+        )
+        return cls(unet, vae, scheduler)
 
     def sample_latent(
         self,
@@ -105,3 +158,11 @@ class PairedLatentFlowPipeline(DiffusionPipeline):
             torch.autocast(device_type=latent.device.type, enabled=latent.device.type == "cuda"),
         ):
             return self.vae.decode(latent)
+
+
+# -- model_index helper -----------------------------------------------------
+
+
+def _qualname(component: Any) -> str:
+    """``module.ClassName`` for a component (written to model_index.json)."""
+    return f"{type(component).__module__}.{type(component).__name__}"

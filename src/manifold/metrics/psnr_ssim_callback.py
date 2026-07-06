@@ -71,13 +71,26 @@ class PairedPSNRSSIMCallback(pl.Callback):
             (staged around validation) are touched.
         num_inference_steps: Heun integration steps over ``t: 0 → 1``.
         every_n_epochs: run cadence (1 = every validation epoch).
+        ema_callback: optional :class:`~manifold.training.DoubleEMACallback`. When
+            provided, the slow-EMA shadow is swapped into ``module.unet`` around
+            each rollout so the reported PSNR/SSIM reflects the published EMA
+            model (mirrors :class:`FIDCallback`'s slow arm). ``None`` reports on
+            the raw optimizer weights (e.g. a no-EMA regime or a raw-arm monitor).
     """
 
-    def __init__(self, *, pipeline, num_inference_steps: int, every_n_epochs: int = 1):
+    def __init__(
+        self,
+        *,
+        pipeline,
+        num_inference_steps: int,
+        every_n_epochs: int = 1,
+        ema_callback=None,
+    ):
         super().__init__()
         self.pipeline = pipeline
         self.num_inference_steps = int(num_inference_steps)
         self.every_n_epochs = int(every_n_epochs)
+        self.ema_callback = ema_callback
         self._active = False
         self._eval_staged = False
         self._norm16_disabled = False
@@ -220,13 +233,23 @@ class PairedPSNRSSIMCallback(pl.Callback):
         # val batch shares labels and the first sample's labels are authoritative.
         src_label = int(batch["src_label"].reshape(-1)[0].item())
         tgt_label = int(batch["tgt_label"].reshape(-1)[0].item())
-        pred_latent = self.pipeline.sample_latent(
-            batch["src_latent"],
-            batch["spacing"],
-            src_label,
-            tgt_label,
-            self.num_inference_steps,
-        )
+        # Swap the slow-EMA shadow in around the rollout so the reported metric
+        # reflects the published EMA model (mirrors FIDCallback's slow arm).
+        # ``pipeline.unet`` is ``pl_module.unet`` (the pipeline is built over the
+        # module's UNet by reference), so swapping the module swaps the rollout.
+        if self.ema_callback is not None:
+            self.ema_callback.swap_in(pl_module)
+        try:
+            pred_latent = self.pipeline.sample_latent(
+                batch["src_latent"],
+                batch["spacing"],
+                src_label,
+                tgt_label,
+                self.num_inference_steps,
+            )
+        finally:
+            if self.ema_callback is not None:
+                self.ema_callback.restore(pl_module)
         pred_vol = self._eval_decode(pred_latent)
         tgt_vol = self._eval_decode(batch["tgt_latent"])
         psnr_sum, ssim_sum, n = self._batch_metrics(pred_vol, tgt_vol)
