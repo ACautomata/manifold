@@ -7,13 +7,17 @@
   (loads the cached ``_notop`` state_dict offline, ``torch.hub`` fallback);
 - :class:`FIDCallback` — the per-epoch Lightning callback (fixed samples,
   re-seeded generation noise, single-GPU / rank-0).
+- :class:`PairedPSNRSSIMCallback` — the Paired JiT per-epoch pixel-space 3D
+  PSNR/SSIM callback (issue #68; deterministic given ``x_src`` — no re-seed).
 """
 
 from .fid import frechet_distance_unbiased, get_features_2p5d, make_feature_network
 from .fid_callback import FIDCallback
+from .psnr_ssim_callback import PairedPSNRSSIMCallback
 
 __all__ = [
     "FIDCallback",
+    "PairedPSNRSSIMCallback",
     "frechet_distance_unbiased",
     "get_features_2p5d",
     "make_feature_network",
