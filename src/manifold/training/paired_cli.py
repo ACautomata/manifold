@@ -252,6 +252,7 @@ def main(argv: list[str] | None = None, *, data_provider=None) -> int:
 
 def _warm_data(cfg, device) -> _DataBundle:
     """Warm the real paired latent cache + held VAE (the production data path)."""
+    from ..config import autoencoder_divisor
     from ..data.latent_pipeline import build_encode_pipeline
     from ..data.paired_brats import build_brats_pair_manifest
     from ..data.paired_latent_dataset import (
@@ -263,7 +264,7 @@ def _warm_data(cfg, device) -> _DataBundle:
     logger = logging.getLogger("manifold.train_paired")
     inf_cfg = cfg.diffusion_unet_inference
     target_dim = tuple(int(d) for d in inf_cfg.dim)
-    divisor = int(cfg.get("autoencoder_divisor", 8))
+    divisor = autoencoder_divisor(cfg)
 
     # The BraTS builder emits the (src, tgt, src_label, tgt_label) manifest; a
     # caller may instead point cfg at a generic paired manifest JSON (future).
