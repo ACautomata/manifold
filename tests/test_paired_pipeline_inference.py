@@ -129,7 +129,7 @@ def test_reconstruct_tgt_from_src_after_fit():
             nn.init.normal_(p, std=0.01)
 
     scheduler = FlowMatchHeunDiscreteScheduler()
-    module = PairedLatentFlowModule(unet, scheduler, lr=2e-2)
+    module = PairedLatentFlowModule(unet, scheduler, lr=2e-2, lr_warmup_steps=0)
     pipeline = PairedLatentFlowPipeline(unet, AutoencoderKL(scaling_factor=0.5), scheduler)
 
     torch.manual_seed(1)

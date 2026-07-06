@@ -1,0 +1,60 @@
+# Paired JiT recipe preset — the src→tgt x0 translator (ADR-0013/0014). One
+# config that selects the full Paired JiT recipe: data src at the t=0 endpoint
+# (z_t = t·x_tgt + (1−t)·x_src via add_noise), concat([z_t, x_src]) input with
+# summed-label conditioning (embed(src)+embed(tgt)), (1−t)^-2-weighted x0-MSE on
+# x_tgt with logit-normal t, the true two-evaluation Heun sampler STARTING FROM
+# x_src (deterministic given x_src — no CFG, no re-seed), and double EMA.
+# Composed with a BraTS2023 env + the network config (in_channels = 2·C_latent).
+#
+# Consumed by manifold-train-paired (#69).
+
+diffusion_unet_train:
+  batch_size: 8
+  cache_rate: 0
+  lr: 1.0e-4
+  n_epochs: 1000
+  lr_scheduler: cosine
+  lr_warmup_steps: 1000
+
+# The Paired JiT formulation (ADR-0013/0014). Knobs mirror JiT's x0-denoiser;
+# each is overridable via CLI/dotlist (e.g. `formulation.p_mean=-1.0`).
+formulation:
+  mode: paired-x0
+  p_mean: -0.8           # t ~ sigmoid(N(p_mean, p_std))
+  p_std: 0.8
+  t_eps: 0.05            # (1-t)^-2 loss / derived-velocity clamp
+  ode_solver: heun       # 2nd-order Heun integrator, starts from x_src
+  # Double EMA: shadows at 0.9999 (slow, used for the PSNR/SSIM val arm) + 0.9996.
+  ema: true
+  ema_decays: [0.9999, 0.9996]
+
+# Pixel-space validation (issue #68): per-epoch 3D PSNR/SSIM on the fixed val
+# subset, decoded through the held frozen VAE. Deterministic given x_src
+# (ADR-0013) → no per-epoch re-seed (unlike the noise→data FID). All optional —
+# manifold-train-paired falls back to sensible defaults; each knob is overridable
+# via dotlist (e.g. `paired_eval.num_inference_steps=8`).
+paired_eval:
+  num_inference_steps: 8   # Heun rollout steps for the val src→tgt translation
+  every_n_epochs: 1        # cadence (1 = every validation epoch)
+  save_top_k: 3            # top-k checkpoints on the monitored metric
+
+# Stock Lightning ModelCheckpoint (ADR-0006). Single-GPU monitors val/psnr
+# (mode=max, top-3, last, full state); under DDP (PSNR/SSIM is rank-0-only)
+# manifold-train-paired falls back to save_last + every_n_epochs with no monitor.
+checkpoint:
+  save_top_k: 3
+  save_last: true
+  every_n_epochs: 1        # DDP fallback cadence (no monitor)
+
+diffusion_unet_inference:
+  dim: [256, 256, 128]          # latent target shape [C, D, H, W] (B prepended)
+  spacing: [1.7, 1.7, 2]
+  top_region_index: [0, 1, 0, 0]
+  bottom_region_index: [0, 0, 1, 0]
+  random_seed: 0
+  num_inference_steps: 8
+  modality: 1
+  autoencoder_sliding_window_infer_size: [80, 80, 80]
+  autoencoder_sliding_window_infer_overlap: 0.4
+  autoencoder_encode_sliding_window_infer_size: [320, 320, 160]
+  autoencoder_encode_sliding_window_infer_overlap: 0.4
