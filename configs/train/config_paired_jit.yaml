@@ -1,9 +1,11 @@
 # Paired JiT recipe preset — the src→tgt x0 translator (ADR-0013/0014). One
 # config that selects the full Paired JiT recipe: data src at the t=0 endpoint
 # (z_t = t·x_tgt + (1−t)·x_src via add_noise), concat([z_t, x_src]) input with
-# summed-label conditioning (embed(src)+embed(tgt)), (1−t)^-2-weighted x0-MSE on
-# x_tgt with logit-normal t, the true two-evaluation Heun sampler STARTING FROM
-# x_src (deterministic given x_src — no CFG, no re-seed), and double EMA.
+# summed-label conditioning (embed(src)+embed(tgt)), UNIFORM x0-MSE on x_tgt with
+# logit-normal t (the regime fix — see formulation.loss_weight; the legacy
+# (1−t)^-2 velocity-MSE collapsed the model to ≈copy-src), the true
+# two-evaluation Heun sampler STARTING FROM x_src (deterministic given x_src — no
+# CFG, no re-seed), a 10% subject-level held-out val, and double EMA.
 # Composed with a BraTS2023 env + the network config (in_channels = 2·C_latent).
 #
 # Consumed by manifold-train-paired (#69).
@@ -24,9 +26,22 @@ formulation:
   p_std: 0.8
   t_eps: 0.05            # (1-t)^-2 loss / derived-velocity clamp
   ode_solver: heun       # 2nd-order Heun integrator, starts from x_src
+  # UNIFORM x0-MSE, NOT the (1-t)^-2 velocity-MSE (ADR-0013/0014 regime fix). The
+  # (1-t)^-2 weight lets the model satisfy high-t by copying z_t (z_t≈x_tgt there)
+  # while leaving the low-t transport — which the start-from-x_src rollout depends
+  # on — under-trained (predicted velocity 0 → rollout stalls at x_src, ≈ copy-src).
+  # On the ep25 run this collapsed the RAW model to ≈copy-src (+0.07 dB); uniform
+  # MSE + low-t-biased sampling (p_mean=-0.8) forces genuine low-t translation.
+  loss_weight: uniform   # "uniform" | "1mt_sq" (the legacy velocity-MSE default)
   # Double EMA: shadows at 0.9999 (slow, used for the PSNR/SSIM val arm) + 0.9996.
   ema: true
   ema_decays: [0.9999, 0.9996]
+
+# Subject-level held-out validation split. The legacy path reused the train set as
+# val (build_datamodule val_dataset=None), so val/psnr was a TRAIN-set number. This
+# holds out the last val_fraction of SUBJECTS (disjoint → no leakage; the PSNR/SSIM
+# callback then measures held-out translation quality). 0 → val=train fallback.
+val_fraction: 0.1
 
 # Pixel-space validation (issue #68): per-epoch 3D PSNR/SSIM on the fixed val
 # subset, decoded through the held frozen VAE. Deterministic given x_src
