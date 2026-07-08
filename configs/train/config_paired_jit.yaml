@@ -34,7 +34,7 @@ formulation:
 # manifold-train-paired falls back to sensible defaults; each knob is overridable
 # via dotlist (e.g. `paired_eval.num_inference_steps=8`).
 paired_eval:
-  num_inference_steps: 8   # Heun rollout steps for the val src→tgt translation
+  num_inference_steps: 15  # Heun rollout steps; 15 aligns with rflow_jit/grpo/reward
   every_n_epochs: 1        # cadence (1 = every validation epoch)
   save_top_k: 3            # top-k checkpoints on the monitored metric
 
@@ -52,7 +52,7 @@ diffusion_unet_inference:
   top_region_index: [0, 1, 0, 0]
   bottom_region_index: [0, 0, 1, 0]
   random_seed: 0
-  num_inference_steps: 8
+  num_inference_steps: 15
   modality: 1
   autoencoder_sliding_window_infer_size: [80, 80, 80]
   autoencoder_sliding_window_infer_overlap: 0.4
