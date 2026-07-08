@@ -34,7 +34,10 @@ formulation:
 # manifold-train-paired falls back to sensible defaults; each knob is overridable
 # via dotlist (e.g. `paired_eval.num_inference_steps=8`).
 paired_eval:
-  num_inference_steps: 15  # Heun rollout steps; 15 aligns with rflow_jit/grpo/reward
+  num_inference_steps: 8   # OPTIMAL, not 15: step-sweep on ep25 SLOW-EMA gives 8>12>15>20
+                           # (15=−0.75dB/−0.17SSIM, 20=−2.4dB). Paired is an x_src-anchored
+                           # x0-predictor → few Heun steps; unlike noise→data (rflow_jit=15),
+                           # more steps diverge on the undertrained high-t velocity field.
   every_n_epochs: 1        # cadence (1 = every validation epoch)
   save_top_k: 3            # top-k checkpoints on the monitored metric
 
@@ -52,7 +55,7 @@ diffusion_unet_inference:
   top_region_index: [0, 1, 0, 0]
   bottom_region_index: [0, 0, 1, 0]
   random_seed: 0
-  num_inference_steps: 15
+  num_inference_steps: 8
   modality: 1
   autoencoder_sliding_window_infer_size: [80, 80, 80]
   autoencoder_sliding_window_infer_overlap: 0.4
