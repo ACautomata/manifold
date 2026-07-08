@@ -50,10 +50,14 @@ class _DataBundle:
 
     (Injection seam for the CPU smoke test, which feeds a fake paired latent cache
     + a tiny VAE instead of warming BraTS through a real VAE encode.)
+
+    ``val_latent_ds`` is an optional subject-level held-out validation dataset
+    (``None`` → ``run_paired_training`` falls back to val=train, the legacy path).
     """
 
     latent_ds: Any
     vae: Any
+    val_latent_ds: Any = None
 
 
 def _build_checkpoint(
@@ -149,7 +153,10 @@ def run_paired_training(
     callbacks.append(ckpt)
 
     datamodule = build_datamodule(
-        bundle.latent_ds, batch_size=batch_size, num_workers=num_workers
+        bundle.latent_ds,
+        batch_size=batch_size,
+        num_workers=num_workers,
+        val_dataset=bundle.val_latent_ds,
     )
     trainer = build_trainer(
         max_epochs=max_epochs,
@@ -222,6 +229,7 @@ def main(argv: list[str] | None = None, *, data_provider=None) -> int:
         p_mean=float(opt(cfg.formulation, "p_mean", -0.8)),
         p_std=float(opt(cfg.formulation, "p_std", 0.8)),
         t_eps=float(opt(cfg.formulation, "t_eps", 0.05)),
+        loss_weight=str(opt(cfg.formulation, "loss_weight", "1mt_sq")),
         lr=float(train_cfg.lr),
         lr_warmup_steps=int(train_cfg.lr_warmup_steps),
         num_train_examples=num_examples,
@@ -251,10 +259,15 @@ def main(argv: list[str] | None = None, *, data_provider=None) -> int:
 
 
 def _warm_data(cfg, device) -> _DataBundle:
-    """Warm the real paired latent cache + held VAE (the production data path)."""
+    """Warm the real paired latent cache + held VAE (the production data path).
+
+    Splits the BraTS manifest by SUBJECT into train + held-out val
+    (``cfg.val_fraction``; default 0 → no split, the val=train fallback) so the
+    per-epoch PSNR/SSIM is measured on subjects the model never trains on.
+    """
     from ..config import autoencoder_divisor
     from ..data.latent_pipeline import build_encode_pipeline
-    from ..data.paired_brats import build_brats_pair_manifest
+    from ..data.paired_brats import build_brats_pair_manifest, split_brats_pair_manifest
     from ..data.paired_latent_dataset import (
         PairedLatentDataset,
         estimate_paired_scale_factor,
@@ -275,19 +288,40 @@ def _warm_data(cfg, device) -> _DataBundle:
             f"No paired BraTS volumes found under data_base_dir={brats_dir} "
             f"(need ≥1 subject with all 4 contrasts)."
         )
-    vol_ds = PairedNiftiVolumeDataset(manifest, target_dim=target_dim, divisor=divisor)
-    logger.info(f"paired manifest: {len(vol_ds)} pairs over {len(vol_ds.unique_sample_ids())} unique volumes.")
+    val_fraction = float(opt(cfg, "val_fraction", 0.0))
+    train_manifest, val_manifest = split_brats_pair_manifest(manifest, val_fraction)
+    vol_ds = PairedNiftiVolumeDataset(train_manifest, target_dim=target_dim, divisor=divisor)
+    logger.info(
+        f"paired manifest: {len(manifest)} pairs -> {len(vol_ds)} train / "
+        f"{len(val_manifest)} val (val_fraction={val_fraction:.3f}, "
+        f"{len(vol_ds.unique_sample_ids())} train unique volumes)."
+    )
 
     autoencoder, encode_fn = build_encode_pipeline(cfg, device=device, logger=logger)
     cache_dir = str(opt(cfg, "latent_cache_dir", os.path.join(str(cfg.model_dir), "paired_latent_cache")))
     latent_ds = PairedLatentDataset(vol_ds, encode_fn=encode_fn, cache_dir=cache_dir, cache_tag="paired_train")
     latent_ds.warm_cache(device, logger=logger, show_progress=True)
+    # The held-out val latent dataset. Disjoint subjects → disjoint volumes, so it
+    # shares ``cache_dir`` with zero duplicate encoding (each val volume is a cache
+    # miss encoded exactly once). ``None`` when ``val_fraction <= 0`` (val=train).
+    val_latent_ds: PairedLatentDataset | None = None
+    if val_manifest:
+        val_vol_ds = PairedNiftiVolumeDataset(val_manifest, target_dim=target_dim, divisor=divisor)
+        val_latent_ds = PairedLatentDataset(
+            val_vol_ds, encode_fn=encode_fn, cache_dir=cache_dir, cache_tag="paired_train"
+        )
+        val_latent_ds.warm_cache(device, logger=logger, show_progress=True)
+        val_latent_ds.free_encoder()
     latent_ds.free_encoder()
 
     autoencoder.cpu()
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
+    # Estimate the scale over TRAIN unique latents only (no val leakage); propagate
+    # the same scale-on-read multiplier to the val dataset so its decode is consistent.
     estimate_paired_scale_factor(
         latent_ds, autoencoder, sample_size=int(opt(cfg, "val_subset_size", 64)), logger=logger
     )
-    return _DataBundle(latent_ds=latent_ds, vae=autoencoder)
+    if val_latent_ds is not None:
+        val_latent_ds.scaling_factor = latent_ds.scaling_factor
+    return _DataBundle(latent_ds=latent_ds, vae=autoencoder, val_latent_ds=val_latent_ds)

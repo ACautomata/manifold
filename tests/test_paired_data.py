@@ -312,6 +312,47 @@ def test_paired_disk_cache_reuses_across_runs(tmp_path) -> None:
     assert torch.allclose(second.raw_latent(vol.unique_sample_ids()[0]), raw_first)
 
 
+def test_held_out_val_scale_propagates_from_train(tmp_path) -> None:
+    """The held-out val dataset must carry the TRAIN-derived scale-on-read factor.
+
+    Mirrors ``paired_cli._warm_data``: ``estimate_paired_scale_factor`` runs over
+    TRAIN unique latents only, then ``val_latent_ds.scaling_factor =
+    latent_ds.scaling_factor`` propagates it. A regression here silently corrupts
+    the held-out PSNR decode (val latents read under the wrong scale while the VAE
+    undoes the train scale). Disjoint fake subjects → disjoint volumes → disjoint
+    ``sample_id`` cache keys (no cross-contamination).
+    """
+    train_src, train_tgt = tmp_path / "tr-t1n.nii.gz", tmp_path / "tr-t1c.nii.gz"
+    val_src, val_tgt = tmp_path / "va-t1n.nii.gz", tmp_path / "va-t1c.nii.gz"
+    for p in (train_src, train_tgt, val_src, val_tgt):
+        _write_nifti(str(p))
+    tr_vol = PairedNiftiVolumeDataset(
+        [{"src": str(train_src), "tgt": str(train_tgt), "src_label": 34, "tgt_label": 35}],
+        target_dim=(8, 8, 8), divisor=4,
+    )
+    val_vol = PairedNiftiVolumeDataset(
+        [{"src": str(val_src), "tgt": str(val_tgt), "src_label": 34, "tgt_label": 35}],
+        target_dim=(8, 8, 8), divisor=4,
+    )
+
+    torch.manual_seed(0)
+    enc = _mock_encode_fn()
+    train_ds = PairedLatentDataset(tr_vol, encode_fn=enc)
+    val_ds = PairedLatentDataset(val_vol, encode_fn=enc)
+    train_ds.warm_cache(torch.device("cpu"), show_progress=False)
+    val_ds.warm_cache(torch.device("cpu"), show_progress=False)
+    assert set(train_ds.source.unique_sample_ids()).isdisjoint(val_ds.source.unique_sample_ids())
+
+    class _ScaleVae:
+        scaling_factor = torch.tensor([1.0])
+
+    vae = _ScaleVae()
+    estimate_paired_scale_factor(train_ds, vae, sample_size=2)  # sets train ds + vae
+    assert val_ds.scaling_factor == 1.0  # untouched before propagation
+    val_ds.scaling_factor = train_ds.scaling_factor  # the _warm_data propagation line
+    assert val_ds.scaling_factor == train_ds.scaling_factor == float(vae.scaling_factor)
+
+
 # -- Seam #4: BraTS pair builder ---------------------------------------------
 
 
@@ -351,6 +392,46 @@ def test_build_brats_pair_manifest_two_subjects(tmp_path) -> None:
         src_sub = pair["src"].rsplit("-t1n", 1)[0].rsplit("-t1c", 1)[0].rsplit("-t2w", 1)[0].rsplit("-t2f", 1)[0]
         tgt_sub = pair["tgt"].rsplit("-t1n", 1)[0].rsplit("-t1c", 1)[0].rsplit("-t2w", 1)[0].rsplit("-t2f", 1)[0]
         assert src_sub == tgt_sub
+
+
+def test_split_brats_pair_manifest_by_subject(tmp_path) -> None:
+    """Subject-level held-out split: disjoint subjects (no leakage), correct counts.
+
+    5 complete subjects → 60 pairs; ``val_fraction=0.4`` → ``ceil(0.4·5)=2`` val
+    subjects (24 val pairs) / 3 train subjects (36 train pairs), and no subject
+    appears in both splits. ``val_fraction <= 0`` → the val=train fallback.
+    """
+    from manifold.data.paired_brats import split_brats_pair_manifest
+
+    for i in range(5):
+        _write_brats_subject(tmp_path, subject=f"BraTS-GLI-0000-{i:03d}")
+    manifest = build_brats_pair_manifest(str(tmp_path))
+    assert len(manifest) == 60  # 5 subjects × 12 pairs
+
+    def _subject_of(path: str) -> str:
+        for c in ("-t1n", "-t1c", "-t2w", "-t2f"):
+            if c in path:
+                return path.rsplit(c, 1)[0]
+        return path
+
+    train, val = split_brats_pair_manifest(manifest, 0.4)
+    assert len(val) == 24 and len(train) == 36
+    train_subs = {_subject_of(p["src"]) for p in train}
+    val_subs = {_subject_of(p["src"]) for p in val}
+    assert train_subs.isdisjoint(val_subs), "a held-out subject leaked into train"
+    assert len(train_subs) == 3 and len(val_subs) == 2
+
+    # val_fraction <= 0 → all train, empty val (the val=train fallback).
+    train0, val0 = split_brats_pair_manifest(manifest, 0.0)
+    assert val0 == [] and len(train0) == 60
+
+    # Degenerate splits never empty train. val_fraction>=1 holds out all-but-one
+    # (keeps >=1 train subject); a single subject with frac>0 stays in train.
+    tr_full, val_full = split_brats_pair_manifest(manifest, 1.5)
+    assert len(tr_full) == 12 and len(val_full) == 48  # 1 train subject, 4 val
+    one_subject = manifest[:12]  # the 12 pairs of the first subject
+    tr1, val1 = split_brats_pair_manifest(one_subject, 0.5)
+    assert len(tr1) == 12 and val1 == []  # can't hold out the only subject -> stays in train
 
 
 def test_build_brats_pair_manifest_labels_map_correctly(tmp_path) -> None:

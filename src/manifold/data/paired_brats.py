@@ -17,6 +17,7 @@ the four contrasts are skipped entirely (a partial subject yields zero pairs).
 
 from __future__ import annotations
 
+import math
 import os
 from typing import Any
 
@@ -104,4 +105,63 @@ def build_brats_pair_manifest(
     return manifest
 
 
-__all__ = ["build_brats_pair_manifest"]
+def split_brats_pair_manifest(
+    manifest: list[dict[str, Any]],
+    val_fraction: float,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Split a BraTS pair manifest into ``(train, val)`` by **subject**.
+
+    Groups the pairs by subject (re-derived from each pair's ``src`` path via
+    :func:`_split_subject_contrast`), sorts the subjects deterministically, and
+    assigns the **last** ``ceil(val_fraction · n_subjects)`` subjects to val, the
+    rest to train. Because the split is by subject, no subject's volume appears in
+    both splits → no train/val leakage: every contrast of a held-out subject is
+    held out, whether it appears as the src or the tgt of any pair.
+
+    The "last subjects" choice (not a random draw) keeps the split reproducible
+    with no RNG seed and stable across runs/resumes, so runs are directly
+    comparable on the same held-out set. BraTS-GLI subject IDs are arbitrary
+    filename labels (not ordered by site/scanner), so a fixed contiguous block is
+    an unbiased held-out set.
+
+    Args:
+        manifest: the full :func:`build_brats_pair_manifest` output.
+        val_fraction: fraction of subjects to hold out (``0 < f``).
+            ``<= 0`` → all subjects in train, empty val (the val=train fallback);
+            ``>= 1`` → all-but-one in val (always keeps ≥1 train subject).
+
+    Returns:
+        ``(train_manifest, val_manifest)`` — each a list of the same
+        ``{"src","tgt","src_label","tgt_label"}`` dicts, over disjoint subject sets.
+        ``train_manifest`` is never empty when the input has ≥1 subject (a single
+        subject with ``val_fraction > 0`` stays in train), so the train-only scale
+        estimate downstream never faces an empty cache.
+    """
+    if val_fraction <= 0.0:
+        return list(manifest), []
+    per_subject: dict[str, list[dict[str, Any]]] = {}
+    for item in manifest:
+        subject, _ = _split_subject_contrast(os.path.basename(str(item["src"])))
+        if subject is None:
+            continue  # malformed pair (no detectable contrast) — skip, matches the builder
+        per_subject.setdefault(subject, []).append(item)
+    subjects = sorted(per_subject)
+    if not subjects:
+        return [], []
+    if val_fraction >= 1.0:
+        n_val = len(subjects)
+    else:
+        n_val = max(1, math.ceil(val_fraction * len(subjects)))
+    # Always keep ≥1 train subject: a single subject with val_fraction>0 stays in
+    # train, and val_fraction>=1 holds out all-but-one. Prevents an empty train
+    # dataset (and an opaque torch.stack([]) crash in the train-only scale estimate).
+    n_val = min(n_val, len(subjects) - 1)
+    val_subjects = set(subjects[-n_val:]) if n_val > 0 else set()
+    train_manifest: list[dict[str, Any]] = []
+    val_manifest: list[dict[str, Any]] = []
+    for s in subjects:
+        (val_manifest if s in val_subjects else train_manifest).extend(per_subject[s])
+    return train_manifest, val_manifest
+
+
+__all__ = ["build_brats_pair_manifest", "split_brats_pair_manifest"]

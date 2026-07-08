@@ -57,6 +57,14 @@ class PairedLatentFlowModule(spt.Module):
             values (``-0.8`` / ``0.8``).
         t_eps: floor on ``1 − t`` in the loss denominator (matches the sampler's
             endpoint clamp), avoiding the singularity as ``t → 1``.
+        loss_weight: the x0-MSE weighting regime. ``"1mt_sq"`` (default, the JiT
+            x0-denoiser velocity-MSE ``((x0−x_tgt)/(1−t))²``) or ``"uniform"``
+            (plain ``(x0−x_tgt)²``). The ``(1−t)⁻²`` weight lets the model satisfy
+            high-``t`` by copying ``z_t`` (correct there) while leaving the low-``t``
+            transport — which the start-from-``x_src`` rollout depends on —
+            under-trained (predicted velocity 0 → the rollout stalls at ``x_src``).
+            ``"uniform"`` + low-``t``-biased sampling (``p_mean < 0``) forces genuine
+            low-``t`` translation (ADR-0013/0014 addendum).
         lr: Adam learning rate (paired is trained from scratch, ADR-0014).
         lr_warmup_steps: cosine-schedule warmup, in optimizer steps.
         num_train_examples: ``len(train paired dataset)`` — together with
@@ -73,6 +81,7 @@ class PairedLatentFlowModule(spt.Module):
         p_mean: float = -0.8,
         p_std: float = 0.8,
         t_eps: float = 0.05,
+        loss_weight: str = "1mt_sq",
         lr: float = 1.0e-4,
         lr_warmup_steps: int = 1000,
         num_train_examples: int | None = None,
@@ -86,6 +95,7 @@ class PairedLatentFlowModule(spt.Module):
                 "p_mean": p_mean,
                 "p_std": p_std,
                 "t_eps": t_eps,
+                "loss_weight": loss_weight,
                 "lr": lr,
                 "lr_warmup_steps": lr_warmup_steps,
             }
@@ -95,6 +105,11 @@ class PairedLatentFlowModule(spt.Module):
         self.p_mean = float(p_mean)
         self.p_std = float(p_std)
         self.t_eps = float(t_eps)
+        if loss_weight not in ("1mt_sq", "uniform"):
+            raise ValueError(
+                f"loss_weight must be '1mt_sq' or 'uniform', got {loss_weight!r}."
+            )
+        self.loss_weight = str(loss_weight)
         self.lr = float(lr)
         self.lr_warmup_steps = int(lr_warmup_steps)
         self.num_train_examples = (
@@ -112,11 +127,13 @@ class PairedLatentFlowModule(spt.Module):
         return torch.sigmoid(logits)
 
     def forward(self, batch: PairedSampleDict, stage: str) -> dict[str, Tensor]:
-        """Paired JiT forward: ``(1 − t)⁻²``-weighted MSE on the target latent.
+        """Paired JiT forward: the x0-MSE on the target latent.
 
         The interpolated latent comes from ``scheduler.add_noise(x_tgt, x_src, t)``
         (the transport is the scheduler's). The UNet input is ``concat([z_t, x_src])``
-        and the loss is ``mean(((x_tgt − x_tgt_pred) / max(1 − t, t_eps))²)``.
+        and the loss is the x0-MSE on ``x_tgt``: ``(1 − t)⁻²``-weighted (velocity-MSE,
+        the default) when ``loss_weight="1mt_sq"``, or plain MSE when
+        ``loss_weight="uniform"`` (see :meth:`__init__`).
         """
         x_src = batch["src_latent"]  # already scaled (ADR-0003): no scale_factor here
         x_tgt = batch["tgt_latent"]  # already scaled (same VAE / scale_factor)
@@ -133,9 +150,19 @@ class PairedLatentFlowModule(spt.Module):
             class_labels_tgt=batch["tgt_label"],
         )
 
-        t_b = t.view(-1, *([1] * (x_tgt.ndim - 1)))  # broadcast over spatial dims
-        weight = (1.0 - t_b).clamp(min=self.t_eps)
-        loss = F.mse_loss(x0_pred.float() / weight, x_tgt.float() / weight)
+        if self.loss_weight == "uniform":
+            # Plain x0-MSE — weight low- and high-``t`` equally. The ``"1mt_sq"``
+            # velocity-MSE lets the model satisfy high-``t`` by copying ``z_t``
+            # while leaving low-``t`` transport under-trained (predicted velocity 0
+            # → the start-from-``x_src`` rollout stalls). Uniform MSE + low-``t``-
+            # biased sampling forces genuine low-``t`` translation.
+            loss = F.mse_loss(x0_pred.float(), x_tgt.float())
+        else:
+            # ``(1 − t)⁻²``-weighted x0-MSE == the velocity-MSE
+            # ``v = (x0 − z)/(1 − t)``; the JiT x0-denoiser weight (the default).
+            t_b = t.view(-1, *([1] * (x_tgt.ndim - 1)))  # broadcast over spatial dims
+            weight = (1.0 - t_b).clamp(min=self.t_eps)
+            loss = F.mse_loss(x0_pred.float() / weight, x_tgt.float() / weight)
 
         out: dict[str, Tensor] = {"loss": loss}
         if stage != "fit":

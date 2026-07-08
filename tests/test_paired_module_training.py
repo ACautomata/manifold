@@ -179,6 +179,43 @@ def test_loss_is_inverse_t_weighted_mse_on_tgt(monkeypatch):
     assert torch.allclose(loss, expected)
 
 
+def test_loss_uniform_is_plain_mse_on_tgt():
+    """loss_weight="uniform": loss = mean((x_tgt − x0_pred)²) — no (1−t)⁻² divisor.
+
+    With x0_pred ≡ 0 this reduces to ``mean(x_tgt²)``, independent of ``t`` (the
+    velocity weight is dropped). Pins the regime fix (ADR-0013/0014 addendum):
+    the model is no longer free to satisfy high-``t`` by copying while starving
+    the low-``t`` transport the rollout depends on.
+    """
+    unet = _ZeroPairedUNet()
+    scheduler = FlowMatchHeunDiscreteScheduler(t_eps=0.1)
+    module = PairedLatentFlowModule(unet, scheduler, t_eps=0.1, loss_weight="uniform")
+    module._sample_timesteps = lambda batch_size, device: torch.full(  # pin t
+        (batch_size,), 0.25, device=device
+    )
+
+    torch.manual_seed(0)
+    x_src = torch.randn(1, C_LATENT, 4, 4, 4)
+    x_tgt = torch.randn(1, C_LATENT, 4, 4, 4)
+    batch = {
+        "src_latent": x_src,
+        "tgt_latent": x_tgt,
+        "src_label": torch.tensor([0]),
+        "tgt_label": torch.tensor([1]),
+        "spacing": torch.tensor([1.0, 1.0, 1.0]),
+    }
+    loss = module(batch, "fit")["loss"]
+    expected = x_tgt.float().pow(2).mean()
+    assert torch.allclose(loss, expected)
+
+
+def test_invalid_loss_weight_raises():
+    """An unknown loss_weight is rejected at construction (fails fast)."""
+    unet = _ZeroPairedUNet()
+    with pytest.raises(ValueError, match="loss_weight"):
+        PairedLatentFlowModule(unet, FlowMatchHeunDiscreteScheduler(), loss_weight="bogus")
+
+
 class _TargetUNet(nn.Module):
     """UNet stand-in that always predicts the target latent ``x_tgt`` exactly.
 
@@ -224,6 +261,28 @@ def test_backward_updates_unet_parameters(paired_module, paired_batch, paired_un
     grads = [p.grad for p in paired_unet_trainable.parameters() if p.grad is not None]
     assert grads and any(g.abs().sum() > 0 for g in grads)
     # The full UNet is in the graph — not just the output projection.
+    with_grad = sum(
+        1 for p in paired_unet_trainable.parameters() if p.grad is not None and p.grad.abs().sum() > 0
+    )
+    total = sum(1 for _ in paired_unet_trainable.parameters())
+    assert with_grad > total // 2
+
+
+def test_backward_updates_unet_parameters_under_uniform_loss(paired_unet_trainable, paired_scheduler):
+    """loss_weight="uniform" still backprops through the full UNet — the uniform
+    branch (plain MSE, no (1−t)⁻² division) keeps x0_pred in the graph, so the
+    regime fix is trainable end-to-end, not just evaluatable."""
+    module = PairedLatentFlowModule(paired_unet_trainable, paired_scheduler, loss_weight="uniform")
+    batch = {
+        "src_latent": torch.randn(1, C_LATENT, 4, 4, 4),
+        "tgt_latent": torch.randn(1, C_LATENT, 4, 4, 4),
+        "src_label": torch.tensor([0]),
+        "tgt_label": torch.tensor([1]),
+        "spacing": torch.tensor([1.0, 1.0, 1.0]),
+    }
+    module(batch, "fit")["loss"].backward()
+    grads = [p.grad for p in paired_unet_trainable.parameters() if p.grad is not None]
+    assert grads and any(g.abs().sum() > 0 for g in grads)
     with_grad = sum(
         1 for p in paired_unet_trainable.parameters() if p.grad is not None and p.grad.abs().sum() > 0
     )
