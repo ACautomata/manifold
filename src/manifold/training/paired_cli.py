@@ -258,16 +258,50 @@ def main(argv: list[str] | None = None, *, data_provider=None) -> int:
     return 0
 
 
+def _train_val_manifests(cfg, manifest):
+    """Resolve the (train, val) paired manifests from the configured split mode.
+
+    Two mutually-exclusive modes (mirrors the ``val_data_base_dir`` /
+    ``val_fraction`` env-config contract):
+
+    - ``cfg.val_data_base_dir`` set → the **native held-out split**: ``manifest``
+      (built from ``data_base_dir``) is the full train set, and val is built from
+      ``val_data_base_dir`` — a BraTS directory in the same form as
+      ``data_base_dir`` (NOT a manifest JSON; the paired path is BraTS-dir-based
+      via :func:`build_brats_pair_manifest`). Use this when the dataset ships its
+      own disjoint train/val (e.g. BraTS-2024-GLI's 1621 train / 188 val) — the
+      organizer-split subjects are disjoint, so there is no train/val leakage.
+    - otherwise → ``cfg.val_fraction`` subject-level split of ``manifest`` (the
+      PR #77 path; ``0`` → val=train fallback). A ``null``/``???``/absent
+      ``val_data_base_dir`` reads as unset via :func:`~manifold.config.opt`.
+    """
+    from ..data.paired_brats import build_brats_pair_manifest, split_brats_pair_manifest
+
+    val_dir = opt(cfg, "val_data_base_dir", None)
+    if val_dir:
+        val_manifest = build_brats_pair_manifest(str(val_dir))
+        if not val_manifest:
+            raise FileNotFoundError(
+                f"No paired BraTS volumes found under val_data_base_dir={val_dir} "
+                f"(need ≥1 subject with all 4 contrasts)."
+            )
+        return manifest, val_manifest
+    val_fraction = float(opt(cfg, "val_fraction", 0.0))
+    return split_brats_pair_manifest(manifest, val_fraction)
+
+
 def _warm_data(cfg, device) -> _DataBundle:
     """Warm the real paired latent cache + held VAE (the production data path).
 
-    Splits the BraTS manifest by SUBJECT into train + held-out val
-    (``cfg.val_fraction``; default 0 → no split, the val=train fallback) so the
-    per-epoch PSNR/SSIM is measured on subjects the model never trains on.
+    Resolves the train/val split via :func:`_train_val_manifests`: either the
+    native BraTS-2024 train↔val (``val_data_base_dir`` set) or the PR #77
+    subject-level held-out split (``val_fraction``). Either way the held-out val
+    subjects are disjoint from train, so the per-epoch PSNR/SSIM is measured on
+    volumes the model never trains on.
     """
     from ..config import autoencoder_divisor
     from ..data.latent_pipeline import build_encode_pipeline
-    from ..data.paired_brats import build_brats_pair_manifest, split_brats_pair_manifest
+    from ..data.paired_brats import build_brats_pair_manifest
     from ..data.paired_latent_dataset import (
         PairedLatentDataset,
         estimate_paired_scale_factor,
@@ -288,13 +322,16 @@ def _warm_data(cfg, device) -> _DataBundle:
             f"No paired BraTS volumes found under data_base_dir={brats_dir} "
             f"(need ≥1 subject with all 4 contrasts)."
         )
-    val_fraction = float(opt(cfg, "val_fraction", 0.0))
-    train_manifest, val_manifest = split_brats_pair_manifest(manifest, val_fraction)
+    train_manifest, val_manifest = _train_val_manifests(cfg, manifest)
     vol_ds = PairedNiftiVolumeDataset(train_manifest, target_dim=target_dim, divisor=divisor)
+    val_dir = opt(cfg, "val_data_base_dir", None)
+    split_note = (
+        f"val_data_base_dir={val_dir}" if val_dir
+        else f"val_fraction={float(opt(cfg, 'val_fraction', 0.0)):.3f}"
+    )
     logger.info(
-        f"paired manifest: {len(manifest)} pairs -> {len(vol_ds)} train / "
-        f"{len(val_manifest)} val (val_fraction={val_fraction:.3f}, "
-        f"{len(vol_ds.unique_sample_ids())} train unique volumes)."
+        f"paired manifest: {len(train_manifest)} train / {len(val_manifest)} val "
+        f"pairs ({split_note}; {len(vol_ds.unique_sample_ids())} train unique volumes)."
     )
 
     autoencoder, encode_fn = build_encode_pipeline(cfg, device=device, logger=logger)

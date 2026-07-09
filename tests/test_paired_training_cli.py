@@ -335,3 +335,119 @@ def _datamodule():
     train = DataLoader(ds, batch_size=2, shuffle=False, num_workers=0)
     val = DataLoader(ds, batch_size=2, shuffle=False, num_workers=0)
     return DataModule(train=train, val=val)
+
+
+# -- train/val manifest resolution (native split vs val_fraction) ------------
+
+
+def test_train_val_manifests_native_split_uses_val_data_base_dir(monkeypatch):
+    """val_data_base_dir set → full manifest is the train set, val is built from
+    the val dir; split_brats_pair_manifest is NOT called (native split, no leakage).
+
+    Guards the "注意对应训练和验证数据集的加载" wiring: BraTS-2024's official
+    train↔val (1621/188) must be honored as the held-out split.
+    """
+    from omegaconf import OmegaConf
+
+    import manifold.data.paired_brats as pb
+    from manifold.training import paired_cli
+
+    train_manifest = [{"src": f"/train/s{i}-t1n.nii.gz"} for i in range(12)]
+    val_manifest = [{"src": f"/val/s{i}-t1n.nii.gz"} for i in range(4)]
+    split_calls = {"n": 0}
+
+    def fake_build(brats_dir, labels=None):
+        return val_manifest if "/val" in str(brats_dir) else train_manifest
+
+    def fake_split(manifest, val_fraction):  # pragma: no cover - must not run
+        split_calls["n"] += 1
+        return manifest, []
+
+    monkeypatch.setattr(pb, "build_brats_pair_manifest", fake_build)
+    monkeypatch.setattr(pb, "split_brats_pair_manifest", fake_split)
+
+    cfg = OmegaConf.create({"val_data_base_dir": "/data/BraTS-GLI/val", "val_fraction": 0.1})
+    out_train, out_val = paired_cli._train_val_manifests(cfg, train_manifest)
+
+    assert out_train is train_manifest          # full manifest is the train set
+    assert out_val is val_manifest              # val built from val_data_base_dir
+    assert split_calls["n"] == 0                # fraction path not taken
+
+
+def test_train_val_manifests_native_split_raises_on_empty_val(monkeypatch):
+    """val_data_base_dir set but yields no pairable subjects → clear FileNotFoundError
+    (not a silent val=train fallback or an opaque downstream crash)."""
+    from omegaconf import OmegaConf
+
+    import manifold.data.paired_brats as pb
+    from manifold.training import paired_cli
+
+    monkeypatch.setattr(pb, "build_brats_pair_manifest", lambda *a, **k: [])
+    cfg = OmegaConf.create({"val_data_base_dir": "/data/empty"})
+    with pytest.raises(FileNotFoundError, match="val_data_base_dir"):
+        paired_cli._train_val_manifests(cfg, [{"src": "a.nii.gz"}])
+
+
+def test_train_val_manifests_falls_back_to_fraction_split(monkeypatch):
+    """No val_data_base_dir → delegates to split_brats_pair_manifest(manifest,
+    val_fraction) (the PR #77 path; unchanged behavior)."""
+    from omegaconf import OmegaConf
+
+    import manifold.data.paired_brats as pb
+    from manifold.training import paired_cli
+
+    captured: dict = {}
+
+    def spy_split(manifest, val_fraction):
+        captured["manifest"] = manifest
+        captured["frac"] = val_fraction
+        return [{"src": "train"}], [{"src": "val"}]
+
+    build_calls: list = []
+    monkeypatch.setattr(
+        pb, "build_brats_pair_manifest", lambda *a, **k: build_calls.append(a) or []
+    )
+    monkeypatch.setattr(pb, "split_brats_pair_manifest", spy_split)
+
+    full = [{"src": "a.nii.gz"}]
+    cfg = OmegaConf.create({"val_fraction": 0.1})
+    train, val = paired_cli._train_val_manifests(cfg, full)
+
+    assert captured["manifest"] is full and captured["frac"] == 0.1
+    assert train == [{"src": "train"}] and val == [{"src": "val"}]
+    assert build_calls == []                    # native-split build not invoked
+
+
+@pytest.mark.parametrize(
+    # val_data_base_dir absent / null / ??? must ALL read as unset → fraction path.
+    # (opt() wraps OmegaConf.select with default=None; linchpin of "no regression
+    # when val_data_base_dir is not a usable BraTS directory".)
+    "val_dir_yaml",
+    ["__absent__", "val_data_base_dir: null", "val_data_base_dir: ???"],
+)
+def test_train_val_manifests_unset_val_dir_falls_back_to_fraction(monkeypatch, val_dir_yaml):
+    from omegaconf import OmegaConf
+
+    import manifold.data.paired_brats as pb
+    from manifold.training import paired_cli
+
+    captured: dict = {}
+
+    def spy_split(manifest, val_fraction):
+        captured["frac"] = val_fraction
+        return manifest, []
+
+    build_calls: list = []
+    monkeypatch.setattr(
+        pb, "build_brats_pair_manifest", lambda *a, **k: build_calls.append(a) or []
+    )
+    monkeypatch.setattr(pb, "split_brats_pair_manifest", spy_split)
+
+    body = "val_fraction: 0.2\n"
+    if val_dir_yaml != "__absent__":
+        body += val_dir_yaml + "\n"
+    cfg = OmegaConf.create(body)
+
+    paired_cli._train_val_manifests(cfg, [{"src": "a.nii.gz"}])
+    assert captured.get("frac") == 0.2          # fraction path taken
+    assert build_calls == []                     # no native-split build attempted

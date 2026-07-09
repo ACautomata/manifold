@@ -1,0 +1,26 @@
+# Sugon (曙光/SothisAI DCU) env profile — Paired JiT on BraTS-2024-GLI.
+# See the sugon-deploy skill. Code at /root/manifold (ephemeral system disk);
+# runtime (ckpt/log/latent_cache) at /root/private_data/manifold/<run> (persistent
+# NFS). The frozen VAE is staged under private_data/manifold/models.
+#
+# Native BraTS-2024 train↔val split: data_base_dir = the 1621-subject train set,
+# val_data_base_dir = the 188-subject official val set (4 contrasts each, no seg —
+# paired needs only contrasts). paired_cli._train_val_manifests honors
+# val_data_base_dir as the held-out split (disjoint subjects, no leakage); the
+# recipe's val_fraction=0.1 is ignored when val_data_base_dir is set.
+#
+# The paired UNet doubles in_channels (2·C_latent = 8); pass
+# `diffusion_unet.in_channels=8` on the CLI (config_network.yaml defaults to 4).
+data_base_dir: /root/private_data/BraTS-2024-Complete/BraTS-GLI/train
+json_data_list: null
+val_data_base_dir: /root/private_data/BraTS-2024-Complete/BraTS-GLI/val
+val_subset_size: 32
+model_dir: /root/private_data/manifold/brats2024_gli_paired_jit
+model_filename: paired_jit.pt
+output_dir: /root/private_data/manifold/brats2024_gli_paired_jit
+output_prefix: paired_jit_brats2024_gli
+trained_autoencoder_path: /root/private_data/manifold/models/autoencoder_v1.pt
+existing_ckpt_filepath: null
+modality_mapping_path: configs/modality_mapping.json
+dataset_type: brats
+latent_cache_dir: /root/private_data/manifold/brats2024_gli_paired_jit/paired_latent_cache
