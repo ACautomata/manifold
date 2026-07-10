@@ -39,7 +39,7 @@ from ..modules.paired_latent_flow import PairedLatentFlowModule
 from ..pipelines.paired_latent_flow import PairedLatentFlowPipeline
 from .ema import DoubleEMACallback
 from .metrics import LatentX0MAE, TrainLossLogger
-from .trainer import build_trainer
+from .trainer import build_trainer, is_multi_gpu
 
 _log = logging.getLogger(__name__)
 
@@ -55,9 +55,10 @@ class _DataBundle:
     (``None`` → ``run_paired_training`` falls back to val=train, the legacy path).
     """
 
-    latent_ds: Any
-    vae: Any
+    latent_ds: Any = None
+    vae: Any = None
     val_latent_ds: Any = None
+    warm_fn: Any = None
 
 
 def _build_checkpoint(
@@ -142,7 +143,7 @@ def run_paired_training(
     )
     callbacks: list = [TrainLossLogger(), LatentX0MAE(), ema, psnr]
 
-    multi_gpu = isinstance(devices, int) and devices > 1
+    multi_gpu = is_multi_gpu(devices)
     ckpt = _build_checkpoint(
         model_dir,
         monitor_psnr=not multi_gpu,
@@ -152,11 +153,18 @@ def run_paired_training(
     )
     callbacks.append(ckpt)
 
-    datamodule = build_datamodule(
-        bundle.latent_ds,
+    # F2/F4 (ADR-0017): the paired warm runs in DataModule.setup() (post-PG,
+    # per-rank sharded) when bundle.warm_fn is set; the warmed test path makes
+    # setup() a no-op.
+    from ..data.warm_datamodule import PairedWarmDataModule
+
+    datamodule = PairedWarmDataModule(
+        latent_ds=bundle.latent_ds,
+        vae=bundle.vae,
         batch_size=batch_size,
         num_workers=num_workers,
-        val_dataset=bundle.val_latent_ds,
+        val_latent_ds=bundle.val_latent_ds,
+        warm_fn=bundle.warm_fn,
     )
     trainer = build_trainer(
         max_epochs=max_epochs,
@@ -219,10 +227,16 @@ def main(argv: list[str] | None = None, *, data_provider=None) -> int:
     pl.seed_everything(seed, workers=True)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    bundle = data_provider(cfg, device) if data_provider is not None else _warm_data(cfg, device)
+    if data_provider is not None:
+        # Test smoke: the provider returns a WARMED bundle (latent_ds already set).
+        bundle = data_provider(cfg, device)
+        num_examples = len(bundle.latent_ds) if bundle.latent_ds is not None else 0
+    else:
+        # Production cold path (ADR-0017): warm deferred to DataModule.setup();
+        # num_examples = len(vol_ds) (pre-warm).
+        bundle, num_examples = _warm_data(cfg, device)
 
     train_cfg = cfg.diffusion_unet_train
-    num_examples = len(bundle.latent_ds)
     module = PairedLatentFlowModule(
         build_unet(cfg),
         build_scheduler(cfg),
@@ -247,7 +261,7 @@ def main(argv: list[str] | None = None, *, data_provider=None) -> int:
         bundle=bundle,
         model_dir=str(cfg.model_dir),
         max_epochs=max_epochs,
-        devices=args.num_gpus if args.num_gpus > 1 else "auto",
+        devices=args.num_gpus if args.num_gpus > 1 else 1,
         batch_size=int(train_cfg.batch_size),
         seed=seed,
         ckpt_path=args.resume,
@@ -308,7 +322,7 @@ def _train_val_manifests(cfg, manifest):
     return split_brats_pair_manifest(manifest, val_fraction)
 
 
-def _warm_data(cfg, device) -> _DataBundle:
+def _warm_data(cfg, device) -> tuple[_DataBundle, int]:
     """Warm the real paired latent cache + held VAE (the production data path).
 
     Resolves the train/val split via :func:`_train_val_manifests`: either the
@@ -354,29 +368,30 @@ def _warm_data(cfg, device) -> _DataBundle:
 
     autoencoder, encode_fn = build_encode_pipeline(cfg, device=device, logger=logger)
     cache_dir = str(opt(cfg, "latent_cache_dir", os.path.join(str(cfg.model_dir), "paired_latent_cache")))
-    latent_ds = PairedLatentDataset(vol_ds, encode_fn=encode_fn, cache_dir=cache_dir, cache_tag="paired_train")
-    latent_ds.warm_cache(device, logger=logger, show_progress=True)
-    # The held-out val latent dataset. Disjoint subjects → disjoint volumes, so it
-    # shares ``cache_dir`` with zero duplicate encoding (each val volume is a cache
-    # miss encoded exactly once). ``None`` when ``val_fraction <= 0`` (val=train).
-    val_latent_ds: PairedLatentDataset | None = None
-    if val_manifest:
-        val_vol_ds = PairedNiftiVolumeDataset(val_manifest, target_dim=target_dim, divisor=divisor)
-        val_latent_ds = PairedLatentDataset(
-            val_vol_ds, encode_fn=encode_fn, cache_dir=cache_dir, cache_tag="paired_train"
-        )
-        val_latent_ds.warm_cache(device, logger=logger, show_progress=True)
-        val_latent_ds.free_encoder()
-    latent_ds.free_encoder()
+    val_subset_size = int(opt(cfg, "val_subset_size", 64))
 
-    autoencoder.cpu()
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
-    # Estimate the scale over TRAIN unique latents only (no val leakage); propagate
-    # the same scale-on-read multiplier to the val dataset so its decode is consistent.
-    estimate_paired_scale_factor(
-        latent_ds, autoencoder, sample_size=int(opt(cfg, "val_subset_size", 64)), logger=logger
-    )
-    if val_latent_ds is not None:
-        val_latent_ds.scaling_factor = latent_ds.scaling_factor
-    return _DataBundle(latent_ds=latent_ds, vae=autoencoder, val_latent_ds=val_latent_ds)
+    def warm_fn():
+        # F2/F3 (ADR-0017): both warm calls run here (post-PG, inside setup()) so
+        # PairedLatentDataset.warm_cache derives rank/world from dist -> the
+        # sharded branch activates (one writer per unique-volume cache file).
+        nonlocal autoencoder
+        latent_ds = PairedLatentDataset(vol_ds, encode_fn=encode_fn, cache_dir=cache_dir, cache_tag="paired_train")
+        latent_ds.warm_cache(device, logger=logger, show_progress=True)
+        val_latent_ds = None
+        if val_manifest:
+            val_vol_ds = PairedNiftiVolumeDataset(val_manifest, target_dim=target_dim, divisor=divisor)
+            val_latent_ds = PairedLatentDataset(
+                val_vol_ds, encode_fn=encode_fn, cache_dir=cache_dir, cache_tag="paired_train"
+            )
+            val_latent_ds.warm_cache(device, logger=logger, show_progress=True)
+            val_latent_ds.free_encoder()
+        latent_ds.free_encoder()
+        autoencoder.cpu()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        estimate_paired_scale_factor(latent_ds, autoencoder, sample_size=val_subset_size, logger=logger)
+        if val_latent_ds is not None:
+            val_latent_ds.scaling_factor = latent_ds.scaling_factor
+        return latent_ds, val_latent_ds, autoencoder
+
+    return _DataBundle(vae=autoencoder, warm_fn=warm_fn), len(vol_ds)

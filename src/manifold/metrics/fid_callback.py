@@ -81,8 +81,10 @@ class FIDCallback(pl.Callback):
         module,
         vae,
         ema_callback,
-        real_latents: torch.Tensor,
-        feature_net,
+        real_latents=None,
+        real_latents_source=None,
+        feature_net=None,
+        feature_net_factory=None,
         latent_shape,
         spacing,
         modality: int,
@@ -100,8 +102,19 @@ class FIDCallback(pl.Callback):
         self.module = module
         self.vae = vae
         self.ema_callback = ema_callback
+        # F5 (ADR-0017): ``real_latents`` may be ``None`` at construction (the warm
+        # has moved into DataModule.setup(), so the val reference does not exist
+        # until the first validation epoch). ``real_latents_source`` is a callable
+        # ``() -> Tensor`` (or an object exposing ``.val_latents``) pulled lazily at
+        # the first ``_real_features`` call. Both are populated before any FID math.
+        self._real_latents_source = real_latents_source
         self.real_latents = real_latents
         self.feature_net = feature_net
+        # L3 (ADR-0016): lazy RadImageNet build. ``_stage_eval_on_device`` is
+        # rank-0-gated, so a factory is only invoked on rank 0 - non-root ranks do
+        # no ``torch.hub``/disk load (saves ~100 MB × (N-1)). Construction is the
+        # only place the backbone was eagerly built on every rank pre-PG.
+        self.feature_net_factory = feature_net_factory
         self.latent_shape = tuple(latent_shape)
         self.spacing = spacing
         self.modality = int(modality)
@@ -119,18 +132,23 @@ class FIDCallback(pl.Callback):
     # -- internals -----------------------------------------------------------
 
     def _gated(self, trainer) -> bool:
-        """Rank-0 + cadence gate; warn loudly under DDP and skip otherwise."""
+        """Rank-0 + cadence gate; warn loudly under DDP and skip otherwise.
+
+        The warning is hoisted BELOW the ``is_global_zero`` guard so it fires
+        only on rank 0 (L1, ADR-0016) - emitting it on every rank every val
+        epoch was noise.
+        """
         world = 1
         if torch.distributed.is_available() and torch.distributed.is_initialized():
             world = torch.distributed.get_world_size()
         if world > 1:
+            if not trainer.is_global_zero:
+                return False
             _log.warning(
                 "FIDCallback: running only on rank 0 (world_size=%d). The other "
                 "ranks skip the generative FID and must NOT block on an NCCL "
                 "collective here — single-GPU is the supported config.", world
             )
-            if not trainer.is_global_zero:
-                return False
         epoch = trainer.current_epoch
         if self.every_n_epochs <= 1 or (epoch % self.every_n_epochs == 0):
             return True
@@ -147,6 +165,11 @@ class FIDCallback(pl.Callback):
         if not getattr(self, "_eval_staged", False):
             self._vae_cpu_state = {k: v.detach().clone() for k, v in self.vae.state_dict().items()}
             self.vae.to(self._device())
+            # L3: lazy feature_net build on the rank-0-gated stage path (the only
+            # place it is used). A factory defers the ~100 MB ``torch.hub`` load so
+            # non-root ranks never touch it; a direct ``feature_net`` is honored as-is.
+            if self.feature_net is None and self.feature_net_factory is not None:
+                self.feature_net = self.feature_net_factory()
             if self.feature_net is not None:
                 self.feature_net.to(self._device())
                 # eval so BatchNorm uses fixed running stats (RadImageNet ResNet50
@@ -186,7 +209,21 @@ class FIDCallback(pl.Callback):
 
     @torch.no_grad()
     def _real_features(self) -> list[torch.Tensor]:
-        """Decode the fixed real subset once and cache its per-plane features."""
+        """Decode the fixed real subset once and cache its per-plane features.
+
+        F5: if ``real_latents`` was ``None`` at construction (the warm moved into
+        ``DataModule.setup()``, so the val reference did not exist yet), pull it
+        from the ``real_latents_source`` here - the first ``_real_features`` call
+        runs inside the first validation epoch, after ``setup()`` populated it.
+        """
+        if self.real_latents is None and self._real_latents_source is not None:
+            src = self._real_latents_source
+            self.real_latents = src() if callable(src) else getattr(src, "val_latents")
+        if self.real_latents is None:
+            raise RuntimeError(
+                "FIDCallback.real_latents is None at the first _real_features call - "
+                "the DataModule.setup() warm has not populated it (F5 wiring bug)."
+            )
         self.vae.eval()
         real_images = self._eval_decode(self.real_latents)
         return get_features_2p5d(real_images, self.feature_net, center_slices_ratio=self.center_slices_ratio)

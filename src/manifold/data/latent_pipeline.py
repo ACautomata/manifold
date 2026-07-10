@@ -180,8 +180,8 @@ def warm_latent_pipeline(
     cache_tag: str,
     device: torch.device,
     logger: logging.Logger | None,
-    rank: int = 0,
-    world: int = 1,
+    rank: int | None = None,
+    world: int | None = None,
     scale_factor_sample_size: int,
 ) -> LatentPipeline:
     """Warm the unscaled latent cache once, estimate scale, return the bundle.
@@ -198,6 +198,16 @@ def warm_latent_pipeline(
     5. :func:`estimate_scale_factor` → ``1/std(z)`` over the warmed cache, set on
        the VAE (and the dataset's scale-on-read multiplier).
     """
+    # F3 (ADR-0017): derive rank/world from dist when the PG is initialized
+    # (fallback 0/1) so the post-PG DataModule.setup() path activates the sharded
+    # branch without the caller threading rank/world through. Explicit kwargs
+    # (kept for back-compat) are honored only when the PG is NOT initialized.
+    if dist.is_initialized():
+        rank = dist.get_rank()
+        world = dist.get_world_size()
+    else:
+        rank = 0 if rank is None else rank
+        world = 1 if world is None else world
     if rank == 0:
         Path(cache_dir).mkdir(parents=True, exist_ok=True)
     if dist.is_initialized():
