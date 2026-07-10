@@ -231,11 +231,17 @@ class PairedPSNRSSIMCallback(pl.Callback):
             if data_range <= 0.0:
                 continue  # constant target — PSNR/SSIM undefined
             mse = float((p - t).pow(2).mean())
-            psnr = 10.0 * math.log10((data_range * data_range) / mse)
             # Pre-minmax pred = A·tgt + B → exact match after independent
             # per-volume normalisation (a physical edge case with a copy-src
-            # model, not a numerical pathology). Cap at 100 dB instead of
-            # skipping so the checkpoint monitor still sees a finite metric.
+            # model, not a numerical pathology). Cap at 100 dB and SSIM=1.0
+            # instead of skipping so the checkpoint monitor still sees a
+            # finite metric. Guard before math.log10(0) — DivisionByZero.
+            if mse == 0.0:
+                psnr_sum += 100.0
+                ssim_sum += 1.0
+                n += 1
+                continue
+            psnr = 10.0 * math.log10((data_range * data_range) / mse)
             psnr_sum += min(psnr, 100.0)
             ssim_sum += float(structural_similarity_index_measure(p, t, data_range=data_range))
             n += 1
