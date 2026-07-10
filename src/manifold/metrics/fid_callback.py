@@ -165,15 +165,21 @@ class FIDCallback(pl.Callback):
         if not getattr(self, "_eval_staged", False):
             self._vae_cpu_state = {k: v.detach().clone() for k, v in self.vae.state_dict().items()}
             self.vae.to(self._device())
-            # L3: lazy feature_net build on the rank-0-gated stage path (the only
-            # place it is used). A factory defers the ~100 MB ``torch.hub`` load so
-            # non-root ranks never touch it; a direct ``feature_net`` is honored as-is.
-            # The factory is fail-safe (codex #85 P2): a bad/corrupt cache or a
-            # no-network host makes it return None -> FID is skipped gracefully
+            # L3 + codex #85 P2: lazy feature_net build on the rank-0-gated stage
+            # path (the only place it is used). A factory defers the ~100 MB
+            # ``torch.hub`` load so non-root ranks never touch it; a direct
+            # ``feature_net`` is honored as-is. The call is FAIL-SAFE here (not just
+            # in main's factory): a raising factory (a bad/corrupt cache, a version
+            # mismatch, or a direct caller's non-fail-safe factory) is caught ->
+            # feature_net stays None -> FID is skipped gracefully
             # (on_validation_epoch_end logs a sentinel so the checkpoint monitor does
             # not crash on a never-logged metric) instead of aborting training mid-fit.
             if self.feature_net is None and self.feature_net_factory is not None:
-                self.feature_net = self.feature_net_factory()
+                try:
+                    self.feature_net = self.feature_net_factory()
+                except Exception:  # pragma: no cover - backbone load failure
+                    _log.warning("RadImageNet backbone build failed; FID will be skipped.", exc_info=True)
+                    self.feature_net = None
             if self.feature_net is None:
                 self._fid_disabled = True
                 return

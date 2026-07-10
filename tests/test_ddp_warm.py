@@ -276,3 +276,50 @@ def test_p2_feature_net_factory_failure_skips_fid_and_logs_sentinel(tmp_path):
     fid.on_validation_epoch_end(_Tr(), module)
     assert logged.get("val/fid_avg") == float("inf")
     assert logged.get("val/fid_raw") == float("inf")
+
+
+def test_p2_raising_factory_caught_and_skips_fid(tmp_path):
+    """A RAISING factory (a bad/corrupt cache the fail-safe wrapper in main missed,
+    or a direct caller's non-fail-safe factory) is caught IN FIDCallback (codex #85
+    re-review): the call site itself is wrapped, so it never aborts training mid-fit.
+
+    This is the case codex flagged - the previous fix made the FACTORY fail-safe but
+    left the call site unwrapped, relying on every caller passing a fail-safe factory.
+    FIDCallback is now self-contained.
+    """
+    import torch
+
+    from manifold import AutoencoderKL, FlowMatchHeunDiscreteScheduler, LatentFlowModule, UNet3DConditionModel
+    from manifold.metrics import FIDCallback
+    from manifold.training.ema import DoubleEMACallback
+
+    def _raising_factory():
+        raise RuntimeError("simulated corrupt checkpoint / version mismatch")
+
+    torch.manual_seed(0)
+    module = LatentFlowModule(
+        UNet3DConditionModel(num_class_embeds=4, include_spacing_input=True),
+        FlowMatchHeunDiscreteScheduler(), lr=1e-2, lr_warmup_steps=0,
+        num_train_examples=6, train_batch_size=2, n_epochs=1,
+    )
+    fid = FIDCallback(
+        module=module, vae=AutoencoderKL(scaling_factor=0.5),
+        ema_callback=DoubleEMACallback(module),
+        real_latents=torch.randn(2, 4, 4, 4, 4),
+        feature_net_factory=_raising_factory,
+        latent_shape=(1, 4, 4, 4, 4), spacing=[1.0, 1.0, 1.0], modality=1,
+        num_inference_steps=2, num_synth=2, cov_ridge=1e-2, seed=0,
+    )
+
+    class _Tr:
+        is_global_zero = True
+        current_epoch = 0
+    # The raising factory is caught -> no exception escapes _stage_eval_on_device.
+    fid._stage_eval_on_device()
+    assert getattr(fid, "_fid_disabled", False) is True
+    assert fid.feature_net is None
+
+    logged = {}
+    module.log = lambda key, value, **k: logged.__setitem__(key, value)  # type: ignore[assignment]
+    fid.on_validation_epoch_end(_Tr(), module)  # no raise; logs inf sentinels
+    assert logged.get("val/fid_avg") == float("inf")
