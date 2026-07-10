@@ -120,38 +120,48 @@ def _make_callback(pipeline, *, num_inference_steps=2, every_n_epochs=1) -> Pair
 
 
 def test_psnr_formula_pinned_on_known_pair(identity_vae):
-    """decode(identity) + constant offset → PSNR = 10·log10(data_range²/mse), pinned.
+    """decode(identity) + noise offset -> PSNR matches manual recompute on normalized volumes.
 
-    With the target half-zeros/half-ones (``data_range = 1.0``) and a constant
-    ``0.1`` offset, ``mse = 0.01`` so ``PSNR = 10·log10(1/0.01) = 20.0`` dB
-    exactly. Going through ``_eval_decode`` exercises the identity-VAE decode
-    path; the SSIM for this pair is a finite float in ``[0, 1]``.
+    Volumes are pre-normalized to [0, 1] via ``_minmax_to_unit`` (mirrors the
+    callback's flow between ``_eval_decode`` and ``_batch_metrics``). The PSNR
+    formula is verified by computing the expected value independently from the
+    same normalized tensors.
     """
     cb = _make_callback(_FakePipeline(_FakeUNet(), identity_vae))
     cb._stage_eval_on_device()
 
+    torch.manual_seed(42)
     tgt_latent = torch.zeros(1, C_LATENT, SPATIAL, SPATIAL, SPATIAL)
-    tgt_latent[..., ::2] = 1.0  # half ones → data_range = 1.0 after identity decode
-    pred_latent = tgt_latent + 0.1  # constant offset → mse = 0.01
+    tgt_latent[..., ::2] = 1.0  # half ones -> [0, 1] range after identity decode
+    noise = 0.2 * torch.randn_like(tgt_latent)
+    pred_latent = tgt_latent + noise  # non-constant offset avoids collapse under min-max
 
     pred_vol = cb._eval_decode(pred_latent)
     tgt_vol = cb._eval_decode(tgt_latent)
-    psnr_sum, ssim_sum, n = cb._batch_metrics(pred_vol, tgt_vol)
+    pred_norm = PairedPSNRSSIMCallback._minmax_to_unit(pred_vol)
+    tgt_norm = PairedPSNRSSIMCallback._minmax_to_unit(tgt_vol)
+    psnr_sum, ssim_sum, n = cb._batch_metrics(pred_norm, tgt_norm)
 
     assert n == 1
-    # PSNR formula pinned (10·log10(1.0/0.01) = 20.0 dB).
-    assert psnr_sum == pytest.approx(20.0, abs=1e-4)
+    # PSNR matches manual recompute on the same normalized tensors.
+    p = pred_norm[0:1].float()
+    t = tgt_norm[0:1].float()
+    dr = float(t.max() - t.min())
+    mse = float((p - t).pow(2).mean())
+    expected = 10.0 * math.log10(dr**2 / mse)
+    assert psnr_sum == pytest.approx(expected, abs=1e-4)
     # SSIM is a finite float in [0, 1] (structural similarity is bounded).
     assert math.isfinite(ssim_sum)
     assert 0.0 <= ssim_sum <= 1.0
 
 
 def test_psnr_matches_direct_recompute(identity_vae):
-    """The callback's PSNR equals an independent ``10·log10(dr²/mse)`` on random data.
+    """The callback's PSNR equals an independent ``10·log10(dr²/mse)`` on min-max-normalized data.
 
-    A non-trivial random pair (no closed form): asserts the callback wires mse +
-    ``data_range = target[max − min]`` exactly, with the per-sample data_range
-    (not the batch-global one torchmetrics would pick).
+    Pre-normalizes the decoded volumes via ``_minmax_to_unit`` (mirrors the
+    callback's flow between ``_eval_decode`` and ``_batch_metrics``), then asserts
+    the callback's per-sample ``data_range = target[max − min]`` formula matches
+    a direct recompute on the same normalized tensors.
     """
     cb = _make_callback(_FakePipeline(_FakeUNet(), identity_vae))
     cb._stage_eval_on_device()
@@ -161,13 +171,40 @@ def test_psnr_matches_direct_recompute(identity_vae):
 
     pred_vol = cb._eval_decode(pred)
     tgt_vol = cb._eval_decode(tgt)
-    psnr_sum, _, n = cb._batch_metrics(pred_vol, tgt_vol)
+    pred_norm = PairedPSNRSSIMCallback._minmax_to_unit(pred_vol)
+    tgt_norm = PairedPSNRSSIMCallback._minmax_to_unit(tgt_vol)
+    psnr_sum, _, n = cb._batch_metrics(pred_norm, tgt_norm)
 
-    data_range = float(tgt.max() - tgt.min())
-    mse = float((pred - tgt).pow(2).mean())
+    data_range = float(tgt_norm.max() - tgt_norm.min())
+    mse = float((pred_norm - tgt_norm).pow(2).mean())
     expected = 10.0 * math.log10(data_range**2 / mse)
     assert n == 1
     assert psnr_sum == pytest.approx(expected, abs=1e-4)
+
+
+
+
+def test_affine_collapse_counted_not_skipped(identity_vae):
+    """Pred = tgt + offset must NOT be skipped after per-volume min-max (codex #86 P2).
+
+    Independent min-max normalisation collapses pred = A·tgt + B into an exact
+    match (mse == 0). The old `mse == 0 → continue` would skip every sample,
+    leaving _count = 0 and breaking the checkpoint monitor. The fix caps PSNR
+    at 100 dB instead, so the sample is counted (n > 0) with a finite score
+    and the SSIM from torchmetrics (≈ 1.0 for structurally identical volumes).
+    """
+    cb = _make_callback(_FakePipeline(_FakeUNet(), identity_vae))
+    cb._stage_eval_on_device()
+    tgt = torch.randn(1, C_LATENT, SPATIAL, SPATIAL, SPATIAL)
+    pred = tgt + 0.1  # pure offset — collapses to identical after independent min-max
+    tgt_vol = cb._eval_decode(tgt)
+    pred_vol = cb._eval_decode(pred)
+    pred_norm = PairedPSNRSSIMCallback._minmax_to_unit(pred_vol)
+    tgt_norm = PairedPSNRSSIMCallback._minmax_to_unit(tgt_vol)
+    psnr_sum, ssim_sum, n = cb._batch_metrics(pred_norm, tgt_norm)
+    assert n == 1, "affine-collapsed sample must be counted, not skipped"
+    assert psnr_sum == pytest.approx(100.0, abs=1e-4), "PSNR must be capped at 100 dB"
+    assert ssim_sum >= 0.999, "structurally identical volumes must have SSIM ~1.0"
 
 
 def test_ssim_is_one_for_identical_volumes(identity_vae):
@@ -382,6 +419,11 @@ def test_callback_matches_independent_recompute():
         # Identity decode (the fake VAE was restored to CPU after fit; decode is
         # device-agnostic for identity, so recompute directly).
         pred_vol, tgt_vol = pred_latent.float(), batch["tgt_latent"].float()
+        # Pre-normalize (mirrors the callback's _minmax_to_unit called between
+        # _eval_decode and _batch_metrics). Without this the recomputed PSNR/SSIM
+        # would be on the raw volume range and would not match the logged value.
+        pred_vol = PairedPSNRSSIMCallback._minmax_to_unit(pred_vol)
+        tgt_vol = PairedPSNRSSIMCallback._minmax_to_unit(tgt_vol)
         p, s, m = cb._batch_metrics(pred_vol, tgt_vol)
         psnr_sum += p
         n += m

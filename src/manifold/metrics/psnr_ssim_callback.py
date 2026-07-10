@@ -183,25 +183,42 @@ class PairedPSNRSSIMCallback(pl.Callback):
 
     # -- per-batch metric ----------------------------------------------------
 
+    @staticmethod
+    def _minmax_to_unit(vol: torch.Tensor) -> torch.Tensor:
+        """Per-volume min-max normalization to ``[0, 1]`` (FID feature-arm step).
+
+        Mirrors ``PairedLatentFlowPipeline._minmax_to_unit``: one global min/max
+        over the whole volume, so PSNR/SSIM are computed on normalized volumes
+        consistent with the published inference output. Per-sample (each volume in
+        the batch is normalized by its own ``[min, max]``); a degenerate zero-range
+        volume maps to zeros.
+        """
+        b = vol.shape[0]
+        flat = vol.reshape(b, -1)
+        mn = flat.amin(dim=1).view(b, 1, 1, 1, 1)
+        mx = flat.amax(dim=1).view(b, 1, 1, 1, 1)
+        rng = mx - mn
+        rng = torch.where(rng > 0, rng, torch.ones_like(rng))
+        return (vol - mn) / rng
+
     def _batch_metrics(
         self, pred_vol: torch.Tensor, tgt_vol: torch.Tensor
     ) -> tuple[float, float, int]:
         """Per-sample full-volume 3D PSNR + SSIM over a decoded batch.
 
-        ``data_range = target[max − min]`` is per-sample (the standard PSNR/SSIM
-        convention for medical images whose intensity range is not normalized to
-        ``[0, 1]``). PSNR is ``10·log10(data_range² / mse)`` — self-contained
-        (clearer than torchmetrics' PSNR for the per-sample ``data_range`` and
-        identical in value). SSIM uses torchmetrics'
-        :func:`structural_similarity_index_measure`, which runs a **true 3D SSIM**
-        on the ``[1,C,D,H,W]`` volume (``is_3d = preds.ndim == 5`` →
-        ``_gaussian_kernel_3d`` + ``F.conv3d`` with 3D reflection padding), so it
-        captures volumetric (not slice-wise) structural similarity.
+        Input volumes are pre-normalized to ``[0, 1]`` via ``_minmax_to_unit``
+        (per-volume, mirroring the inference pipeline + FID feature-arm), so
+        ``data_range`` is approximately 1.0. PSNR is ``10·log10(data_range² /
+        mse)`` with a numerical ceiling of 100 dB (pre-minmax pred=
+        A·tgt+B → exact match after independent normalisation — a physical
+        edge case, not an numerical pathology). SSIM uses torchmetrics'
+        :func:`structural_similarity_index_measure` (true **3D SSIM** on the
+        ``[1,C,D,H,W]`` volume — ``is_3d`` → ``_gaussian_kernel_3d`` +
+        ``F.conv3d`` with 3D reflection padding).
 
-        Samples with a degenerate target (zero data range) or an exact
-        reconstruction (``mse == 0`` → PSNR ``+inf``) are skipped — they never
-        arise outside synthetic fixtures and would otherwise poison the running
-        mean. Returns ``(psnr_sum, ssim_sum, n_valid)``; the caller keeps a
+        Samples with a degenerate target (zero data range) are skipped —
+        ``data_range <= 0`` means a constant target where PSNR/SSIM are
+        undefined. Returns ``(psnr_sum, ssim_sum, n_valid)``; the caller keeps a
         running sum + count to average over the whole val set.
         """
         psnr_sum = 0.0
@@ -214,9 +231,18 @@ class PairedPSNRSSIMCallback(pl.Callback):
             if data_range <= 0.0:
                 continue  # constant target — PSNR/SSIM undefined
             mse = float((p - t).pow(2).mean())
+            # Pre-minmax pred = A·tgt + B → exact match after independent
+            # per-volume normalisation (a physical edge case with a copy-src
+            # model, not a numerical pathology). Cap at 100 dB and SSIM=1.0
+            # instead of skipping so the checkpoint monitor still sees a
+            # finite metric. Guard before math.log10(0) — DivisionByZero.
             if mse == 0.0:
-                continue  # exact reconstruction → PSNR +inf; never arises in practice
-            psnr_sum += 10.0 * math.log10((data_range * data_range) / mse)
+                psnr_sum += 100.0
+                ssim_sum += 1.0
+                n += 1
+                continue
+            psnr = 10.0 * math.log10((data_range * data_range) / mse)
+            psnr_sum += min(psnr, 100.0)
             ssim_sum += float(structural_similarity_index_measure(p, t, data_range=data_range))
             n += 1
         return psnr_sum, ssim_sum, n
@@ -263,6 +289,12 @@ class PairedPSNRSSIMCallback(pl.Callback):
                 self.ema_callback.restore(pl_module)
         pred_vol = self._eval_decode(pred_latent)
         tgt_vol = self._eval_decode(batch["tgt_latent"])
+        # Per-volume min-max to [0,1] mirrors the paired inference pipeline's
+        # post-processing (FID feature-arm preprocessing): PSNR/SSIM are
+        # computed on normalized volumes, consistent with the published
+        # inference output.
+        pred_vol = self._minmax_to_unit(pred_vol)
+        tgt_vol = self._minmax_to_unit(tgt_vol)
         psnr_sum, ssim_sum, n = self._batch_metrics(pred_vol, tgt_vol)
         self._psnr_sum += psnr_sum
         self._ssim_sum += ssim_sum
