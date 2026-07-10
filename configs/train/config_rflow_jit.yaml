@@ -10,10 +10,18 @@
 diffusion_unet_train:
   batch_size: 8
   cache_rate: 0
-  lr: 1.0e-4
+  lr: 1.0e-4            # base peak LR at lr_ref_batch_size (auto-scales with the effective batch)
   n_epochs: 1000
   lr_scheduler: cosine
   lr_warmup_steps: 1000
+  # Peak-LR auto-scaling by effective batch (per-device batch × world size). The
+  # ``lr`` above is the peak AT ``lr_ref_batch_size``; the runtime derives the
+  # actual peak (see scaled_peak_lr) so a GPU-count / batch change never needs a
+  # hand-retuned LR. At eff==ref the factor is 1.0 → the single-GPU recipe is
+  # numerically unchanged.
+  lr_ref_batch_size: 8  # effective batch at which ``lr`` is the peak (8 = the single-GPU recipe)
+  lr_scale_rule: sqrt   # peak = base_lr × (eff_batch/ref)^(rule) ; sqrt | linear | none
+  # lr_warmup_ratio:    # optional: warmup as a fraction of total optimizer steps (overrides lr_warmup_steps)
 
 # The x0-denoiser Formulation (ADR-0002). Knobs are JiT's published values; each
 # is overridable via CLI/dotlist (e.g. `formulation.p_mean=-1.0`).

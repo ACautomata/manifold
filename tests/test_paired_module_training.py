@@ -326,6 +326,44 @@ def test_configure_optimizers_is_adam_over_unet(paired_unet_trainable, paired_sc
     assert opt_params == set(paired_unet_trainable.parameters())
 
 
+def test_configure_optimizers_scales_peak_lr_paired(paired_unet_trainable, paired_scheduler):
+    """Paired configure_optimizers sets Adam's LR to the scaled peak (mirrors LatentFlowModule)."""
+    # train_batch_size=2, ref=8, world=1 → peak = base × √(2/8) = base × 0.5.
+    module = PairedLatentFlowModule(
+        paired_unet_trainable,
+        paired_scheduler,
+        lr=1e-4,
+        lr_ref_batch_size=8,
+        lr_scale_rule="sqrt",
+        num_train_examples=8,
+        train_batch_size=2,
+    )
+    optimizer = module.configure_optimizers()["optimizer"]
+    # param_groups[0]["lr"] is the scheduled (post-warmup-ratio) lr; the peak Adam
+    # was built with lives in optimizer.defaults["lr"].
+    assert optimizer.defaults["lr"] == pytest.approx(5e-5)
+
+
+def test_configure_optimizers_no_scaling_when_batch_unknown_ddp_paired(
+    paired_unet_trainable, paired_scheduler, monkeypatch
+):
+    """Unknown batch under DDP must not scale the peak (paired mirror of the latent guard)."""
+    import torch.distributed as dist
+
+    monkeypatch.setattr(dist, "is_initialized", lambda: True)
+    monkeypatch.setattr(dist, "get_world_size", lambda: 8)
+    module = PairedLatentFlowModule(
+        paired_unet_trainable,
+        paired_scheduler,
+        lr=1e-4,
+        lr_ref_batch_size=8,
+        lr_scale_rule="sqrt",
+        train_batch_size=None,
+    )
+    optimizer = module.configure_optimizers()["optimizer"]
+    assert optimizer.defaults["lr"] == pytest.approx(1e-4)
+
+
 def test_summed_label_conditioning_injected(paired_unet):
     """The paired path injects embed(src)+embed(tgt) at the backbone's injection point.
 

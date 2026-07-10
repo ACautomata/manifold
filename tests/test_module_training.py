@@ -231,6 +231,108 @@ def test_configure_optimizers_is_adam_plus_cosine_step(unet_trainable):
     assert module._total_optimizer_steps() == 12
 
 
+def test_scaled_peak_lr():
+    """Peak LR derives from base_lr × the effective-batch factor."""
+    from manifold.modules.latent_flow import scaled_peak_lr
+
+    # eff == ref → factor 1.0 under every rule (the single-GPU recipe is unchanged).
+    assert scaled_peak_lr(1e-4, 8, ref_batch_size=8, rule="sqrt") == pytest.approx(1e-4)
+    assert scaled_peak_lr(1e-4, 8, ref_batch_size=8, rule="linear") == pytest.approx(1e-4)
+    assert scaled_peak_lr(1e-4, 8, ref_batch_size=8, rule="none") == pytest.approx(1e-4)
+    # sqrt: eff 2 / ref 8 → ×√0.25 = ×0.5.
+    assert scaled_peak_lr(1e-4, 2, ref_batch_size=8, rule="sqrt") == pytest.approx(5e-5)
+    # linear: eff 64 / ref 8 → ×8 (the rejected ×8 — available but not the default).
+    assert scaled_peak_lr(1e-4, 64, ref_batch_size=8, rule="linear") == pytest.approx(8e-4)
+    # sqrt over world_size: 8/proc × 8 world = eff 64 → ×√8 ≈ 2.83.
+    assert scaled_peak_lr(1e-4, 8, ref_batch_size=8, rule="sqrt", world_size=8) == pytest.approx(
+        1e-4 * (8 ** 0.5)
+    )
+    with pytest.raises(ValueError):
+        scaled_peak_lr(1e-4, 8, ref_batch_size=8, rule="bogus")
+
+
+def test_resolve_warmup_steps():
+    """``lr_warmup_ratio`` overrides the absolute step count; None falls back."""
+    from manifold.modules.latent_flow import resolve_warmup_steps
+
+    # None → the absolute count passes through unchanged.
+    assert resolve_warmup_steps(1000, None, total_steps=12) == 1000
+    # A set ratio → round(ratio × total).
+    assert resolve_warmup_steps(1000, 0.0, total_steps=12) == 0
+    assert resolve_warmup_steps(1000, 0.25, total_steps=40) == 10
+    # A ratio outside [0, 1] is rejected (would make warmup exceed the horizon).
+    with pytest.raises(ValueError):
+        resolve_warmup_steps(1000, 1.5, total_steps=100)
+    with pytest.raises(ValueError):
+        resolve_warmup_steps(1000, -0.1, total_steps=100)
+
+
+def test_configure_optimizers_scales_peak_lr(unet_trainable):
+    """configure_optimizers sets Adam's LR to the scaled peak, not the base."""
+    # train_batch_size=2, ref=8, world=1 → peak = base × √(2/8) = base × 0.5.
+    module = LatentFlowModule(
+        unet_trainable,
+        FlowMatchHeunDiscreteScheduler(),
+        lr=1e-4,
+        lr_warmup_steps=2,
+        lr_ref_batch_size=8,
+        lr_scale_rule="sqrt",
+        num_train_examples=8,
+        train_batch_size=2,
+        n_epochs=3,
+    )
+    optimizer = module.configure_optimizers()["optimizer"]
+    # param_groups[0]["lr"] reads the *scheduled* lr (the LambdaLR __init__ applies
+    # the warmup ratio at step 0 → 0 here); the peak Adam was built with lives in
+    # optimizer.defaults["lr"].
+    assert optimizer.defaults["lr"] == pytest.approx(5e-5)
+
+    # rule="none" → peak == base regardless of batch.
+    none_module = LatentFlowModule(
+        unet_trainable,
+        FlowMatchHeunDiscreteScheduler(),
+        lr=1e-4,
+        lr_scale_rule="none",
+        num_train_examples=8,
+        train_batch_size=2,
+    )
+    assert none_module.configure_optimizers()["optimizer"].defaults["lr"] == pytest.approx(1e-4)
+
+    # eff == ref (batch 8, ref 8) → peak == base (backward compat with the recipe).
+    same_module = LatentFlowModule(
+        unet_trainable,
+        FlowMatchHeunDiscreteScheduler(),
+        lr=1e-4,
+        num_train_examples=8,
+        train_batch_size=8,
+    )
+    assert same_module.configure_optimizers()["optimizer"].defaults["lr"] == pytest.approx(1e-4)
+
+
+def test_configure_optimizers_no_scaling_when_batch_unknown_ddp(unet_trainable, monkeypatch):
+    """An unknown batch (train_batch_size=None) must NOT scale by world size.
+
+    Regression guard: under initialized DDP the world size is real, but without a
+    per-device batch the effective batch is unknown, so the peak must equal the
+    base (not base × √world). Codex review: this path was spuriously scaling.
+    """
+    import torch.distributed as dist
+
+    monkeypatch.setattr(dist, "is_initialized", lambda: True)
+    monkeypatch.setattr(dist, "get_world_size", lambda: 8)
+    module = LatentFlowModule(
+        unet_trainable,
+        FlowMatchHeunDiscreteScheduler(),
+        lr=1e-4,
+        lr_ref_batch_size=8,
+        lr_scale_rule="sqrt",
+        num_train_examples=None,
+        train_batch_size=None,
+    )
+    optimizer = module.configure_optimizers()["optimizer"]
+    assert optimizer.defaults["lr"] == pytest.approx(1e-4)  # peak == base, NOT base × √8
+
+
 def test_optimizer_step_descends_loss_and_updates_params(unet_trainable, monkeypatch):
     """A manual forward -> backward -> step reduces loss and updates UNet params.
 
