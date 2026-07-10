@@ -37,8 +37,8 @@ def sample_paired_latent_flow(
     scheduler,
     x_src: Tensor,
     spacing: Tensor | Sequence[float],
-    src_label: int,
-    tgt_label: int,
+    src_label: int | Tensor,
+    tgt_label: int | Tensor,
     *,
     num_inference_steps: int,
 ) -> Tensor:
@@ -58,8 +58,14 @@ def sample_paired_latent_flow(
         x_src: the source latent ``[B, C_latent, D, H, W]`` — the ``t = 0``
             endpoint and the rollout's starting point.
         spacing: raw voxel spacing ``[3]`` or ``[B, 3]`` (scaled ×1e2 in the UNet).
-        src_label / tgt_label: the integer contrast labels whose embeddings are
-            summed for the translation direction (ADR-0014).
+        src_label / tgt_label: the contrast labels whose embeddings are summed for
+            the translation direction (ADR-0014). Either a scalar ``int`` broadcast
+            across the batch (the inference contract — one direction per call) or a
+            ``[B]`` long tensor of per-sample labels. Per-sample labels are required
+            for validation, whose batch mixes all 12 within-subject contrast
+            directions: a scalar would condition every sample on sample 0's
+            direction. The UNet wrapper accepts ``[B]`` labels (training forwards
+            ``batch["src_label"]`` directly), so a tensor is passed through unchanged.
         num_inference_steps: Heun integration steps over ``t: 0 → 1``.
 
     Returns:
@@ -70,8 +76,8 @@ def sample_paired_latent_flow(
     batch_size = x_src.shape[0]
 
     spacing_t = torch.as_tensor(spacing, device=device)
-    src_labels = torch.full((batch_size,), int(src_label), dtype=torch.long, device=device)
-    tgt_labels = torch.full((batch_size,), int(tgt_label), dtype=torch.long, device=device)
+    src_labels = _as_label_tensor(src_label, batch_size, device)
+    tgt_labels = _as_label_tensor(tgt_label, batch_size, device)
 
     x_src_dev = x_src.to(device=device, dtype=dtype)
 
@@ -108,3 +114,28 @@ def sample_paired_latent_flow(
                     x0_2 = unet_call(z_euler, t_next)
                     z = scheduler.heun_correct(x0_2, z, z_euler, v1, t, t_next)
     return z
+
+
+def _as_label_tensor(labels: int | Tensor, batch_size: int, device: torch.device) -> Tensor:
+    """Coerce ``labels`` to a ``[batch_size]`` long tensor on ``device``.
+
+    A scalar — a Python ``int`` or a 0-d tensor like ``torch.tensor(0)`` — is
+    broadcast (the inference contract — one direction per call); a ``[B]`` tensor
+    of per-sample labels is passed through unchanged (the validation contract — a
+    val batch mixes all 12 contrast directions). Fails fast on a tensor whose
+    length disagrees with the batch — a silent broadcast there would condition
+    samples on the wrong contrast.
+    """
+    if torch.is_tensor(labels):
+        # A 0-d tensor is a scalar — broadcast it (preserves the prior
+        # ``int(src_label)`` behavior for scalar-as-tensor callers).
+        if labels.ndim == 0:
+            return torch.full((batch_size,), int(labels.item()), dtype=torch.long, device=device)
+        if labels.shape != (batch_size,):
+            raise ValueError(
+                f"per-sample label tensor shape {tuple(labels.shape)} != batch_size "
+                f"{batch_size}; pass a scalar int to broadcast one direction, or a "
+                f"[B] tensor of per-sample labels."
+            )
+        return labels.to(device=device, dtype=torch.long)
+    return torch.full((batch_size,), int(labels), dtype=torch.long, device=device)

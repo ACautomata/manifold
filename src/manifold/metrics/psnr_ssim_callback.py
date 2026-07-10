@@ -136,6 +136,11 @@ class PairedPSNRSSIMCallback(pl.Callback):
                 k: v.detach().clone() for k, v in self.pipeline.vae.state_dict().items()
             }
             self.pipeline.vae.to(self._device())
+            # ``eval()`` mirrors the inference pipeline + FIDCallback: today the
+            # MAISI VAE is all GroupNorm with no Dropout (so train/eval decode are
+            # bit-identical), but a future BatchNorm/Dropout layer would silently
+            # drift the decoded volumes if decode ran in train mode.
+            self.pipeline.vae.eval()
             self._eval_staged = True
 
     def _restore_eval_to_cpu(self) -> None:
@@ -167,35 +172,17 @@ class PairedPSNRSSIMCallback(pl.Callback):
 
     # -- per-batch metric ----------------------------------------------------
 
-    @staticmethod
-    def _minmax_to_unit(vol: torch.Tensor) -> torch.Tensor:
-        """Per-volume min-max normalization to ``[0, 1]`` (FID feature-arm step).
-
-        Mirrors ``PairedLatentFlowPipeline._minmax_to_unit``: one global min/max
-        over the whole volume, so PSNR/SSIM are computed on normalized volumes
-        consistent with the published inference output. Per-sample (each volume in
-        the batch is normalized by its own ``[min, max]``); a degenerate zero-range
-        volume maps to zeros.
-        """
-        b = vol.shape[0]
-        flat = vol.reshape(b, -1)
-        mn = flat.amin(dim=1).view(b, 1, 1, 1, 1)
-        mx = flat.amax(dim=1).view(b, 1, 1, 1, 1)
-        rng = mx - mn
-        rng = torch.where(rng > 0, rng, torch.ones_like(rng))
-        return (vol - mn) / rng
-
     def _batch_metrics(
         self, pred_vol: torch.Tensor, tgt_vol: torch.Tensor
     ) -> tuple[float, float, int]:
         """Per-sample full-volume 3D PSNR + SSIM over a decoded batch.
 
-        Input volumes are pre-normalized to ``[0, 1]`` via ``_minmax_to_unit``
-        (per-volume, mirroring the inference pipeline + FID feature-arm), so
-        ``data_range`` is approximately 1.0. PSNR is ``10·log10(data_range² /
-        mse)`` with a numerical ceiling of 100 dB (pre-minmax pred=
-        A·tgt+B → exact match after independent normalisation — a physical
-        edge case, not an numerical pathology). SSIM uses torchmetrics'
+        Inputs are the RAW float32 VAE decodes of pred and tgt (C2): both passed
+        through the same frozen VAE, so they share one image space and the
+        comparison is true pixel fidelity — per-volume gain/offset/contrast errors
+        are visible. ``data_range`` is the raw target's ``[max − min]`` (standard
+        for float medical data with no fixed intensity ceiling). PSNR is
+        ``10·log10(data_range² / mse)``. SSIM uses torchmetrics'
         :func:`structural_similarity_index_measure` (true **3D SSIM** on the
         ``[1,C,D,H,W]`` volume — ``is_3d`` → ``_gaussian_kernel_3d`` +
         ``F.conv3d`` with 3D reflection padding).
@@ -215,11 +202,10 @@ class PairedPSNRSSIMCallback(pl.Callback):
             if data_range <= 0.0:
                 continue  # constant target — PSNR/SSIM undefined
             mse = float((p - t).pow(2).mean())
-            # Pre-minmax pred = A·tgt + B → exact match after independent
-            # per-volume normalisation (a physical edge case with a copy-src
-            # model, not a numerical pathology). Cap at 100 dB and SSIM=1.0
-            # instead of skipping so the checkpoint monitor still sees a
-            # finite metric. Guard before math.log10(0) — DivisionByZero.
+            # Bit-exact pred == tgt → mse == 0 → PSNR is +inf. Cap at 100 dB and
+            # SSIM = 1.0 so the checkpoint monitor sees a finite value (guards
+            # math.log10(0) too). Affine errors (gain/offset) are NOT collapsed
+            # any more — they raise mse and lower PSNR, as a fidelity metric should.
             if mse == 0.0:
                 psnr_sum += 100.0
                 ssim_sum += 1.0
@@ -248,12 +234,14 @@ class PairedPSNRSSIMCallback(pl.Callback):
     ) -> None:
         if not self._active:
             return
-        # The shared rollout primitive takes scalar contrast labels and broadcasts
-        # them across the batch via ``torch.full``. Paired JiT v1 validation is
-        # single-direction (one src→tgt per run, ADR-0014), so every sample in a
-        # val batch shares labels and the first sample's labels are authoritative.
-        src_label = int(batch["src_label"].reshape(-1)[0].item())
-        tgt_label = int(batch["tgt_label"].reshape(-1)[0].item())
+        # Per-sample contrast labels (C1): a Paired JiT val batch mixes all 12
+        # within-subject contrast directions (``build_brats_pair_manifest`` emits
+        # every ordered src→tgt pair), so each sample must be conditioned on its
+        # OWN (src, tgt) pair. The earlier scalar ``[0]`` collapsed the whole batch
+        # to sample 0's direction, conditioning 7/8 of an 8-sample val batch on the
+        # wrong translation. ``batch["src_label"]`` / ``["tgt_label"]`` are ``[B]``
+        # long tensors (the same tensors training consumes); the shared rollout
+        # forwards them per-sample.
         # Swap the slow-EMA shadow in around the rollout so the reported metric
         # reflects the published EMA model (mirrors FIDCallback's slow arm).
         # ``pipeline.unet`` is ``pl_module.unet`` (the pipeline is built over the
@@ -264,8 +252,8 @@ class PairedPSNRSSIMCallback(pl.Callback):
             pred_latent = self.pipeline.sample_latent(
                 batch["src_latent"],
                 batch["spacing"],
-                src_label,
-                tgt_label,
+                batch["src_label"],
+                batch["tgt_label"],
                 self.num_inference_steps,
             )
         finally:
@@ -273,12 +261,14 @@ class PairedPSNRSSIMCallback(pl.Callback):
                 self.ema_callback.restore(pl_module)
         pred_vol = self._eval_decode(pred_latent)
         tgt_vol = self._eval_decode(batch["tgt_latent"])
-        # Per-volume min-max to [0,1] mirrors the paired inference pipeline's
-        # post-processing (FID feature-arm preprocessing): PSNR/SSIM are
-        # computed on normalized volumes, consistent with the published
-        # inference output.
-        pred_vol = self._minmax_to_unit(pred_vol)
-        tgt_vol = self._minmax_to_unit(tgt_vol)
+        # PSNR/SSIM on the RAW float32 decodes (C2): pred and tgt both pass through
+        # the same frozen VAE (which undoes ``scaling_factor`` internally,
+        # ADR-0003), so they already share one image space — comparing them directly
+        # is true pixel fidelity. The earlier per-volume ``_minmax_to_unit`` on EACH
+        # side applied different affine maps (pred's own min/max vs tgt's), making
+        # PSNR/SSIM invariant to per-volume gain+offset — blind to exactly the
+        # brightness/contrast errors a contrast-translation model must be penalized
+        # for. ``data_range`` is read from the raw target inside ``_batch_metrics``.
         psnr_sum, ssim_sum, n = self._batch_metrics(pred_vol, tgt_vol)
         self._psnr_sum += psnr_sum
         self._ssim_sum += ssim_sum
