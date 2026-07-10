@@ -206,20 +206,19 @@ class PairedPSNRSSIMCallback(pl.Callback):
     ) -> tuple[float, float, int]:
         """Per-sample full-volume 3D PSNR + SSIM over a decoded batch.
 
-        ``data_range = target[max − min]`` is per-sample (the standard PSNR/SSIM
-        convention for medical images whose intensity range is not normalized to
-        ``[0, 1]``). PSNR is ``10·log10(data_range² / mse)`` — self-contained
-        (clearer than torchmetrics' PSNR for the per-sample ``data_range`` and
-        identical in value). SSIM uses torchmetrics'
-        :func:`structural_similarity_index_measure`, which runs a **true 3D SSIM**
-        on the ``[1,C,D,H,W]`` volume (``is_3d = preds.ndim == 5`` →
-        ``_gaussian_kernel_3d`` + ``F.conv3d`` with 3D reflection padding), so it
-        captures volumetric (not slice-wise) structural similarity.
+        Input volumes are pre-normalized to ``[0, 1]`` via ``_minmax_to_unit``
+        (per-volume, mirroring the inference pipeline + FID feature-arm), so
+        ``data_range`` is approximately 1.0. PSNR is ``10·log10(data_range² /
+        mse)`` with a numerical ceiling of 100 dB (pre-minmax pred=
+        A·tgt+B → exact match after independent normalisation — a physical
+        edge case, not an numerical pathology). SSIM uses torchmetrics'
+        :func:`structural_similarity_index_measure` (true **3D SSIM** on the
+        ``[1,C,D,H,W]`` volume — ``is_3d`` → ``_gaussian_kernel_3d`` +
+        ``F.conv3d`` with 3D reflection padding).
 
-        Samples with a degenerate target (zero data range) or an exact
-        reconstruction (``mse == 0`` → PSNR ``+inf``) are skipped — they never
-        arise outside synthetic fixtures and would otherwise poison the running
-        mean. Returns ``(psnr_sum, ssim_sum, n_valid)``; the caller keeps a
+        Samples with a degenerate target (zero data range) are skipped —
+        ``data_range <= 0`` means a constant target where PSNR/SSIM are
+        undefined. Returns ``(psnr_sum, ssim_sum, n_valid)``; the caller keeps a
         running sum + count to average over the whole val set.
         """
         psnr_sum = 0.0
@@ -232,9 +231,12 @@ class PairedPSNRSSIMCallback(pl.Callback):
             if data_range <= 0.0:
                 continue  # constant target — PSNR/SSIM undefined
             mse = float((p - t).pow(2).mean())
-            if mse == 0.0:
-                continue  # exact reconstruction → PSNR +inf; never arises in practice
-            psnr_sum += 10.0 * math.log10((data_range * data_range) / mse)
+            psnr = 10.0 * math.log10((data_range * data_range) / mse)
+            # Pre-minmax pred = A·tgt + B → exact match after independent
+            # per-volume normalisation (a physical edge case with a copy-src
+            # model, not a numerical pathology). Cap at 100 dB instead of
+            # skipping so the checkpoint monitor still sees a finite metric.
+            psnr_sum += min(psnr, 100.0)
             ssim_sum += float(structural_similarity_index_measure(p, t, data_range=data_range))
             n += 1
         return psnr_sum, ssim_sum, n

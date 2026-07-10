@@ -182,6 +182,31 @@ def test_psnr_matches_direct_recompute(identity_vae):
     assert psnr_sum == pytest.approx(expected, abs=1e-4)
 
 
+
+
+def test_affine_collapse_counted_not_skipped(identity_vae):
+    """Pred = tgt + offset must NOT be skipped after per-volume min-max (codex #86 P2).
+
+    Independent min-max normalisation collapses pred = A·tgt + B into an exact
+    match (mse == 0). The old `mse == 0 → continue` would skip every sample,
+    leaving _count = 0 and breaking the checkpoint monitor. The fix caps PSNR
+    at 100 dB instead, so the sample is counted (n > 0) with a finite score
+    and the SSIM from torchmetrics (≈ 1.0 for structurally identical volumes).
+    """
+    cb = _make_callback(_FakePipeline(_FakeUNet(), identity_vae))
+    cb._stage_eval_on_device()
+    tgt = torch.randn(1, C_LATENT, SPATIAL, SPATIAL, SPATIAL)
+    pred = tgt + 0.1  # pure offset — collapses to identical after independent min-max
+    tgt_vol = cb._eval_decode(tgt)
+    pred_vol = cb._eval_decode(pred)
+    pred_norm = PairedPSNRSSIMCallback._minmax_to_unit(pred_vol)
+    tgt_norm = PairedPSNRSSIMCallback._minmax_to_unit(tgt_vol)
+    psnr_sum, ssim_sum, n = cb._batch_metrics(pred_norm, tgt_norm)
+    assert n == 1, "affine-collapsed sample must be counted, not skipped"
+    assert psnr_sum == pytest.approx(100.0, abs=1e-4), "PSNR must be capped at 100 dB"
+    assert ssim_sum >= 0.999, "structurally identical volumes must have SSIM ~1.0"
+
+
 def test_ssim_is_one_for_identical_volumes(identity_vae):
     """torchmetrics' 3D SSIM of a volume with itself is 1.0 (the SSIM sanity bound).
 
