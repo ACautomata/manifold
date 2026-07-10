@@ -176,3 +176,70 @@ def test_f4_find_unused_parameters_preserved():
     assert "find_unused_parameters=True" in src, (
         "build_trainer dropped find_unused_parameters=True (paired DDP deadlock risk)"
     )
+
+
+# -- P1 (codex #85): warm uses the per-rank local CUDA device -----------------
+
+
+def test_p1_resolve_warm_device_returns_local_rank_under_ddp(monkeypatch):
+    """``resolve_warm_device`` returns ``cuda:{local_rank}`` under DDP (post-PG),
+    NOT the launch-time ``cuda:0``. P1: the warm_fn captured the launch-time device
+    (the default cuda:0 before LOCAL_RANK is known), so under DDP every rank would
+    warm on GPU 0. Locks the LOCAL_RANK-derived device resolution."""
+    import torch
+
+    from manifold.data.latent_pipeline import resolve_warm_device
+
+    # No PG initialized -> the fallback device is returned unchanged (single-process).
+    assert resolve_warm_device(torch.device("cpu")) == torch.device("cpu")
+    assert resolve_warm_device(torch.device("cuda")) == torch.device("cuda")
+
+    # PG initialized -> cuda:{LOCAL_RANK}. Mock dist.is_initialized + the env var.
+    import torch.distributed as dist
+
+    monkeypatch.setattr(dist, "is_initialized", lambda: True)
+    monkeypatch.setenv("LOCAL_RANK", "3")
+    assert resolve_warm_device(torch.device("cuda")) == torch.device("cuda:3")
+    # A non-CUDA fallback is returned unchanged even under DDP (warm stays CPU).
+    assert resolve_warm_device(torch.device("cpu")) == torch.device("cpu")
+
+
+def test_p1_warm_fn_uses_local_rank_device_not_launch_device():
+    """The JiT + paired ``_warm_data`` warm_fn rebuild the encode_fn on the
+    per-rank device (P1): the VAE is built on CPU pre-PG and re-staged inside
+    warm_fn via ``resolve_warm_device`` + ``make_encode_fn``. Source-level guard so
+    the launch-time ``device=device`` capture cannot sneak back into warm_fn."""
+    from manifold.data.latent_pipeline import make_encode_fn, resolve_warm_device
+    from manifold.training import cli as jit_cli
+    from manifold.training import paired_cli
+
+    for mod, name in [(jit_cli, "JiT"), (paired_cli, "Paired")]:
+        src = inspect.getsource(mod._warm_data)
+        assert "resolve_warm_device" in src, f"{name} _warm_data missing resolve_warm_device (P1)"
+        assert "make_encode_fn" in src, f"{name} _warm_data missing make_encode_fn rebuild (P1)"
+        # The VAE is built on CPU pre-PG (no GPU-0 placement before LOCAL_RANK).
+        assert 'torch.device("cpu")' in src, f"{name} _warm_data must build the VAE on CPU pre-PG (P1)"
+    assert callable(make_encode_fn)
+    assert callable(resolve_warm_device)
+
+
+# -- P2 (codex #85): availability probe does not instantiate the backbone -------
+
+
+def test_p2_feature_network_available_does_not_instantiate(monkeypatch):
+    """``feature_network_available`` is a cheap cached-checkpoint check - it must NOT
+    instantiate the ~100 MB RadImageNet backbone (P2: the old probe built it once per
+    rank pre-PG, defeating the lazy factory + loading it twice on rank 0)."""
+    import manifold.metrics.fid as fid_mod
+
+    called = {"n": 0}
+
+    def _spy(*a, **k):
+        called["n"] += 1
+        raise AssertionError("feature_network_available must not call make_feature_network")
+
+    monkeypatch.setattr(fid_mod, "make_feature_network", _spy)
+    result = fid_mod.feature_network_available("resnet50")
+    assert called["n"] == 0, "probe instantiated the backbone (P2 regression)"
+    assert isinstance(result, bool)
+    assert fid_mod.feature_network_available("inception_v3") is False

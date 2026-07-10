@@ -367,15 +367,21 @@ def main(argv: list[str] | None = None, *, data_provider=None) -> int:
     if not args.no_fid:
         from ..metrics import make_feature_network
 
-        # L3: build the backbone LAZILY inside the rank-0-gated FID stage
-        # path (no eager make_feature_network on every rank pre-PG -> no
-        # ~100 MB torch.hub load wasted on N-1 ranks). Probe availability once
-        # here so a missing/offline backbone disables FID at launch (not at
-        # the first val epoch); the factory rebuilds it on rank 0 only.
-        try:
-            make_feature_network("resnet50")
-        except Exception as exc:  # pragma: no cover - torch.hub/network only on gauss
-            _log.warning("RadImageNet backbone unavailable (%r); disabling FID.", exc)
+        # L3: build the backbone LAZILY inside the rank-0-gated FID stage path
+        # (no eager make_feature_network on every rank pre-PG -> no ~100 MB
+        # torch.hub load wasted on N-1 ranks). Probe availability CHEAPLY here
+        # (cached-checkpoint check, no model instantiation - P2: building the full
+        # backbone to probe would itself defeat the lazy factory + load it twice on
+        # rank 0). When the cache is absent the factory attempts the online load at
+        # eval (rank 0) and the FID callback skips on failure.
+        from ..metrics import feature_network_available
+
+        if not feature_network_available("resnet50"):
+            _log.warning(
+                "RadImageNet backbone cache not found (%s); disabling FID at launch. "
+                "Pre-cache the checkpoint or the factory will retry online at eval.",
+                "resnet50",
+            )
             args.no_fid = True
         else:
             feature_net_factory = lambda: make_feature_network("resnet50")  # noqa: E731
@@ -427,7 +433,13 @@ def _warm_data(cfg, device) -> tuple[_DataBundle, int]:
     count ``len(vol_ds)`` (known pre-warm) so the Module's LR horizon is set without
     needing ``len(latent_ds)``.
     """
-    from ..data.latent_pipeline import build_encode_pipeline, build_volume_dataset, warm_latent_pipeline
+    from ..data.latent_pipeline import (
+        build_encode_pipeline,
+        build_volume_dataset,
+        make_encode_fn,
+        resolve_warm_device,
+        warm_latent_pipeline,
+    )
 
     logger = logging.getLogger("manifold.train")
     inf_cfg = cfg.diffusion_unet_inference
@@ -435,16 +447,27 @@ def _warm_data(cfg, device) -> tuple[_DataBundle, int]:
     vol_ds, _ = build_volume_dataset(
         cfg, target_dim=target_dim, include_modality=True, default_modality=int(inf_cfg.modality), logger=logger
     )
-    autoencoder, encode_fn = build_encode_pipeline(cfg, device=device, logger=logger)
+    # Build the VAE on CPU pre-PG (the launch-time ``device`` is the default cuda:0,
+    # which under DDP would load on GPU 0 before LOCAL_RANK is known). The warm
+    # re-stages it onto the per-rank local GPU inside setup() (P1/ADR-0017); FID's
+    # decode stages it to the UNet device at eval (rank 0). The CPU encode_fn built
+    # here is unused on the cold path (rebuilt on the local device in warm_fn).
+    autoencoder, _cpu_encode_fn = build_encode_pipeline(cfg, device=torch.device("cpu"), logger=logger)
     cache_dir = str(opt(cfg, "latent_cache_dir", os.path.join(str(cfg.model_dir), "latent_cache")))
     scale_sample = int(opt(cfg, "val_subset_size", 32))
 
     def warm_fn():
+        # P1: warm on the per-rank local CUDA device, not the launch-time ``device``
+        # (which is cuda:0 before Lightning assigns LOCAL_RANK). Rebuild the encode_fn
+        # bound to that device so the sliding-window predictor runs on the right GPU.
+        warm_device = resolve_warm_device(device)
+        autoencoder.to(warm_device)
+        encode_fn = make_encode_fn(autoencoder, warm_device, cfg)
         # F3: rank/world derived from dist inside warm_latent_pipeline (post-PG).
         return warm_latent_pipeline(
             vol_ds, encode_fn, autoencoder,
             cache_dir=cache_dir, cache_tag="train",
-            device=device, logger=logger,
+            device=warm_device, logger=logger,
             scale_factor_sample_size=scale_sample,
         )
 

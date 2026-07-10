@@ -332,7 +332,7 @@ def _warm_data(cfg, device) -> tuple[_DataBundle, int]:
     volumes the model never trains on.
     """
     from ..config import autoencoder_divisor
-    from ..data.latent_pipeline import build_encode_pipeline
+    from ..data.latent_pipeline import build_encode_pipeline, make_encode_fn, resolve_warm_device
     from ..data.paired_brats import build_brats_pair_manifest
     from ..data.paired_latent_dataset import (
         PairedLatentDataset,
@@ -366,7 +366,12 @@ def _warm_data(cfg, device) -> tuple[_DataBundle, int]:
         f"pairs ({split_note}; {len(vol_ds.unique_sample_ids())} train unique volumes)."
     )
 
-    autoencoder, encode_fn = build_encode_pipeline(cfg, device=device, logger=logger)
+    # Build the VAE on CPU pre-PG (P1/ADR-0017): the launch-time ``device`` is the
+    # default cuda:0 before LOCAL_RANK is known, so loading on it under DDP would
+    # place every rank's encoder on GPU 0. The warm re-stages it onto the per-rank
+    # local GPU inside setup(); PSNR's decode stages it to the UNet device at eval.
+    # The CPU encode_fn built here is unused on the cold path (rebuilt in warm_fn).
+    autoencoder, _cpu_encode_fn = build_encode_pipeline(cfg, device=torch.device("cpu"), logger=logger)
     cache_dir = str(opt(cfg, "latent_cache_dir", os.path.join(str(cfg.model_dir), "paired_latent_cache")))
     val_subset_size = int(opt(cfg, "val_subset_size", 64))
 
@@ -374,16 +379,22 @@ def _warm_data(cfg, device) -> tuple[_DataBundle, int]:
         # F2/F3 (ADR-0017): both warm calls run here (post-PG, inside setup()) so
         # PairedLatentDataset.warm_cache derives rank/world from dist -> the
         # sharded branch activates (one writer per unique-volume cache file).
+        # P1: warm on the per-rank local CUDA device (resolve_warm_device), rebuild
+        # the encode_fn bound to it so the sliding-window predictor runs on the
+        # right GPU (the launch-time ``device`` is cuda:0 before LOCAL_RANK).
         nonlocal autoencoder
+        warm_device = resolve_warm_device(device)
+        autoencoder.to(warm_device)
+        encode_fn = make_encode_fn(autoencoder, warm_device, cfg)
         latent_ds = PairedLatentDataset(vol_ds, encode_fn=encode_fn, cache_dir=cache_dir, cache_tag="paired_train")
-        latent_ds.warm_cache(device, logger=logger, show_progress=True)
+        latent_ds.warm_cache(warm_device, logger=logger, show_progress=True)
         val_latent_ds = None
         if val_manifest:
             val_vol_ds = PairedNiftiVolumeDataset(val_manifest, target_dim=target_dim, divisor=divisor)
             val_latent_ds = PairedLatentDataset(
                 val_vol_ds, encode_fn=encode_fn, cache_dir=cache_dir, cache_tag="paired_train"
             )
-            val_latent_ds.warm_cache(device, logger=logger, show_progress=True)
+            val_latent_ds.warm_cache(warm_device, logger=logger, show_progress=True)
             val_latent_ds.free_encoder()
         latent_ds.free_encoder()
         autoencoder.cpu()

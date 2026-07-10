@@ -180,6 +180,23 @@ def make_feature_network(name: str = "resnet50") -> nn.Module:
     return _RadImageNetFeatures(model)
 
 
+def feature_network_available(name: str = "resnet50") -> bool:
+    """Cheap availability probe that does NOT instantiate the backbone.
+
+    ``make_feature_network`` builds the full ~100 MB RadImageNet ResNet50 (offline
+    from the cached ``_notop`` checkpoint, or online via ``torch.hub``); calling it
+    once per rank pre-PG just to probe availability would defeat the rank-0-gated
+    lazy build (issue #83/L3). This probe returns True when the checkpoint is
+    cached offline (the production path on gauss/euler/sugon). When it is NOT
+    cached, the factory attempts the online load at eval (rank 0) and the FID
+    callback logs + skips on failure - so FID is disabled at launch only when the
+    offline cache is missing, never eagerly built.
+    """
+    if name != "resnet50":
+        return False
+    return os.path.isfile(_radimagenet_checkpoint_path())
+
+
 # Cached RadImageNet assets: the ``_notop`` ResNet50 state_dict (no classifier
 # head) under ``$TORCH_HOME/checkpoints/``, and the (online-only) hub repo.
 _RADIMAGENET_CKPT = "RadImageNet-ResNet50_notop.pth"
