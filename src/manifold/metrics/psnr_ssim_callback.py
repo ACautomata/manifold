@@ -35,15 +35,20 @@ the noise→data stack uses for ``val/fid_raw`` (see ``training/cli.py``).
 This callback only *logs* the metrics, so wiring selection needs no trainer
 change here (the paired trainer, Slice 4, will pass the monitor name through).
 
-Single-GPU / rank-0 only: like FIDCallback, a multi-minute decode loop would
-deadlock the other ranks at an NCCL collective, so under DDP the callback warns
-loudly and skips (the paired trainer falls back to ``save_last`` +
-``every_n_epochs``, mirroring the noise→data DDP path).
+Distributed under DDP (ADR-0016 amendment): every rank runs the decode loop over
+its own ``DistributedSampler`` shard of the val set, then the per-volume sums are
+``all_gather``'d at epoch end so ``val/psnr`` / ``val/ssim`` are the **global** mean
+over the full val set (not a rank-0-shard estimate). The decode itself is single-volume
+and stateless, so sharding is free; the only cross-rank collective is the epoch-end
+gather, called by all ranks together (cadence agrees across ranks) - no per-batch
+collective, so the loop cannot deadlock on an unbalanced shard. ``val/psnr`` being
+global re-enables the stock ``ModelCheckpoint(monitor="val/psnr")`` under DDP. (The
+noise→data ``FIDCallback`` stays rank-0-only: its Fréchet distance needs a
+feature-matrix gather, not a ``(sum, count)`` reduction - ADR-0016.)
 """
 
 from __future__ import annotations
 
-import logging
 import math
 
 import torch
@@ -53,8 +58,6 @@ try:
     import lightning.pytorch as pl
 except ImportError:  # pragma: no cover — lightning is a hard dep via spt
     import pytorch_lightning as pl  # type: ignore
-
-_log = logging.getLogger(__name__)
 
 
 class PairedPSNRSSIMCallback(pl.Callback):
@@ -97,38 +100,19 @@ class PairedPSNRSSIMCallback(pl.Callback):
         self._psnr_sum = 0.0
         self._ssim_sum = 0.0
         self._count = 0
-        self._scope_warned = False  # M5: one-shot rank-0 scope warning
 
     # -- gate + staging (mirror FIDCallback) ---------------------------------
 
     def _gated(self, trainer) -> bool:
-        """Rank-0 + cadence gate; warn loudly under DDP and skip otherwise.
+        """Cadence-only gate; every rank participates under DDP (ADR-0016 amendment).
 
-        Identical policy to FIDCallback: the decode + rollout loop is
-        single-GPU only, so under DDP the non-rank-0 processes must skip and
-        must NOT block on an NCCL collective here.
+        The val loader is sharded by Lightning's ``DistributedSampler`` under DDP, so
+        each rank's ``on_validation_batch_end`` already sees a disjoint 1/world slice of
+        the val set. All ranks therefore run the decode + accumulate over their own
+        shard, then ``on_validation_epoch_end`` ``all_gather``'s the per-volume sums to
+        a global mean. ``current_epoch`` is identical across ranks, so every rank is
+        active (or skipped) together - no rank-asymmetric collective, no deadlock.
         """
-        world = 1
-        if torch.distributed.is_available() and torch.distributed.is_initialized():
-            world = torch.distributed.get_world_size()
-        if world > 1:
-            if not trainer.is_global_zero:
-                return False
-            # M5 (ADR-0016): one-shot rank-0 scope warning. val/psnr / val/ssim
-            # are rank-0-shard-scoped (1/world of val) - a global PSNR would
-            # require distributed generation (out of scope). sync_dist is useless
-            # for them (non-root ranks no-op). Emit ONCE total (not once per
-            # epoch) so a per-epoch regression is caught by the test gate.
-            if not self._scope_warned:
-                self._scope_warned = True
-                _log.warning(
-                    "PairedPSNRSSIMCallback: running only on rank 0 (world_size=%d). "
-                    "val/psnr and val/ssim are rank-0-shard-scoped (1/%d of val), NOT "
-                    "global - a global PSNR/SSIM would require distributed generation "
-                    "(out of scope). The other ranks skip the PSNR/SSIM decode loop "
-                    "and must NOT block on an NCCL collective here - single-GPU is "
-                    "the supported config.", world, world,
-                )
         epoch = trainer.current_epoch
         if self.every_n_epochs <= 1 or (epoch % self.every_n_epochs == 0):
             return True
@@ -304,9 +288,30 @@ class PairedPSNRSSIMCallback(pl.Callback):
         if not self._active:
             return
         try:
-            if self._count > 0:
-                pl_module.log("val/psnr", self._psnr_sum / self._count)
-                pl_module.log("val/ssim", self._ssim_sum / self._count)
+            psnr_sum = self._psnr_sum
+            ssim_sum = self._ssim_sum
+            count = float(self._count)
+            # All ranks reach here together (cadence agrees -> _active agrees), so the
+            # all_gather cannot deadlock. Gather (psnr_sum, ssim_sum, count) and reduce
+            # to the global per-volume mean over ALL ranks' shards. PSNR/SSIM are
+            # per-volume scalars, so sum/count = the mean of per-volume scores
+            # (weight = 1/volume) - NOT a mean-of-per-rank-means. sync_dist is left
+            # False because the value is already cross-rank-reduced here.
+            if torch.distributed.is_available() and torch.distributed.is_initialized():
+                world = torch.distributed.get_world_size()
+                if world > 1:
+                    local = torch.tensor(
+                        [psnr_sum, ssim_sum, count], device=self._device()
+                    )
+                    gathered = [torch.zeros_like(local) for _ in range(world)]
+                    torch.distributed.all_gather(gathered, local)
+                    stacked = torch.stack(gathered)
+                    psnr_sum = float(stacked[:, 0].sum())
+                    ssim_sum = float(stacked[:, 1].sum())
+                    count = float(stacked[:, 2].sum())
+            if count > 0:
+                pl_module.log("val/psnr", psnr_sum / count)
+                pl_module.log("val/ssim", ssim_sum / count)
         finally:
             self._restore_eval_to_cpu()
             self._active = False

@@ -583,6 +583,137 @@ def cold_cache_ddp_worker(rank: int, world: int, results_dir: str, port: str, n_
     }))
 
 
+# -- paired PSNR 2-rank worker (distributed decode + global mean) ------------
+
+
+_C_PAIRED = 4
+_SPATIAL = 8
+
+
+class _IdentityVAE(nn.Module):
+    """Identity-decode VAE (``decode(z) = z``) for the paired PSNR DDP test.
+
+    Stands in for the held frozen VAE so the per-volume PSNR is pinnable; carries
+    one parameter so ``.to`` / ``state_dict`` / ``parameters`` behave (the staging
+    path clones state and moves params). Mirrors ``tests/test_paired_metrics``.
+    """
+
+    def __init__(self):
+        super().__init__()
+        self.dummy = nn.Parameter(torch.zeros(1))
+
+    def decode(self, latents: torch.Tensor) -> torch.Tensor:
+        return latents
+
+
+class _PairedLatentDS(Dataset):
+    """Tiny in-RAM paired latent dataset (the 5-key contract) for the DDP test.
+
+    Per-sample latents are scaled by ``i`` so the two ranks' DistributedSampler
+    shards differ -> a rank-local mean would disagree across ranks (the property
+    the epoch-end ``all_gather`` must overcome to produce one global ``val/psnr``).
+    """
+
+    def __init__(self, n: int = 5, *, seed: int = 0):
+        torch.manual_seed(seed)
+        self.items = []
+        for i in range(n):
+            g = torch.Generator().manual_seed(100 + i)
+            self.items.append({
+                "src_latent": torch.randn(_C_PAIRED, _SPATIAL, _SPATIAL, _SPATIAL, generator=g) * (i + 1),
+                "tgt_latent": torch.randn(_C_PAIRED, _SPATIAL, _SPATIAL, _SPATIAL, generator=g),
+                "src_label": torch.tensor(0, dtype=torch.long),
+                "tgt_label": torch.tensor(1, dtype=torch.long),
+                "spacing": torch.tensor([1.0, 1.0, 1.0]),
+            })
+
+    def __len__(self):
+        return len(self.items)
+
+    def __getitem__(self, i):
+        return self.items[i]
+
+
+def paired_psnr_ddp_worker(rank: int, world: int, results_dir: str, port: str, _unused: bool) -> None:
+    """2-rank paired fit: every rank decodes its DistributedSampler val shard, then
+    :class:`~manifold.metrics.PairedPSNRSSIMCallback` ``all_gather``'s the
+    per-volume sums to a global ``val/psnr`` (ADR-0016 amendment).
+
+    Captures each rank's LOCAL pre-gather ``(_psnr_sum, _ssim_sum, _count)`` - the
+    instance attrs are read into locals in ``on_validation_epoch_end`` and the
+    locals (not the attrs) are overwritten by the gather, so the attrs survive
+    post-fit holding the rank-local contribution - plus the logged global
+    ``val/psnr`` / ``val/ssim``. The downstream test asserts:
+    (a) both ranks decoded (``_count > 0`` on both - pre-fix only rank 0 was > 0);
+    (b) the two ranks' LOCAL means differ (shards are disjoint -> a rank-local log
+        would disagree, so the cross-rank equality proves the all_gather fired);
+    (c) ``val/psnr`` is identical across ranks AND equals the hand-computed global
+        ``(r0_sum + r1_sum) / (r0_count + r1_count)``;
+    (d) no deadlock (the spawn joined -> both ranks wrote a result).
+    """
+    import lightning.pytorch as pl  # noqa: F401 (Lightning import side-effect)
+
+    from torch.utils.data import DataLoader
+
+    import stable_pretraining as spt
+    from manifold import (
+        FlowMatchHeunDiscreteScheduler,
+        PairedLatentFlowModule,
+        PairedLatentFlowPipeline,
+        UNet3DConditionModel,
+    )
+    from manifold.metrics import PairedPSNRSSIMCallback
+    from manifold.training.trainer import build_trainer
+
+    ddp_init(rank, world, port)
+    try:
+        torch.manual_seed(0)
+        unet = UNet3DConditionModel(
+            in_channels=2 * _C_PAIRED, out_channels=_C_PAIRED,
+            num_class_embeds=4, include_spacing_input=True,
+        )
+        # Re-init zero convs so the rollout is non-trivial (mirrors the paired tests).
+        for p in unet.parameters():
+            if p.abs().sum().item() == 0.0:
+                nn.init.normal_(p, std=0.01)
+        module = PairedLatentFlowModule(
+            unet, FlowMatchHeunDiscreteScheduler(), lr=1e-2, lr_warmup_steps=0,
+            num_train_examples=5, train_batch_size=2, n_epochs=1,
+        )
+        pipeline = PairedLatentFlowPipeline(unet, _IdentityVAE(), module.scheduler)
+        psnr = PairedPSNRSSIMCallback(
+            pipeline=pipeline, num_inference_steps=2, every_n_epochs=1, ema_callback=None,
+        )
+        ds = _PairedLatentDS(n=5)
+        train = DataLoader(ds, batch_size=2, shuffle=True, num_workers=0)
+        val = DataLoader(ds, batch_size=2, shuffle=False, num_workers=0)
+        datamodule = spt.data.DataModule(train=train, val=val)
+        trainer = build_trainer(
+            max_epochs=1, callbacks=[psnr], model_dir=str(Path(results_dir) / f"r{rank}"),
+            devices=world, accelerator="cpu", limit_val_batches=1.0,
+            extra_kwargs={
+                "num_sanity_val_steps": 0,
+                "enable_progress_bar": False,
+                "logger": False,
+                "enable_checkpointing": False,
+                "enable_model_summary": False,
+            },
+        )
+        trainer.fit(module, datamodule=datamodule)
+        metrics = {k: float(v) for k, v in trainer.callback_metrics.items()}
+        Path(results_dir, f"r{rank}.json").write_text(json.dumps({
+            "rank": rank,
+            "is_global_zero": bool(trainer.is_global_zero),
+            "psnr_sum_local": float(psnr._psnr_sum),
+            "ssim_sum_local": float(psnr._ssim_sum),
+            "count_local": int(psnr._count),
+            "val_psnr": metrics.get("val/psnr"),
+            "val_ssim": metrics.get("val/ssim"),
+        }))
+    finally:
+        ddp_fini()
+
+
 __all__ = [
     "ddp_init",
     "ddp_fini",
@@ -591,4 +722,5 @@ __all__ = [
     "_unbalanced_val_worker",
     "grpo_ddp_worker",
     "cold_cache_ddp_worker",
+    "paired_psnr_ddp_worker",
 ]

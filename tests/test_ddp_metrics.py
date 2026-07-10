@@ -25,7 +25,7 @@ from __future__ import annotations
 import pytest
 import torch
 
-from tests.ddp import _unbalanced_val_worker, jit_ddp_worker, run_ddp_two_rank
+from tests.ddp import _unbalanced_val_worker, jit_ddp_worker, paired_psnr_ddp_worker, run_ddp_two_rank
 
 
 # -- M6: MeanMetric yields the true sample-weighted global mean -----------------
@@ -215,3 +215,49 @@ def test_l5_grpo_train_loss_has_sync_dist():
     # The train/loss log call carries sync_dist=True and batch_size=B.
     assert "sync_dist=True" in src, "GRPO train/loss missing sync_dist=True"
     assert 'self.log("train/loss"' in src
+
+
+# -- Paired PSNR: all ranks decode + global mean (ADR-0016 amendment) ----------
+
+
+def test_paired_psnr_distributed_global_mean(tmp_path):
+    """2-rank: the rank-0-only gate is gone - BOTH ranks decode their
+    ``DistributedSampler`` val shard (``_count > 0`` on both; pre-fix only rank 0
+    was > 0), and ``val/psnr`` is the GLOBAL mean over BOTH ranks' shards,
+    identical across ranks and == the hand-computed
+    ``(r0_sum + r1_sum) / (r0_count + r1_count)`` (NOT a rank-local mean).
+
+    The two ranks' LOCAL means differ (shards are disjoint), so a rank-local log
+    would disagree across ranks - the cross-rank equality proves the epoch-end
+    ``all_gather`` fired. The spawn joining (both ranks wrote a result) is the
+    no-deadlock gate: the single epoch-end collective is called by all ranks
+    together (cadence agrees), so it cannot hang.
+    """
+    results = run_ddp_two_rank(paired_psnr_ddp_worker, results_dir=str(tmp_path), args=(False,))
+    r0, r1 = results
+    # (a) Both ranks decoded (the decode path alone increments _count).
+    assert r0["count_local"] > 0, "rank 0 did not decode"
+    assert r1["count_local"] > 0, "rank 1 did not decode (rank-0-only gate not removed?)"
+    # (b) Shards differ: rank-local means differ (a rank-local log would disagree).
+    r0_local = r0["psnr_sum_local"] / r0["count_local"]
+    r1_local = r1["psnr_sum_local"] / r1["count_local"]
+    assert r0_local != pytest.approx(r1_local, abs=1e-3), (
+        f"rank-local means identical ({r0_local} vs {r1_local}) - val not sharded "
+        f"or shards coincided; the global check below would not prove the gather fired"
+    )
+    # (c) val/psnr is identical across ranks (the all_gather fired) AND equals the
+    # true global per-volume mean over BOTH ranks' shards.
+    assert r0["val_psnr"] is not None and r1["val_psnr"] is not None, "val/psnr not logged"
+    assert r0["val_psnr"] == pytest.approx(r1["val_psnr"], abs=1e-4)
+    true_global = (r0["psnr_sum_local"] + r1["psnr_sum_local"]) / (
+        r0["count_local"] + r1["count_local"]
+    )
+    assert r0["val_psnr"] == pytest.approx(true_global, abs=1e-4), (
+        f"val/psnr={r0['val_psnr']} != global mean {true_global}"
+    )
+    # val/ssim likewise global (the same all_gather carries ssim_sum).
+    true_ssim = (r0["ssim_sum_local"] + r1["ssim_sum_local"]) / (
+        r0["count_local"] + r1["count_local"]
+    )
+    assert r0["val_ssim"] == pytest.approx(true_ssim, abs=1e-4)
+    assert r0["val_ssim"] == pytest.approx(r1["val_ssim"], abs=1e-4)

@@ -197,12 +197,14 @@ def test_jit_checkpoint_monitor_set_on_single_gpu(tmp_path):
     assert ckpt2.monitor == "val/fid_avg"
 
 
-def test_paired_checkpoint_monitor_dropped_under_multi_gpu(tmp_path):
-    """The paired ``_build_checkpoint(monitor_psnr=False)`` path has no monitor
-    (the multi-GPU fallback). Single-GPU keeps ``val/psnr`` (M1b positive)."""
+def test_paired_checkpoint_monitor_always_set(tmp_path):
+    """The paired ``_build_checkpoint`` always monitors ``val/psnr`` (the PSNR/SSIM
+    callback is distributed under DDP - ADR-0016 amendment - so the monitor stays
+    on for every config, including multi-GPU). The pre-amendment rank-0-only
+    fallback (no monitor under DDP) is gone; the monitor metric is configurable."""
     from manifold.training.paired_cli import _build_checkpoint
 
-    multi = _build_checkpoint(str(tmp_path / "m"), monitor_psnr=False)
-    assert multi.monitor is None
-    single = _build_checkpoint(str(tmp_path / "s"), monitor_psnr=True)
-    assert single.monitor == "val/psnr"
+    ckpt = _build_checkpoint(str(tmp_path), monitor_metric="val/psnr")
+    assert ckpt.monitor == "val/psnr"
+    ckpt2 = _build_checkpoint(str(tmp_path / "b"), monitor_metric="val/ssim")
+    assert ckpt2.monitor == "val/ssim"

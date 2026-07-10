@@ -275,7 +275,7 @@ def test_staging_is_idempotent(identity_vae):
 
 
 # ============================================================================
-# 3. Rank-0 + cadence gate (mirrors FIDCallback)
+# 3. Cadence gate (all ranks active under DDP - mirrors FIDCallback's lifecycle)
 # ============================================================================
 
 
@@ -289,19 +289,19 @@ def test_gate_single_process_always_active(identity_vae):
     assert cb._gated(_fake_trainer(is_global_zero=True, current_epoch=0)) is True
 
 
-def test_gate_skips_non_zero_rank_under_ddp(identity_vae, monkeypatch):
-    """Under DDP the non-rank-0 processes skip (no NCCL collective to deadlock).
-
-    Mirrors ``tests/test_fid.py``'s gate behavior: when ``world_size > 1`` only
-    ``is_global_zero`` proceeds; the others must no-op so the decode loop does
-    not stall the validation loop on a collective the callback never enters.
+def test_gate_active_on_all_ranks_under_ddp(identity_vae, monkeypatch):
+    """Under DDP every rank runs the decode over its own ``DistributedSampler`` shard
+    (``on_validation_epoch_end`` ``all_gather``'s the per-volume sums to the global
+    mean), so the gate is cadence-only - it no longer skips non-rank-0. There is no
+    per-batch collective, so the decode loop cannot deadlock; the rank-asymmetric
+    early-return is gone (ADR-0016 amendment).
     """
     cb = _make_callback(_FakePipeline(_FakeUNet(), identity_vae))
     monkeypatch.setattr(torch.distributed, "is_initialized", lambda: True)
     monkeypatch.setattr(torch.distributed, "get_world_size", lambda: 2)
 
     assert cb._gated(_fake_trainer(is_global_zero=True)) is True
-    assert cb._gated(_fake_trainer(is_global_zero=False)) is False
+    assert cb._gated(_fake_trainer(is_global_zero=False)) is True
 
 
 def test_gate_cadence_every_n_epochs(identity_vae):

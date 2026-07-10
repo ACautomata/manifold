@@ -10,9 +10,11 @@ data-warming lives in :func:`main`, the integration core :func:`run_paired_train
 ``fit``) is split out so a tiny CPU smoke can drive it with a fake latent cache
 (the issue's testing seam) instead of BraTS + a real VAE.
 
-Best-checkpoint selection monitors ``val/psnr`` (``mode="max"``) on single-GPU;
-under DDP (the PSNR/SSIM callback is rank-0-only) it falls back to ``save_last``
-+ ``every_n_epochs`` (mirrors the noise→data DDP path).
+Best-checkpoint selection monitors ``val/psnr`` (``mode="max"``) on every config,
+including DDP: the PSNR/SSIM callback runs the decode on all ranks (each over its
+``DistributedSampler`` shard) and ``all_gather``'s the per-volume sums, so
+``val/psnr`` is a global cross-rank mean (ADR-0016 amendment) - unlike the
+noise→data FID path, which stays rank-0-only.
 """
 
 from __future__ import annotations
@@ -39,7 +41,7 @@ from ..modules.paired_latent_flow import PairedLatentFlowModule
 from ..pipelines.paired_latent_flow import PairedLatentFlowPipeline
 from .ema import DoubleEMACallback
 from .metrics import LatentX0MAE, TrainLossLogger
-from .trainer import build_trainer, is_multi_gpu
+from .trainer import build_trainer
 
 _log = logging.getLogger(__name__)
 
@@ -64,38 +66,27 @@ class _DataBundle:
 def _build_checkpoint(
     model_dir: str,
     *,
-    monitor_psnr: bool,
     monitor_metric: str = "val/psnr",
-    every_n_epochs: int = 1,
     save_top_k: int = 3,
 ) -> ModelCheckpoint:
-    """Stock Lightning ``ModelCheckpoint`` (ADR-0006).
+    """Stock Lightning ``ModelCheckpoint`` (ADR-0006), monitoring ``val/psnr``.
 
-    Single-GPU + PSNR: monitor ``val/psnr`` (``mode="max"``, top-k, last, full
-    state) — the raw-optimizer metric is sufficient on a short from-scratch run.
-    Under DDP (the PSNR/SSIM callback is rank-0-only, so the metric is not global)
-    fall back to ``save_last`` + ``every_n_epochs`` with no monitor.
+    ``val/psnr`` is a global cross-rank mean under DDP (the PSNR/SSIM callback
+    decodes on all ranks over their ``DistributedSampler`` shards and
+    ``all_gather``'s the per-volume sums - ADR-0016 amendment), so the monitor
+    stays on for every config, including multi-GPU (unlike the noise->data FID
+    path, which stays rank-0-only). ``mode="max"``, top-k, last, full state; the
+    raw-optimizer metric is sufficient on a short from-scratch run.
     ``auto_insert_metric_name = False`` because the metric key contains a ``/``.
     """
-    if monitor_psnr:
-        return ModelCheckpoint(
-            dirpath=model_dir,
-            filename=f"paired-{{epoch:03d}}-{{step}}-{{{monitor_metric}:.3f}}",
-            monitor=monitor_metric,
-            mode="max",
-            save_top_k=save_top_k,
-            save_last=True,
-            save_on_train_epoch_end=True,
-            auto_insert_metric_name=False,
-            save_weights_only=False,
-        )
     return ModelCheckpoint(
         dirpath=model_dir,
-        filename="paired-{epoch:03d}-{step}",
+        filename=f"paired-{{epoch:03d}}-{{step}}-{{{monitor_metric}:.3f}}",
+        monitor=monitor_metric,
+        mode="max",
+        save_top_k=save_top_k,
         save_last=True,
-        save_top_k=1,
         save_on_train_epoch_end=True,
-        every_n_epochs=max(1, every_n_epochs),
         auto_insert_metric_name=False,
         save_weights_only=False,
     )
@@ -143,12 +134,12 @@ def run_paired_training(
     )
     callbacks: list = [TrainLossLogger(), LatentX0MAE(), ema, psnr]
 
-    multi_gpu = is_multi_gpu(devices)
+    # val/psnr is a global cross-rank mean under DDP (the PSNR/SSIM callback
+    # all_gather's the per-volume sums), so the monitor stays on under multi-GPU -
+    # unlike the noise->data FID path (FIDCallback is rank-0-only, ADR-0016).
     ckpt = _build_checkpoint(
         model_dir,
-        monitor_psnr=not multi_gpu,
         monitor_metric=monitor_metric,
-        every_n_epochs=every_n_epochs,
         save_top_k=save_top_k,
     )
     callbacks.append(ckpt)
