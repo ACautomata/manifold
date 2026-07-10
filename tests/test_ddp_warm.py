@@ -323,3 +323,9 @@ def test_p2_raising_factory_caught_and_skips_fid(tmp_path):
     module.log = lambda key, value, **k: logged.__setitem__(key, value)  # type: ignore[assignment]
     fid.on_validation_epoch_end(_Tr(), module)  # no raise; logs inf sentinels
     assert logged.get("val/fid_avg") == float("inf")
+
+    # codex #85 re-review P2: the skip-path early return must NOT leave the VAE on
+    # the training GPU. on_validation_epoch_end's finally -> _restore_eval_to_cpu
+    # restores it to CPU when _eval_staged is True (set before the early return).
+    assert fid._eval_staged is False, "_eval_staged not reset by the restore"
+    assert next(fid.vae.parameters()).device.type == "cpu", "VAE left on GPU after the FID skip"

@@ -165,6 +165,12 @@ class FIDCallback(pl.Callback):
         if not getattr(self, "_eval_staged", False):
             self._vae_cpu_state = {k: v.detach().clone() for k, v in self.vae.state_dict().items()}
             self.vae.to(self._device())
+            # Mark staged BEFORE any early return (codex #85 P2): the ``finally`` in
+            # on_validation_epoch_end calls _restore_eval_to_cpu(), which only
+            # restores the VAE to CPU when _eval_staged is True. A skip-path return
+            # before this flag would leave the full VAE resident on the training GPU
+            # for the rest of the run (the VRAM pressure the skip is meant to avoid).
+            self._eval_staged = True
             # L3 + codex #85 P2: lazy feature_net build on the rank-0-gated stage
             # path (the only place it is used). A factory defers the ~100 MB
             # ``torch.hub`` load so non-root ranks never touch it; a direct
@@ -182,7 +188,7 @@ class FIDCallback(pl.Callback):
                     self.feature_net = None
             if self.feature_net is None:
                 self._fid_disabled = True
-                return
+                return  # _eval_staged=True -> the finally restores the VAE to CPU.
             self._fid_disabled = False
             if self.feature_net is not None:
                 self.feature_net.to(self._device())
@@ -192,7 +198,9 @@ class FIDCallback(pl.Callback):
                 # since the raw arm is the checkpoint monitor, that contamination
                 # would distort selection. Also matches hope (net.eval().to()).
                 self.feature_net.eval()
-            self._eval_staged = True
+            # _eval_staged was set right after staging the VAE (above), so the
+            # finally's _restore_eval_to_cpu() always restores it - even on the
+            # skip-path early return.
 
     def _restore_eval_to_cpu(self) -> None:
         """Return VAE + feature_net to CPU after the FID phase (free VRAM for training)."""
