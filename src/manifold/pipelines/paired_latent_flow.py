@@ -98,8 +98,8 @@ class PairedLatentFlowPipeline(DiffusionPipeline):
         self,
         src_latent: Tensor,
         spacing: Tensor | Sequence[float],
-        src_label: int,
-        tgt_label: int,
+        src_label: int | Tensor,
+        tgt_label: int | Tensor,
         num_inference_steps: int,
     ) -> Tensor:
         """Run the start-from-src Heun rollout; return the target latent ``[B, C, D, H, W]``.
@@ -110,6 +110,13 @@ class PairedLatentFlowPipeline(DiffusionPipeline):
         Module's ``sample()`` (Slice 3) uses, so the two paths cannot drift. No VAE
         decode. Exposed so the end-to-end reconstruct test (Slice 1) and numerical
         validation can compare the latent directly.
+
+        ``src_label`` / ``tgt_label`` accept a scalar ``int`` (one direction
+        broadcast across the batch — the published-inference contract used by
+        :meth:`__call__`) or a ``[B]`` long tensor of per-sample labels (the
+        validation contract — a Paired JiT val batch mixes all 12 within-subject
+        contrast directions, so the PSNR/SSIM callback passes per-sample labels so
+        each volume is conditioned on its own src→tgt pair).
         """
         return sample_paired_latent_flow(
             self.unet,

@@ -120,32 +120,30 @@ def _make_callback(pipeline, *, num_inference_steps=2, every_n_epochs=1) -> Pair
 
 
 def test_psnr_formula_pinned_on_known_pair(identity_vae):
-    """decode(identity) + noise offset -> PSNR matches manual recompute on normalized volumes.
+    """decode(identity) + noise offset -> PSNR matches manual recompute on RAW volumes.
 
-    Volumes are pre-normalized to [0, 1] via ``_minmax_to_unit`` (mirrors the
-    callback's flow between ``_eval_decode`` and ``_batch_metrics``). The PSNR
-    formula is verified by computing the expected value independently from the
-    same normalized tensors.
+    Volumes are the RAW identity-decoded tensors (C2: the callback compares raw
+    float32 decodes — pred and tgt share the VAE's image space — with no
+    per-volume normalization). The PSNR formula is verified by computing the
+    expected value independently from the same raw tensors.
     """
     cb = _make_callback(_FakePipeline(_FakeUNet(), identity_vae))
     cb._stage_eval_on_device()
 
     torch.manual_seed(42)
     tgt_latent = torch.zeros(1, C_LATENT, SPATIAL, SPATIAL, SPATIAL)
-    tgt_latent[..., ::2] = 1.0  # half ones -> [0, 1] range after identity decode
+    tgt_latent[..., ::2] = 1.0  # half ones -> [0, 1] target range
     noise = 0.2 * torch.randn_like(tgt_latent)
-    pred_latent = tgt_latent + noise  # non-constant offset avoids collapse under min-max
+    pred_latent = tgt_latent + noise  # non-constant pred so PSNR is finite
 
     pred_vol = cb._eval_decode(pred_latent)
     tgt_vol = cb._eval_decode(tgt_latent)
-    pred_norm = PairedPSNRSSIMCallback._minmax_to_unit(pred_vol)
-    tgt_norm = PairedPSNRSSIMCallback._minmax_to_unit(tgt_vol)
-    psnr_sum, ssim_sum, n = cb._batch_metrics(pred_norm, tgt_norm)
+    psnr_sum, ssim_sum, n = cb._batch_metrics(pred_vol, tgt_vol)
 
     assert n == 1
-    # PSNR matches manual recompute on the same normalized tensors.
-    p = pred_norm[0:1].float()
-    t = tgt_norm[0:1].float()
+    # PSNR matches a manual recompute on the same RAW decoded tensors.
+    p = pred_vol[0:1].float()
+    t = tgt_vol[0:1].float()
     dr = float(t.max() - t.min())
     mse = float((p - t).pow(2).mean())
     expected = 10.0 * math.log10(dr**2 / mse)
@@ -156,12 +154,12 @@ def test_psnr_formula_pinned_on_known_pair(identity_vae):
 
 
 def test_psnr_matches_direct_recompute(identity_vae):
-    """The callback's PSNR equals an independent ``10·log10(dr²/mse)`` on min-max-normalized data.
+    """The callback's PSNR equals an independent ``10·log10(dr²/mse)`` on RAW decodes.
 
-    Pre-normalizes the decoded volumes via ``_minmax_to_unit`` (mirrors the
-    callback's flow between ``_eval_decode`` and ``_batch_metrics``), then asserts
-    the callback's per-sample ``data_range = target[max − min]`` formula matches
-    a direct recompute on the same normalized tensors.
+    Feeds the RAW decoded volumes to ``_batch_metrics`` (C2: the callback compares
+    raw float32 decodes, no per-volume normalization), then asserts the callback's
+    per-sample ``data_range = target[max − min]`` formula matches a direct
+    recompute on the same raw tensors.
     """
     cb = _make_callback(_FakePipeline(_FakeUNet(), identity_vae))
     cb._stage_eval_on_device()
@@ -171,12 +169,10 @@ def test_psnr_matches_direct_recompute(identity_vae):
 
     pred_vol = cb._eval_decode(pred)
     tgt_vol = cb._eval_decode(tgt)
-    pred_norm = PairedPSNRSSIMCallback._minmax_to_unit(pred_vol)
-    tgt_norm = PairedPSNRSSIMCallback._minmax_to_unit(tgt_vol)
-    psnr_sum, _, n = cb._batch_metrics(pred_norm, tgt_norm)
+    psnr_sum, _, n = cb._batch_metrics(pred_vol, tgt_vol)
 
-    data_range = float(tgt_norm.max() - tgt_norm.min())
-    mse = float((pred_norm - tgt_norm).pow(2).mean())
+    data_range = float(tgt_vol.max() - tgt_vol.min())
+    mse = float((pred_vol - tgt_vol).pow(2).mean())
     expected = 10.0 * math.log10(data_range**2 / mse)
     assert n == 1
     assert psnr_sum == pytest.approx(expected, abs=1e-4)
@@ -184,27 +180,41 @@ def test_psnr_matches_direct_recompute(identity_vae):
 
 
 
-def test_affine_collapse_counted_not_skipped(identity_vae):
-    """Pred = tgt + offset must NOT be skipped after per-volume min-max (codex #86 P2).
+def test_affine_error_penalized_not_collapsed(identity_vae):
+    """Per-volume gain/offset errors must be PENALIZED, not erased (C2).
 
-    Independent min-max normalisation collapses pred = A·tgt + B into an exact
-    match (mse == 0). The old `mse == 0 → continue` would skip every sample,
-    leaving _count = 0 and breaking the checkpoint monitor. The fix caps PSNR
-    at 100 dB instead, so the sample is counted (n > 0) with a finite score
-    and the SSIM from torchmetrics (≈ 1.0 for structurally identical volumes).
+    The earlier independent per-volume ``_minmax_to_unit`` on pred and tgt applied
+    different affine maps, so ``pred = A·tgt + B`` collapsed to an exact match
+    (PSNR capped at 100 dB) — the metric was blind to the brightness/contrast
+    errors a contrast-translation model must be penalized for. On raw decodes a
+    global offset/gain raises MSE and lowers PSNR. (Bit-exact pred == tgt still
+    caps at 100 dB via the ``mse == 0`` guard.)
     """
     cb = _make_callback(_FakePipeline(_FakeUNet(), identity_vae))
     cb._stage_eval_on_device()
-    tgt = torch.randn(1, C_LATENT, SPATIAL, SPATIAL, SPATIAL)
-    pred = tgt + 0.1  # pure offset — collapses to identical after independent min-max
+    torch.manual_seed(3)
+    tgt = torch.rand(1, C_LATENT, SPATIAL, SPATIAL, SPATIAL)  # range ~ [0, 1]
     tgt_vol = cb._eval_decode(tgt)
-    pred_vol = cb._eval_decode(pred)
-    pred_norm = PairedPSNRSSIMCallback._minmax_to_unit(pred_vol)
-    tgt_norm = PairedPSNRSSIMCallback._minmax_to_unit(tgt_vol)
-    psnr_sum, ssim_sum, n = cb._batch_metrics(pred_norm, tgt_norm)
-    assert n == 1, "affine-collapsed sample must be counted, not skipped"
-    assert psnr_sum == pytest.approx(100.0, abs=1e-4), "PSNR must be capped at 100 dB"
-    assert ssim_sum >= 0.999, "structurally identical volumes must have SSIM ~1.0"
+
+    # Identical pred -> mse == 0 -> capped at 100 dB (the bit-exact ceiling).
+    pred_vol = cb._eval_decode(tgt.clone())
+    psnr_id, _, n_id = cb._batch_metrics(pred_vol, tgt_vol)
+    assert n_id == 1
+    assert psnr_id == pytest.approx(100.0, abs=1e-4)
+
+    # A +0.5 DC offset (once erased by min-max to a 100 dB match) now raises MSE
+    # to ~0.25 over a ~[0,1] target -> PSNR well below the ceiling.
+    pred_vol = cb._eval_decode(tgt + 0.5)
+    psnr_off, _, n_off = cb._batch_metrics(pred_vol, tgt_vol)
+    assert n_off == 1
+    assert psnr_off < 50.0, "a global offset must lower PSNR, not collapse to 100 dB"
+    assert psnr_off < psnr_id
+
+    # A 2x gain error is likewise penalized (not erased).
+    pred_vol = cb._eval_decode(2.0 * tgt)
+    psnr_gain, _, n_gain = cb._batch_metrics(pred_vol, tgt_vol)
+    assert n_gain == 1
+    assert psnr_gain < 50.0, "a 2x gain error must lower PSNR"
 
 
 def test_ssim_is_one_for_identical_volumes(identity_vae):
@@ -413,22 +423,63 @@ def test_callback_matches_independent_recompute():
     val_loader = _paired_datamodule().val
     psnr_sum, _, n = 0.0, 0.0, 0
     for batch in val_loader:
+        # Mirror the callback exactly: per-sample labels (C1) + raw decode (C2).
         pred_latent = pipeline.sample_latent(
-            batch["src_latent"], batch["spacing"], 0, 1, num_inference_steps=2
+            batch["src_latent"], batch["spacing"],
+            batch["src_label"], batch["tgt_label"], num_inference_steps=2,
         )
         # Identity decode (the fake VAE was restored to CPU after fit; decode is
-        # device-agnostic for identity, so recompute directly).
+        # device-agnostic for identity, so recompute directly). RAW volumes — the
+        # callback compares raw float32 decodes (C2), so no per-volume min-max.
         pred_vol, tgt_vol = pred_latent.float(), batch["tgt_latent"].float()
-        # Pre-normalize (mirrors the callback's _minmax_to_unit called between
-        # _eval_decode and _batch_metrics). Without this the recomputed PSNR/SSIM
-        # would be on the raw volume range and would not match the logged value.
-        pred_vol = PairedPSNRSSIMCallback._minmax_to_unit(pred_vol)
-        tgt_vol = PairedPSNRSSIMCallback._minmax_to_unit(tgt_vol)
         p, s, m = cb._batch_metrics(pred_vol, tgt_vol)
         psnr_sum += p
         n += m
     expected = psnr_sum / n
     assert logged_psnr == pytest.approx(expected, abs=1e-4)
+
+
+def test_callback_passes_per_sample_labels_to_rollout(identity_vae):
+    """The callback forwards each sample's OWN labels to the rollout (C1).
+
+    A Paired JiT val batch mixes all 12 within-subject contrast directions
+    (``build_brats_pair_manifest`` emits every ordered pair), so the rollout must
+    condition each sample on its own ``(src, tgt)`` pair. Pins that the scalar
+    ``[0]`` collapse — which conditioned 7/8 of an 8-sample batch on sample 0's
+    direction — cannot regress: the ``[B]`` label tensor reaches ``sample_latent``
+    verbatim, not ``int(batch["src_label"][0])``.
+    """
+    pipeline = _FakePipeline(_FakeUNet(), identity_vae)
+    cb = _make_callback(pipeline, num_inference_steps=2)
+    cb._active = True
+    cb._stage_eval_on_device()
+
+    batch = {
+        "src_latent": torch.randn(3, C_LATENT, SPATIAL, SPATIAL, SPATIAL),
+        "tgt_latent": torch.randn(3, C_LATENT, SPATIAL, SPATIAL, SPATIAL),
+        "src_label": torch.tensor([0, 1, 2], dtype=torch.long),
+        "tgt_label": torch.tensor([1, 2, 3], dtype=torch.long),
+        "spacing": torch.tensor([1.0, 1.0, 1.0]),
+    }
+    seen: dict = {}
+
+    def spy_sample_latent(src_latent, spacing, src_label, tgt_label, n):
+        seen["src_label"] = src_label
+        seen["tgt_label"] = tgt_label
+        return src_latent  # identity rollout -> decodes cleanly
+
+    pipeline.sample_latent = spy_sample_latent  # type: ignore[assignment]
+
+    cb.on_validation_batch_end(
+        _fake_trainer(is_global_zero=True), None, None, batch, 0
+    )
+    # The per-sample [B] tensors were forwarded verbatim (not a scalar [0] collapse).
+    assert torch.equal(seen["src_label"], batch["src_label"]), (
+        "callback must forward per-sample src labels, not sample 0's"
+    )
+    assert torch.equal(seen["tgt_label"], batch["tgt_label"]), (
+        "callback must forward per-sample tgt labels, not sample 0's"
+    )
 
 
 def test_rollout_deterministic_given_x_src_no_reseed():

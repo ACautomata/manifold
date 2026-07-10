@@ -11,6 +11,7 @@ variant pins the transport/sampler composition exactly.
 
 from __future__ import annotations
 
+import pytest
 import torch
 import torch.nn as nn
 
@@ -106,6 +107,100 @@ def test_oracle_rollout_lands_on_tgt_exactly():
     assert torch.allclose(latent, x_tgt, atol=1e-5), (
         f"max abs diff {float((latent - x_tgt).abs().max())}"
     )
+
+
+class _LabelSpyUNet(nn.Module):
+    """Records every ``(class_labels_src, class_labels_tgt)`` the UNet is called with.
+
+    Returns a zero ``x0`` prediction of shape ``[B, C_latent, ...]`` so the Heun
+    rollout stays finite; the test inspects only the recorded label tensors.
+    Carries a dummy parameter so ``next(unet.parameters()).device`` resolves.
+    """
+
+    def __init__(self):
+        super().__init__()
+        self.dummy = nn.Parameter(torch.zeros(1))
+        self.seen: list[tuple] = []
+
+    def forward(self, sample, timestep, spacing, class_labels=None, context=None, *,
+                class_labels_src=None, class_labels_tgt=None):
+        c = sample.shape[1] // 2  # in_channels = 2·C_latent -> predict C_latent
+        self.seen.append((class_labels_src, class_labels_tgt))
+        return torch.zeros(sample.shape[0], c, *sample.shape[2:], dtype=sample.dtype)
+
+
+def test_sample_latent_forwards_per_sample_labels():
+    """Per-sample ``[B]`` label tensors reach the UNet un-broadcast (C1).
+
+    A Paired JiT val batch mixes all 12 within-subject contrast directions, so the
+    PSNR/SSIM callback passes a ``[B]`` tensor of per-sample labels. The shared
+    rollout forwards it verbatim (each sample conditioned on its own src→tgt pair),
+    and a scalar ``int`` still broadcasts to ``[B]`` (the published-inference
+    contract). Pins that the earlier ``torch.full`` scalar-collapse cannot regress.
+    """
+    torch.manual_seed(0)
+    b = 3
+    x_src = torch.randn(b, C_LATENT, 4, 4, 4)
+    src_labels = torch.tensor([0, 1, 2], dtype=torch.long)  # three DISTINCT directions
+    tgt_labels = torch.tensor([1, 2, 3], dtype=torch.long)
+
+    spy = _LabelSpyUNet()
+    pipeline = PairedLatentFlowPipeline(
+        spy, AutoencoderKL(scaling_factor=0.5), FlowMatchHeunDiscreteScheduler()
+    )
+    pipeline.sample_latent(
+        x_src, spacing=[1.0, 1.0, 1.0],
+        src_label=src_labels, tgt_label=tgt_labels, num_inference_steps=2,
+    )
+    assert len(spy.seen) > 0, "rollout must call the UNet"
+    for s, t in spy.seen:
+        assert torch.equal(s, src_labels), f"per-sample src labels not forwarded: {s}"
+        assert torch.equal(t, tgt_labels), f"per-sample tgt labels not forwarded: {t}"
+
+    # Scalar int still broadcasts to [B] (backward-compatible inference contract).
+    spy2 = _LabelSpyUNet()
+    pipeline2 = PairedLatentFlowPipeline(
+        spy2, AutoencoderKL(scaling_factor=0.5), FlowMatchHeunDiscreteScheduler()
+    )
+    pipeline2.sample_latent(
+        x_src, spacing=[1.0, 1.0, 1.0], src_label=0, tgt_label=1, num_inference_steps=2,
+    )
+    for s, t in spy2.seen:
+        assert torch.equal(s, torch.tensor([0, 0, 0], dtype=torch.long))
+        assert torch.equal(t, torch.tensor([1, 1, 1], dtype=torch.long))
+
+    # A 0-d scalar tensor (torch.tensor(0)) also broadcasts — preserves the prior
+    # ``int(src_label)`` behavior for scalar-as-tensor callers (codex review).
+    spy3 = _LabelSpyUNet()
+    pipeline3 = PairedLatentFlowPipeline(
+        spy3, AutoencoderKL(scaling_factor=0.5), FlowMatchHeunDiscreteScheduler()
+    )
+    pipeline3.sample_latent(
+        x_src, spacing=[1.0, 1.0, 1.0],
+        src_label=torch.tensor(0), tgt_label=torch.tensor(1), num_inference_steps=2,
+    )
+    for s, t in spy3.seen:
+        assert torch.equal(s, torch.tensor([0, 0, 0], dtype=torch.long))
+        assert torch.equal(t, torch.tensor([1, 1, 1], dtype=torch.long))
+
+
+def test_sample_latent_rejects_mismatched_label_length():
+    """A per-sample label tensor whose length != batch fails fast (C1 guard).
+
+    A silent broadcast of a wrong-length tensor would condition samples on the
+    wrong contrast; the primitive raises instead.
+    """
+    x_src = torch.randn(3, C_LATENT, 4, 4, 4)
+    pipeline = PairedLatentFlowPipeline(
+        _LabelSpyUNet(), AutoencoderKL(scaling_factor=0.5), FlowMatchHeunDiscreteScheduler()
+    )
+    with pytest.raises(ValueError, match="per-sample label tensor"):
+        pipeline.sample_latent(
+            x_src, spacing=[1.0, 1.0, 1.0],
+            src_label=torch.tensor([0, 1], dtype=torch.long),  # length 2, batch 3
+            tgt_label=torch.tensor([1, 2], dtype=torch.long),
+            num_inference_steps=2,
+        )
 
 
 def test_reconstruct_tgt_from_src_after_fit():

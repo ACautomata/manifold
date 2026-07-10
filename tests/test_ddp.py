@@ -119,10 +119,15 @@ def test_single_gpu_paired_matches_baseline(tmp_path):
         "train/loss_epoch": 2.58351,
         "train/grad_norm": 2.366393,
         "val/x0_mae": 0.772287,
-        # val/psnr / val/ssim reflect the #86 min-max + float32-decode change
-        # (the prior 14.222277 / 0.049186 baseline was pre-#86 and had drifted).
-        "val/psnr": 13.989718,
-        "val/ssim": 0.152261,
+        # val/psnr / val/ssim: this audit's C2 fix compares RAW float32 decodes
+        # (no per-volume min-max). #86 added an independent per-volume min-max on
+        # pred and tgt, which made the metrics affine-invariant (blind to
+        # gain/offset errors) and moved the baseline to 13.989718 / 0.152261.
+        # Removing it restores the pre-#86 raw-decode values exactly. C1 (per-sample
+        # labels) is a no-op on this fixture — _FakePairedDataset emits one
+        # direction (0→1), so per-sample labels == the scalar broadcast.
+        "val/psnr": 14.222277,
+        "val/ssim": 0.049186,
     }
     for key, expected in baseline.items():
         assert key in m, f"missing {key}"
