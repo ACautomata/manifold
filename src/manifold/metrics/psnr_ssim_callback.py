@@ -183,6 +183,24 @@ class PairedPSNRSSIMCallback(pl.Callback):
 
     # -- per-batch metric ----------------------------------------------------
 
+    @staticmethod
+    def _minmax_to_unit(vol: torch.Tensor) -> torch.Tensor:
+        """Per-volume min-max normalization to ``[0, 1]`` (FID feature-arm step).
+
+        Mirrors ``PairedLatentFlowPipeline._minmax_to_unit``: one global min/max
+        over the whole volume, so PSNR/SSIM are computed on normalized volumes
+        consistent with the published inference output. Per-sample (each volume in
+        the batch is normalized by its own ``[min, max]``); a degenerate zero-range
+        volume maps to zeros.
+        """
+        b = vol.shape[0]
+        flat = vol.reshape(b, -1)
+        mn = flat.amin(dim=1).view(b, 1, 1, 1, 1)
+        mx = flat.amax(dim=1).view(b, 1, 1, 1, 1)
+        rng = mx - mn
+        rng = torch.where(rng > 0, rng, torch.ones_like(rng))
+        return (vol - mn) / rng
+
     def _batch_metrics(
         self, pred_vol: torch.Tensor, tgt_vol: torch.Tensor
     ) -> tuple[float, float, int]:
@@ -263,6 +281,12 @@ class PairedPSNRSSIMCallback(pl.Callback):
                 self.ema_callback.restore(pl_module)
         pred_vol = self._eval_decode(pred_latent)
         tgt_vol = self._eval_decode(batch["tgt_latent"])
+        # Per-volume min-max to [0,1] mirrors the paired inference pipeline's
+        # post-processing (FID feature-arm preprocessing): PSNR/SSIM are
+        # computed on normalized volumes, consistent with the published
+        # inference output.
+        pred_vol = self._minmax_to_unit(pred_vol)
+        tgt_vol = self._minmax_to_unit(tgt_vol)
         psnr_sum, ssim_sum, n = self._batch_metrics(pred_vol, tgt_vol)
         self._psnr_sum += psnr_sum
         self._ssim_sum += ssim_sum
