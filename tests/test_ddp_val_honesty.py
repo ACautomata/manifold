@@ -6,10 +6,12 @@
   is logged exactly once (rank 0).
 - **M4**: ``val/mean_reward`` scope documented in the ``validation_step``
   docstring (rank-0-shard-scoped; no ``sync_dist``).
-- **M5**: ``val/psnr`` / ``val/ssim`` are rank-0-shard-scoped; a one-shot rank-0
-  warning names the scope (emitted ONCE total across >=2 val epochs, not per-epoch).
-- **L1**: the FID/PSNR "running only on rank 0" DDP warnings are hoisted below
-  the ``is_global_zero`` guard (fire rank-0 only).
+- **M5** (retired by the ADR-0016 amendment): ``val/psnr`` / ``val/ssim`` are now
+  GLOBAL under DDP (every rank decodes its ``DistributedSampler`` shard +
+  ``all_gather`` of the per-volume sums); the rank-0-shard scope + one-shot warning
+  are gone. The metric names (``val/psnr`` / ``val/ssim``) are unchanged.
+- **L1**: the FID "running only on rank 0" DDP warning is hoisted below the
+  ``is_global_zero`` guard (fires rank-0 only). (PSNR no longer warns - distributed.)
 - **L3**: the RadImageNet ``feature_net`` is lazy-built inside the rank-0-gated
   FID stage path (``make_feature_network`` call_count == 1 on rank 0, == 0 on rank 1).
 
@@ -111,32 +113,33 @@ def test_l3_fidcallback_supports_feature_net_factory():
 
 def test_l1_fid_warning_below_guard():
     """The FID ``_log.warning`` is hoisted BELOW the ``is_global_zero: return``
-    guard (fires rank-0 only). Verified by source order in both callback files."""
-    from manifold.metrics import fid_callback, psnr_ssim_callback
+    guard (fires rank-0 only). FID-only: the PSNR callback no longer has a guard or
+    warning (it is distributed under DDP - ADR-0016 amendment). Verified by source
+    order in the FID callback file."""
+    from manifold.metrics import fid_callback
 
-    for mod, name in [(fid_callback, "FIDCallback"), (psnr_ssim_callback, "PairedPSNRSSIMCallback")]:
-        src = inspect.getsource(mod.__dict__[name]._gated)
-        guard_idx = src.find("if not trainer.is_global_zero")
-        warn_idx = src.find("_log.warning")
-        assert guard_idx >= 0 and warn_idx >= 0, f"{name}._gated missing guard or warning"
-        assert guard_idx < warn_idx, (
-            f"{name}: warning is BEFORE the is_global_zero guard (should be below - L1)"
-        )
-
-
-# -- M5: PSNR/SSIM scope warning is one-shot -----------------------------------
+    src = inspect.getsource(fid_callback.FIDCallback._gated)
+    guard_idx = src.find("if not trainer.is_global_zero")
+    warn_idx = src.find("_log.warning")
+    assert guard_idx >= 0 and warn_idx >= 0, "FIDCallback._gated missing guard or warning"
+    assert guard_idx < warn_idx, (
+        "FIDCallback: warning is BEFORE the is_global_zero guard (should be below - L1)"
+    )
 
 
-def test_m5_psnr_scope_warning_is_one_shot():
-    """The PSNR/SSIM scope warning uses a one-shot flag (``_scope_warned``) so it
-    prints ONCE total across validation epochs, not once per epoch. The metric
-    names (``val/psnr`` / ``val/ssim``) are unchanged (the consumer keys on them)."""
+# -- M5: PSNR is distributed (no rank-0 gate) ---------------------------------
+
+
+def test_m5_psnr_gate_is_distributed_no_rank0():
+    """The PSNR callback's ``_gated`` is cadence-only under DDP - no ``is_global_zero``
+    guard and no rank-0 scope warning (every rank decodes its ``DistributedSampler``
+    shard + ``all_gather``'s the per-volume sums, per the ADR-0016 amendment). The
+    metric names (``val/psnr`` / ``val/ssim``) are unchanged (the consumer keys on them)."""
     from manifold.metrics import psnr_ssim_callback
 
     src = inspect.getsource(psnr_ssim_callback.PairedPSNRSSIMCallback._gated)
-    assert "_scope_warned" in src, "PSNR scope warning is not one-shot (M5)"
-    # The warning names the scope.
-    assert "rank-0-shard-scoped" in src.lower(), "PSNR warning does not name the scope (M5)"
+    assert "is_global_zero" not in src, "PSNR _gated still has a rank-0 guard (should be distributed)"
+    assert "_log.warning" not in src, "PSNR _gated still has a rank-0 warning (should be distributed)"
     # Metric names unchanged (the log calls stay val/psnr / val/ssim).
     log_src = inspect.getsource(psnr_ssim_callback.PairedPSNRSSIMCallback.on_validation_epoch_end)
     assert 'log("val/psnr"' in log_src
@@ -146,8 +149,9 @@ def test_m5_psnr_scope_warning_is_one_shot():
 def test_m5_metric_names_unchanged():
     """``val/psnr`` / ``val/ssim`` / ``val/mean_reward`` metric names are unchanged
     (the ``monitor_psnr`` / GRPO monitor consumers key on them). No ``sync_dist=``
-    argument on any ``log(...)`` call in the PSNR callback (rank-0-shard-scoped -
-    ``sync_dist`` is useless)."""
+    argument on any ``log(...)`` call in the PSNR callback: the value is already
+    cross-rank-reduced by the epoch-end ``all_gather``, so ``sync_dist`` would
+    double-sync (and a plain-float ``sync_dist`` would give a mean-of-per-rank-means)."""
     import re
 
     from manifold.metrics import psnr_ssim_callback

@@ -8,6 +8,20 @@ status: proposed
 > DDP-correctness audit; the implementation is **not yet landed** (planned PR #1).
 > The "Consequences" below describe the *target* state, not today's code.
 
+> **Amendment (2026-07-10): distributed PSNR.** The PSNR/SSIM callback is no
+> longer rank-0-only: every rank decodes its own `DistributedSampler` shard of
+> the val set and `all_gather`'s the per-volume `(psnr_sum, ssim_sum, count)`, so
+> `val/psnr` / `val/ssim` are the **global** mean over the full val set under DDP,
+> and the paired `ModelCheckpoint(monitor="val/psnr")` stays on under multi-GPU.
+> PSNR's aggregation is a cheap `(sum, count)` reduce (like `val/x0_mae`), NOT
+> the "large-effort cross-rank generation + feature-gather" this ADR rejected -
+> the two were conflated in the original decision. The premise "the runs are
+> short enough to tolerate the stall" is also revisited: an 8-DCU paired-JiT run
+> showed 89% validation idle (rank 0 decoding its shard while 7 ranks block at
+> the epoch-end metric barrier). **FID stays rank-0-only** - its Frechet
+> distance needs a feature-matrix gather (not a `(sum, count)` reduction), so the
+> "large effort" argument still holds for FID.
+
 FID / PSNR / SSIM generation is rank-0-only (the ADR-0006 consequence). A DDP
 audit found two real defects in *how* that policy is reached today:
 
@@ -72,11 +86,13 @@ decided offline via export.
 
 ## Consequences (target, once PR #1 lands)
 
-- Under multi-GPU the `ModelCheckpoint` monitor is dropped (no `val/fid`/`val/psnr`
-  selection); rely on `save_last` + `every_n_epochs` + offline export. This is
+- Under multi-GPU the JiT **FID** `ModelCheckpoint` monitor is dropped (`val/fid` is
+  rank-0-only); rely on `save_last` + `every_n_epochs` + offline export. The paired
+  `val/psnr` monitor stays on (distributed - see the amendment). This is
   ADR-0006's stated consequence, **actually enforced** once the JiT/Paired guard
   matches `build_trainer` (today the `auto` path still lets the monitor linger).
 - Logged `val/mean_reward`, `train/loss_epoch`, `val/x0_mae` become global means
-  under DDP; `val/psnr`/`val/ssim` are labelled rank-0-shard-scoped (a global
-  PSNR would require distributed generation — out of scope here).
+  under DDP; `val/psnr`/`val/ssim` are now **global** means too (distributed decode
+  + `all_gather` of per-volume sums, per the amendment). Only `val/fid` remains
+  rank-0-shard-scoped (Frechet aggregation needs a feature gather).
 - GRPO `validation_step` generation runs rank-0-only (today it runs on every rank).
