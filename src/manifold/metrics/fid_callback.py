@@ -168,8 +168,16 @@ class FIDCallback(pl.Callback):
             # L3: lazy feature_net build on the rank-0-gated stage path (the only
             # place it is used). A factory defers the ~100 MB ``torch.hub`` load so
             # non-root ranks never touch it; a direct ``feature_net`` is honored as-is.
+            # The factory is fail-safe (codex #85 P2): a bad/corrupt cache or a
+            # no-network host makes it return None -> FID is skipped gracefully
+            # (on_validation_epoch_end logs a sentinel so the checkpoint monitor does
+            # not crash on a never-logged metric) instead of aborting training mid-fit.
             if self.feature_net is None and self.feature_net_factory is not None:
                 self.feature_net = self.feature_net_factory()
+            if self.feature_net is None:
+                self._fid_disabled = True
+                return
+            self._fid_disabled = False
             if self.feature_net is not None:
                 self.feature_net.to(self._device())
                 # eval so BatchNorm uses fixed running stats (RadImageNet ResNet50
@@ -274,6 +282,22 @@ class FIDCallback(pl.Callback):
             return
         self._stage_eval_on_device()
         try:
+            # codex #85 P2: the lazy feature_net factory is fail-safe; if it returned
+            # None (bad/corrupt cache, no network), FID is unavailable. Log the
+            # monitored metrics as +inf ONCE so ModelCheckpoint(monitor='val/fid_*',
+            # mode='min') does not crash on a never-logged metric (inf is never the
+            # best, so selection falls through to save_last) instead of aborting the
+            # run mid-fit. The online torch.hub fallback stays reachable on hosts
+            # with network (no launch-time pre-disable on a missing cache).
+            if getattr(self, "_fid_disabled", False):
+                keys = (
+                    ["val/fid"]
+                    if self.ema_callback is None
+                    else (["val/fid_avg"] + (["val/fid_raw"] if self.log_raw_fid else []))
+                )
+                for key in keys:
+                    module.log(key, float("inf"))
+                return
             if self._real_planes is None:
                 self._real_planes = self._real_features()
             if self.ema_callback is None:

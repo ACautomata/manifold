@@ -11,14 +11,13 @@
   PSNR/SSIM callback (issue #68; deterministic given ``x_src`` — no re-seed).
 """
 
-from .fid import feature_network_available, frechet_distance_unbiased, get_features_2p5d, make_feature_network
+from .fid import frechet_distance_unbiased, get_features_2p5d, make_feature_network
 from .fid_callback import FIDCallback
 from .psnr_ssim_callback import PairedPSNRSSIMCallback
 
 __all__ = [
     "FIDCallback",
     "PairedPSNRSSIMCallback",
-    "feature_network_available",
     "frechet_distance_unbiased",
     "get_features_2p5d",
     "make_feature_network",

@@ -367,24 +367,18 @@ def main(argv: list[str] | None = None, *, data_provider=None) -> int:
     if not args.no_fid:
         from ..metrics import make_feature_network
 
-        # L3: build the backbone LAZILY inside the rank-0-gated FID stage path
-        # (no eager make_feature_network on every rank pre-PG -> no ~100 MB
-        # torch.hub load wasted on N-1 ranks). Probe availability CHEAPLY here
-        # (cached-checkpoint check, no model instantiation - P2: building the full
-        # backbone to probe would itself defeat the lazy factory + load it twice on
-        # rank 0). When the cache is absent the factory attempts the online load at
-        # eval (rank 0) and the FID callback skips on failure.
-        from ..metrics import feature_network_available
-
-        if not feature_network_available("resnet50"):
-            _log.warning(
-                "RadImageNet backbone cache not found (%s); disabling FID at launch. "
-                "Pre-cache the checkpoint or the factory will retry online at eval.",
-                "resnet50",
-            )
-            args.no_fid = True
-        else:
-            feature_net_factory = lambda: make_feature_network("resnet50")  # noqa: E731
+        # L3 + codex #85 P2: build the backbone LAZILY (rank-0-gated FID stage
+        # path) so non-root ranks never pay the ~100 MB load, and rank 0 builds
+        # exactly once. The factory is FAIL-SAFE (try/except -> None): a bad/corrupt
+        # cache or a no-network host makes FIDCallback skip gracefully instead of
+        # aborting training mid-fit, and the online torch.hub fallback stays
+        # reachable (no launch-time pre-disable on a missing cache). No eager probe.
+        def feature_net_factory():
+            try:
+                return make_feature_network("resnet50")
+            except Exception as exc:  # pragma: no cover - torch.hub/network only on gauss/dev
+                _log.warning("RadImageNet backbone unavailable (%r); FID will be skipped.", exc)
+                return None
 
     max_epochs = int(args.max_epochs or train_cfg.n_epochs)
 

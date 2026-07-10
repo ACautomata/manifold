@@ -223,23 +223,56 @@ def test_p1_warm_fn_uses_local_rank_device_not_launch_device():
     assert callable(resolve_warm_device)
 
 
-# -- P2 (codex #85): availability probe does not instantiate the backbone -------
+
+# -- P2 (codex #85 re-review): fail-safe lazy factory + graceful skip ----------
 
 
-def test_p2_feature_network_available_does_not_instantiate(monkeypatch):
-    """``feature_network_available`` is a cheap cached-checkpoint check - it must NOT
-    instantiate the ~100 MB RadImageNet backbone (P2: the old probe built it once per
-    rank pre-PG, defeating the lazy factory + loading it twice on rank 0)."""
-    import manifold.metrics.fid as fid_mod
+def test_p2_feature_net_factory_failure_skips_fid_and_logs_sentinel(tmp_path):
+    """A fail-safe feature_net factory (bad cache / no network -> None) makes
+    FIDCallback SKIP FID and log the monitored metrics as +inf (so ModelCheckpoint
+    mode='min' does not crash on a never-logged metric) instead of aborting the run.
 
-    called = {"n": 0}
+    P2 (codex #85 re-review): the previous cache-check pre-disable either crashed
+    at eval on a bad cache or wrongly disabled FID when the online fallback could
+    work. The factory is now try/except -> None; the callback handles None.
+    """
+    import torch
 
-    def _spy(*a, **k):
-        called["n"] += 1
-        raise AssertionError("feature_network_available must not call make_feature_network")
+    from manifold import AutoencoderKL, FlowMatchHeunDiscreteScheduler, LatentFlowModule, UNet3DConditionModel
+    from manifold.metrics import FIDCallback
+    from manifold.training.ema import DoubleEMACallback
 
-    monkeypatch.setattr(fid_mod, "make_feature_network", _spy)
-    result = fid_mod.feature_network_available("resnet50")
-    assert called["n"] == 0, "probe instantiated the backbone (P2 regression)"
-    assert isinstance(result, bool)
-    assert fid_mod.feature_network_available("inception_v3") is False
+    def _failing_factory():
+        # Mimic the real fail-safe factory in main(): try make_feature_network,
+        # except -> None (FIDCallback handles None, never a raise).
+        return None
+
+    torch.manual_seed(0)
+    module = LatentFlowModule(
+        UNet3DConditionModel(num_class_embeds=4, include_spacing_input=True),
+        FlowMatchHeunDiscreteScheduler(), lr=1e-2, lr_warmup_steps=0,
+        num_train_examples=6, train_batch_size=2, n_epochs=1,
+    )
+    fid = FIDCallback(
+        module=module, vae=AutoencoderKL(scaling_factor=0.5),
+        ema_callback=DoubleEMACallback(module),
+        real_latents=torch.randn(2, 4, 4, 4, 4),
+        feature_net_factory=_failing_factory,  # returns None (raises -> caught)
+        latent_shape=(1, 4, 4, 4, 4), spacing=[1.0, 1.0, 1.0], modality=1,
+        num_inference_steps=2, num_synth=2, cov_ridge=1e-2, seed=0,
+    )
+
+    # A fake trainer with is_global_zero + a sane world-size + current_epoch.
+    class _Tr:
+        is_global_zero = True
+        current_epoch = 0
+    fid._stage_eval_on_device()
+    assert getattr(fid, "_fid_disabled", False) is True, "factory failure must set _fid_disabled"
+    assert fid.feature_net is None
+
+    # on_validation_epoch_end logs sentinels (inf) for the monitored metrics, no raise.
+    logged = {}
+    module.log = lambda key, value, **k: logged.__setitem__(key, value)  # type: ignore[assignment]
+    fid.on_validation_epoch_end(_Tr(), module)
+    assert logged.get("val/fid_avg") == float("inf")
+    assert logged.get("val/fid_raw") == float("inf")
