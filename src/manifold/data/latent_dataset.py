@@ -110,8 +110,8 @@ class LatentDataset(MedicalDataset):
         device: torch.device,
         logger: logging.Logger | None = None,
         show_progress: bool = True,
-        rank: int | None = None,
-        world: int | None = None,
+        rank: int = 0,
+        world: int = 1,
     ) -> None:
         """Materialize every **unscaled** latent into RAM (disk-cache hits skip encode).
 
@@ -121,15 +121,6 @@ class LatentDataset(MedicalDataset):
         ``i % world == rank`` shard, all ranks barrier, then every rank loads the
         full set from disk — one writer per file, identical RAM caches.
         """
-        # F3 (ADR-0017): derive rank/world from dist when the PG is initialized
-        # (fallback 0/1) so a post-PG DataModule.setup() caller need not thread them.
-        # Explicit kwargs are honored only when the PG is NOT initialized.
-        if dist.is_initialized():
-            rank = dist.get_rank()
-            world = dist.get_world_size()
-        else:
-            rank = 0 if rank is None else rank
-            world = 1 if world is None else world
         if self.cache_dir is not None:
             Path(self.cache_dir).mkdir(parents=True, exist_ok=True)
         n = len(self.source)

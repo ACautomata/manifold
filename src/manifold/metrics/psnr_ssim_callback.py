@@ -97,7 +97,6 @@ class PairedPSNRSSIMCallback(pl.Callback):
         self._psnr_sum = 0.0
         self._ssim_sum = 0.0
         self._count = 0
-        self._scope_warned = False  # M5: one-shot rank-0 scope warning
 
     # -- gate + staging (mirror FIDCallback) ---------------------------------
 
@@ -112,23 +111,13 @@ class PairedPSNRSSIMCallback(pl.Callback):
         if torch.distributed.is_available() and torch.distributed.is_initialized():
             world = torch.distributed.get_world_size()
         if world > 1:
+            _log.warning(
+                "PairedPSNRSSIMCallback: running only on rank 0 (world_size=%d). The "
+                "other ranks skip the PSNR/SSIM decode loop and must NOT block on an "
+                "NCCL collective here — single-GPU is the supported config.", world,
+            )
             if not trainer.is_global_zero:
                 return False
-            # M5 (ADR-0016): one-shot rank-0 scope warning. val/psnr / val/ssim
-            # are rank-0-shard-scoped (1/world of val) - a global PSNR would
-            # require distributed generation (out of scope). sync_dist is useless
-            # for them (non-root ranks no-op). Emit ONCE total (not once per
-            # epoch) so a per-epoch regression is caught by the test gate.
-            if not self._scope_warned:
-                self._scope_warned = True
-                _log.warning(
-                    "PairedPSNRSSIMCallback: running only on rank 0 (world_size=%d). "
-                    "val/psnr and val/ssim are rank-0-shard-scoped (1/%d of val), NOT "
-                    "global - a global PSNR/SSIM would require distributed generation "
-                    "(out of scope). The other ranks skip the PSNR/SSIM decode loop "
-                    "and must NOT block on an NCCL collective here - single-GPU is "
-                    "the supported config.", world, world,
-                )
         epoch = trainer.current_epoch
         if self.every_n_epochs <= 1 or (epoch % self.every_n_epochs == 0):
             return True

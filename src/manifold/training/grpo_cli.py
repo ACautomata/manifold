@@ -37,7 +37,7 @@ from ..data.datamodule import build_datamodule
 from ..metrics import FIDCallback
 from ..modules.grpo import GRPOModule
 from ..schedulers.scheduling_flow_match_grpo import FlowMatchGRPOScheduler
-from .trainer import build_trainer, is_multi_gpu
+from .trainer import build_trainer
 
 _log = logging.getLogger(__name__)
 
@@ -70,7 +70,6 @@ class GRPOInputs:
     vae: Any = None
     real_latents: Any = None
     feature_net: Any = None
-    feature_net_factory: Any = None  # L3: lazy build on the rank-0-gated FID stage
     fid_modality: int = 1
     fid_spacing: Sequence[float] = (1.0, 1.0, 1.0)
 
@@ -156,15 +155,14 @@ def run_grpo_training(
         ckpt_path: optional warm-start / resume checkpoint passed to ``fit``.
     """
     pl.seed_everything(seed, workers=True)
-    # Mirror build_trainer's DDP detection via the shared accessor: ``devices="auto"``
-    # on a multi-GPU host also selects DDP, so the rank-local FID monitor must be
-    # dropped there too (else the checkpoint would monitor a rank-0-only metric
-    # under DDP). ``is_multi_gpu`` reuses the ``is_available()``-guarded device count.
-    multi_gpu = is_multi_gpu(devices)
+    # Mirror build_trainer's DDP detection: ``devices="auto"`` on a multi-GPU host
+    # also selects DDP, so the rank-local FID monitor must be dropped there too
+    # (else the checkpoint would monitor a rank-0-only metric under DDP).
+    multi_gpu = (isinstance(devices, int) and devices > 1) or (
+        devices == "auto" and torch.cuda.device_count() > 1
+    )
     fid_active = (
-        inputs.vae is not None
-        and inputs.real_latents is not None
-        and (inputs.feature_net is not None or inputs.feature_net_factory is not None)
+        inputs.vae is not None and inputs.real_latents is not None and inputs.feature_net is not None
     )
     if monitor_metric is None:
         monitor_metric = "val/fid" if fid_active else "val/mean_reward"
@@ -184,7 +182,6 @@ def run_grpo_training(
                 ema_callback=None,  # GRPO has no double-EMA (#59)
                 real_latents=inputs.real_latents,
                 feature_net=inputs.feature_net,
-                feature_net_factory=inputs.feature_net_factory,
                 latent_shape=(1, *module.latent_shape),
                 spacing=inputs.fid_spacing,
                 modality=int(inputs.fid_modality),

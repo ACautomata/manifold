@@ -72,9 +72,10 @@ def build_trainer(
 
     # DDP with find_unused_parameters: the class-embedding row may receive no
     # gradient when labels are dropped, which strict DDP rejects. Single-device
-    # runs use the default strategy. ``is_multi_gpu`` is the shared predicate -
-    # the CLIs' checkpoint monitor guard calls it too so monitor/strategy agree.
-    if is_multi_gpu(devices):
+    # runs use the default strategy.
+    if (isinstance(devices, int) and devices > 1) or (
+        devices == "auto" and __cuda_device_count() > 1
+    ):
         strategy = pl.strategies.DDPStrategy(find_unused_parameters=True)
     else:
         strategy = "auto"
@@ -110,19 +111,3 @@ def __cuda_device_count() -> int:
     import torch
 
     return torch.cuda.device_count() if torch.cuda.is_available() else 0
-
-
-def is_multi_gpu(devices: int | str) -> bool:
-    """Whether a ``devices`` selection will spawn DDP (the shared monitor guard).
-
-    Mirrors :func:`build_trainer`'s strategy decision exactly, so the checkpoint
-    monitor guard and the trainer agree on whether DDP is in effect: an explicit
-    ``int > 1`` OR ``"auto"`` on a host with ``> 1`` visible CUDA devices. The
-    ``"auto"`` branch reuses the ``is_available()``-guarded
-    :func:`__cuda_device_count` (a bare ``device_count()`` would diverge under
-    ``CUDA_VISIBLE_DEVICES`` / on a CUDA-less host). Single-GPU (``1`` or
-    ``"auto"`` on a 1-GPU box) returns ``False`` -> selection stays on.
-    """
-    return (isinstance(devices, int) and devices > 1) or (
-        devices == "auto" and __cuda_device_count() > 1
-    )

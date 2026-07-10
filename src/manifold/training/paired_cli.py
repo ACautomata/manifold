@@ -39,7 +39,7 @@ from ..modules.paired_latent_flow import PairedLatentFlowModule
 from ..pipelines.paired_latent_flow import PairedLatentFlowPipeline
 from .ema import DoubleEMACallback
 from .metrics import LatentX0MAE, TrainLossLogger
-from .trainer import build_trainer, is_multi_gpu
+from .trainer import build_trainer
 
 _log = logging.getLogger(__name__)
 
@@ -55,10 +55,9 @@ class _DataBundle:
     (``None`` → ``run_paired_training`` falls back to val=train, the legacy path).
     """
 
-    latent_ds: Any = None
-    vae: Any = None
+    latent_ds: Any
+    vae: Any
     val_latent_ds: Any = None
-    warm_fn: Any = None
 
 
 def _build_checkpoint(
@@ -143,7 +142,7 @@ def run_paired_training(
     )
     callbacks: list = [TrainLossLogger(), LatentX0MAE(), ema, psnr]
 
-    multi_gpu = is_multi_gpu(devices)
+    multi_gpu = isinstance(devices, int) and devices > 1
     ckpt = _build_checkpoint(
         model_dir,
         monitor_psnr=not multi_gpu,
@@ -153,18 +152,11 @@ def run_paired_training(
     )
     callbacks.append(ckpt)
 
-    # F2/F4 (ADR-0017): the paired warm runs in DataModule.setup() (post-PG,
-    # per-rank sharded) when bundle.warm_fn is set; the warmed test path makes
-    # setup() a no-op.
-    from ..data.warm_datamodule import PairedWarmDataModule
-
-    datamodule = PairedWarmDataModule(
-        latent_ds=bundle.latent_ds,
-        vae=bundle.vae,
+    datamodule = build_datamodule(
+        bundle.latent_ds,
         batch_size=batch_size,
         num_workers=num_workers,
-        val_latent_ds=bundle.val_latent_ds,
-        warm_fn=bundle.warm_fn,
+        val_dataset=bundle.val_latent_ds,
     )
     trainer = build_trainer(
         max_epochs=max_epochs,
@@ -227,16 +219,10 @@ def main(argv: list[str] | None = None, *, data_provider=None) -> int:
     pl.seed_everything(seed, workers=True)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    if data_provider is not None:
-        # Test smoke: the provider returns a WARMED bundle (latent_ds already set).
-        bundle = data_provider(cfg, device)
-        num_examples = len(bundle.latent_ds) if bundle.latent_ds is not None else 0
-    else:
-        # Production cold path (ADR-0017): warm deferred to DataModule.setup();
-        # num_examples = len(vol_ds) (pre-warm).
-        bundle, num_examples = _warm_data(cfg, device)
+    bundle = data_provider(cfg, device) if data_provider is not None else _warm_data(cfg, device)
 
     train_cfg = cfg.diffusion_unet_train
+    num_examples = len(bundle.latent_ds)
     module = PairedLatentFlowModule(
         build_unet(cfg),
         build_scheduler(cfg),
@@ -261,7 +247,7 @@ def main(argv: list[str] | None = None, *, data_provider=None) -> int:
         bundle=bundle,
         model_dir=str(cfg.model_dir),
         max_epochs=max_epochs,
-        devices=args.num_gpus if args.num_gpus > 1 else 1,
+        devices=args.num_gpus if args.num_gpus > 1 else "auto",
         batch_size=int(train_cfg.batch_size),
         seed=seed,
         ckpt_path=args.resume,
@@ -322,7 +308,7 @@ def _train_val_manifests(cfg, manifest):
     return split_brats_pair_manifest(manifest, val_fraction)
 
 
-def _warm_data(cfg, device) -> tuple[_DataBundle, int]:
+def _warm_data(cfg, device) -> _DataBundle:
     """Warm the real paired latent cache + held VAE (the production data path).
 
     Resolves the train/val split via :func:`_train_val_manifests`: either the
@@ -332,7 +318,7 @@ def _warm_data(cfg, device) -> tuple[_DataBundle, int]:
     volumes the model never trains on.
     """
     from ..config import autoencoder_divisor
-    from ..data.latent_pipeline import build_encode_pipeline, make_encode_fn, resolve_warm_device
+    from ..data.latent_pipeline import build_encode_pipeline
     from ..data.paired_brats import build_brats_pair_manifest
     from ..data.paired_latent_dataset import (
         PairedLatentDataset,
@@ -366,43 +352,31 @@ def _warm_data(cfg, device) -> tuple[_DataBundle, int]:
         f"pairs ({split_note}; {len(vol_ds.unique_sample_ids())} train unique volumes)."
     )
 
-    # Build the VAE on CPU pre-PG (P1/ADR-0017): the launch-time ``device`` is the
-    # default cuda:0 before LOCAL_RANK is known, so loading on it under DDP would
-    # place every rank's encoder on GPU 0. The warm re-stages it onto the per-rank
-    # local GPU inside setup(); PSNR's decode stages it to the UNet device at eval.
-    # The CPU encode_fn built here is unused on the cold path (rebuilt in warm_fn).
-    autoencoder, _cpu_encode_fn = build_encode_pipeline(cfg, device=torch.device("cpu"), logger=logger)
+    autoencoder, encode_fn = build_encode_pipeline(cfg, device=device, logger=logger)
     cache_dir = str(opt(cfg, "latent_cache_dir", os.path.join(str(cfg.model_dir), "paired_latent_cache")))
-    val_subset_size = int(opt(cfg, "val_subset_size", 64))
+    latent_ds = PairedLatentDataset(vol_ds, encode_fn=encode_fn, cache_dir=cache_dir, cache_tag="paired_train")
+    latent_ds.warm_cache(device, logger=logger, show_progress=True)
+    # The held-out val latent dataset. Disjoint subjects → disjoint volumes, so it
+    # shares ``cache_dir`` with zero duplicate encoding (each val volume is a cache
+    # miss encoded exactly once). ``None`` when ``val_fraction <= 0`` (val=train).
+    val_latent_ds: PairedLatentDataset | None = None
+    if val_manifest:
+        val_vol_ds = PairedNiftiVolumeDataset(val_manifest, target_dim=target_dim, divisor=divisor)
+        val_latent_ds = PairedLatentDataset(
+            val_vol_ds, encode_fn=encode_fn, cache_dir=cache_dir, cache_tag="paired_train"
+        )
+        val_latent_ds.warm_cache(device, logger=logger, show_progress=True)
+        val_latent_ds.free_encoder()
+    latent_ds.free_encoder()
 
-    def warm_fn():
-        # F2/F3 (ADR-0017): both warm calls run here (post-PG, inside setup()) so
-        # PairedLatentDataset.warm_cache derives rank/world from dist -> the
-        # sharded branch activates (one writer per unique-volume cache file).
-        # P1: warm on the per-rank local CUDA device (resolve_warm_device), rebuild
-        # the encode_fn bound to it so the sliding-window predictor runs on the
-        # right GPU (the launch-time ``device`` is cuda:0 before LOCAL_RANK).
-        nonlocal autoencoder
-        warm_device = resolve_warm_device(device)
-        autoencoder.to(warm_device)
-        encode_fn = make_encode_fn(autoencoder, warm_device, cfg)
-        latent_ds = PairedLatentDataset(vol_ds, encode_fn=encode_fn, cache_dir=cache_dir, cache_tag="paired_train")
-        latent_ds.warm_cache(warm_device, logger=logger, show_progress=True)
-        val_latent_ds = None
-        if val_manifest:
-            val_vol_ds = PairedNiftiVolumeDataset(val_manifest, target_dim=target_dim, divisor=divisor)
-            val_latent_ds = PairedLatentDataset(
-                val_vol_ds, encode_fn=encode_fn, cache_dir=cache_dir, cache_tag="paired_train"
-            )
-            val_latent_ds.warm_cache(warm_device, logger=logger, show_progress=True)
-            val_latent_ds.free_encoder()
-        latent_ds.free_encoder()
-        autoencoder.cpu()
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-        estimate_paired_scale_factor(latent_ds, autoencoder, sample_size=val_subset_size, logger=logger)
-        if val_latent_ds is not None:
-            val_latent_ds.scaling_factor = latent_ds.scaling_factor
-        return latent_ds, val_latent_ds, autoencoder
-
-    return _DataBundle(vae=autoencoder, warm_fn=warm_fn), len(vol_ds)
+    autoencoder.cpu()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+    # Estimate the scale over TRAIN unique latents only (no val leakage); propagate
+    # the same scale-on-read multiplier to the val dataset so its decode is consistent.
+    estimate_paired_scale_factor(
+        latent_ds, autoencoder, sample_size=int(opt(cfg, "val_subset_size", 64)), logger=logger
+    )
+    if val_latent_ds is not None:
+        val_latent_ds.scaling_factor = latent_ds.scaling_factor
+    return _DataBundle(latent_ds=latent_ds, vae=autoencoder, val_latent_ds=val_latent_ds)
