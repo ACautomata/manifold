@@ -19,6 +19,7 @@ The x0-denoiser forward: ``t = 1 → data`` matches the scheduler and the sample
 
 from __future__ import annotations
 
+import logging
 import math
 from typing import Any, Iterable
 
@@ -30,6 +31,8 @@ from torch import Tensor
 from ..models.unet_3d_condition import UNet3DConditionModel
 from ..schedulers.scheduling_flow_match_heun import FlowMatchHeunDiscreteScheduler
 from .sampler import sample_latent_flow
+
+_log = logging.getLogger(__name__)
 
 #: A training batch: a scaled latent + medical conditioning. The data stack
 #: (deferred) produces these; this module only consumes them.
@@ -61,6 +64,60 @@ def cosine_with_warmup(
     return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
 
 
+def scaled_peak_lr(
+    base_lr: float,
+    train_batch_size: int,
+    *,
+    ref_batch_size: int = 8,
+    rule: str = "sqrt",
+    world_size: int = 1,
+) -> float:
+    """Peak Adam LR scaled from ``base_lr`` by the effective batch size.
+
+    ``base_lr`` is the peak LR validated at the **reference** effective batch
+    (``ref_batch_size``); the actual peak is derived from the run's effective
+    batch ``train_batch_size * world_size`` so the config never hard-codes a
+    GPU-count-specific LR. With ``rule="sqrt"`` (Adam-friendly default)
+    ``peak = base_lr * sqrt(eff / ref)``; ``"linear"`` uses the Goyal large-batch
+    rule ``base_lr * (eff / ref)``; ``"none"`` disables scaling (``base_lr``
+    verbatim). ``eff == ref`` yields a ``1.0`` factor under any rule, so the
+    reference recipe is numerically unchanged.
+    """
+    eff = max(1, int(train_batch_size) * max(1, int(world_size)))
+    ref = max(1, int(ref_batch_size))
+    if rule == "sqrt":
+        factor = math.sqrt(eff / ref)
+    elif rule == "linear":
+        factor = eff / ref
+    elif rule == "none":
+        factor = 1.0
+    else:
+        raise ValueError(f"lr_scale_rule must be 'sqrt' | 'linear' | 'none', got {rule!r}")
+    return float(base_lr) * factor
+
+
+def resolve_warmup_steps(
+    lr_warmup_steps: int, lr_warmup_ratio: float | None, total_steps: int
+) -> int:
+    """Resolve the cosine warmup length, in optimizer steps.
+
+    ``lr_warmup_ratio`` (a fraction of the total optimizer-step horizon) takes
+    precedence when set — so warmup auto-tracks the schedule length when the
+    batch/GPU count moves the horizon. When it is ``None`` (default), the
+    absolute ``lr_warmup_steps`` is used unchanged (the historical behavior).
+    A ratio outside ``[0.0, 1.0]`` is rejected (a ``>1`` ratio would make
+    warmup exceed the horizon and the peak LR would never be reached).
+    """
+    if lr_warmup_ratio is not None:
+        ratio = float(lr_warmup_ratio)
+        if not 0.0 <= ratio <= 1.0:
+            raise ValueError(
+                f"lr_warmup_ratio must be in [0.0, 1.0] (a fraction of total steps), got {ratio}."
+            )
+        return max(0, int(round(ratio * max(1, int(total_steps)))))
+    return int(lr_warmup_steps)
+
+
 class LatentFlowModule(spt.Module):
     """JiT x0-denoiser training module (``spt.Module``).
 
@@ -74,8 +131,17 @@ class LatentFlowModule(spt.Module):
         t_eps: floor on ``1 − t`` in the loss denominator (matches the sampler's
             endpoint clamp), avoiding the singularity as ``t → 1``.
         include_modality: whether the UNet takes a class-label condition.
-        lr: Adam learning rate (JiT recipe default ``1e-4``).
-        lr_warmup_steps: cosine-schedule warmup, in optimizer steps.
+        lr: base Adam learning rate — the peak LR at ``lr_ref_batch_size``
+            (effective batch). The actual peak auto-scales with the effective
+            batch (see :func:`scaled_peak_lr`); JiT recipe default ``1e-4``.
+        lr_warmup_steps: cosine-schedule warmup, in optimizer steps (used only
+            when ``lr_warmup_ratio`` is ``None``).
+        lr_ref_batch_size: the effective batch size at which ``lr`` is the peak
+            (the scaling reference; default ``8`` = the single-GPU recipe).
+        lr_scale_rule: how the peak scales with the effective batch —
+            ``"sqrt"`` (default, Adam-friendly), ``"linear"``, or ``"none"``.
+        lr_warmup_ratio: optional warmup as a fraction of total optimizer
+            steps; when set it overrides ``lr_warmup_steps``.
         num_train_examples: ``len(train latent dataset)`` — together with
             ``train_batch_size`` / ``n_epochs`` it fixes the cosine horizon
             (``None`` → a 1-step horizon, used by unit tests without a real
@@ -95,6 +161,9 @@ class LatentFlowModule(spt.Module):
         include_modality: bool = True,
         lr: float = 1.0e-4,
         lr_warmup_steps: int = 1000,
+        lr_ref_batch_size: int = 8,
+        lr_scale_rule: str = "sqrt",
+        lr_warmup_ratio: float | None = None,
         num_train_examples: int | None = None,
         train_batch_size: int | None = None,
         n_epochs: int = 1,
@@ -108,6 +177,9 @@ class LatentFlowModule(spt.Module):
                 "t_eps": t_eps,
                 "lr": lr,
                 "lr_warmup_steps": lr_warmup_steps,
+                "lr_ref_batch_size": lr_ref_batch_size,
+                "lr_scale_rule": lr_scale_rule,
+                "lr_warmup_ratio": lr_warmup_ratio,
             }
         )
         self.unet = unet
@@ -118,6 +190,13 @@ class LatentFlowModule(spt.Module):
         self.include_modality = bool(include_modality)
         self.lr = float(lr)
         self.lr_warmup_steps = int(lr_warmup_steps)
+        self.lr_ref_batch_size = int(lr_ref_batch_size)
+        if lr_scale_rule not in ("sqrt", "linear", "none"):
+            raise ValueError(
+                f"lr_scale_rule must be 'sqrt' | 'linear' | 'none', got {lr_scale_rule!r}."
+            )
+        self.lr_scale_rule = str(lr_scale_rule)
+        self.lr_warmup_ratio = None if lr_warmup_ratio is None else float(lr_warmup_ratio)
         self.num_train_examples = (
             None if num_train_examples is None else int(num_train_examples)
         )
@@ -222,12 +301,37 @@ class LatentFlowModule(spt.Module):
         """Adam over every UNet param + a step-interval cosine-with-warmup.
 
         Full fine-tune (no LoRA, no frozen subsets); the schedule horizon is in
-        optimizer steps (see :meth:`_total_optimizer_steps`).
+        optimizer steps (see :meth:`_total_optimizer_steps`). The Adam peak LR
+        is auto-scaled from ``self.lr`` (the base) by the effective batch
+        (:func:`scaled_peak_lr`), so the config's ``lr`` is the peak at
+        ``lr_ref_batch_size`` regardless of GPU count.
         """
-        optimizer = torch.optim.Adam(self.unet.parameters(), lr=self.lr)
-        scheduler = cosine_with_warmup(
-            optimizer, self.lr_warmup_steps, self._total_optimizer_steps()
+        world = torch.distributed.get_world_size() if torch.distributed.is_initialized() else 1
+        if self.train_batch_size:
+            peak_lr = scaled_peak_lr(
+                self.lr,
+                self.train_batch_size,
+                ref_batch_size=self.lr_ref_batch_size,
+                rule=self.lr_scale_rule,
+                world_size=world,
+            )
+            eff_desc = f"{self.train_batch_size}/proc×{world} world = {self.train_batch_size * world}"
+        else:
+            # No per-device batch (unit-test smokes only) → the effective batch is
+            # unknown, so do NOT scale: peak == base. world is intentionally not
+            # applied here — using it would spuriously scale by sqrt(world)/world
+            # under DDP despite having no batch information.
+            peak_lr = self.lr
+            eff_desc = "unknown (train_batch_size=None) → no scaling, peak = base"
+        total = self._total_optimizer_steps()
+        warmup = resolve_warmup_steps(self.lr_warmup_steps, self.lr_warmup_ratio, total)
+        _log.info(
+            "LR schedule: base=%.3e -> peak=%.3e (eff_batch: %s; rule=%s; "
+            "warmup=%d/%d optimizer steps)",
+            self.lr, peak_lr, eff_desc, self.lr_scale_rule, warmup, total,
         )
+        optimizer = torch.optim.Adam(self.unet.parameters(), lr=peak_lr)
+        scheduler = cosine_with_warmup(optimizer, warmup, total)
         return {
             "optimizer": optimizer,
             "lr_scheduler": {"scheduler": scheduler, "interval": "step", "frequency": 1},
