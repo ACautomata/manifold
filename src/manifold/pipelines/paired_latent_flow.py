@@ -129,9 +129,14 @@ class PairedLatentFlowPipeline(DiffusionPipeline):
         tgt_label: int,
         num_inference_steps: int,
     ) -> Tensor:
-        """Translate a src latent into a decoded target volume ``[B, C, D, H, W]``.
+        """Translate a src latent into a normalized decoded target volume ``[B, C, D, H, W]``.
 
-        Equivalent to ``self.vae.decode(self.sample_latent(...))``. Deterministic
+        The start-from-src Heun rollout, then a float32 VAE decode with
+        ``norm_float16`` disabled (mirrors ``FIDCallback._eval_decode``: more
+        correct than the autocast half-precision path used before), then a
+        per-volume min-max normalization to ``[0, 1]`` (the FID feature-arm
+        preprocessing, so the published inference output is a normalized image).
+        Deterministic
         given ``src_latent`` (the rollout has no stochastic input — ADR-0013).
 
         Args:
@@ -144,20 +149,57 @@ class PairedLatentFlowPipeline(DiffusionPipeline):
             num_inference_steps: number of Heun integration steps over ``t: 0 → 1``.
 
         Returns:
-            The decoded target volume ``[B, C_image, D·, H·, W·]`` with a finite range.
+            The decoded target volume ``[B, C_image, D, H, W]`` normalized to
+            ``[0, 1]`` per volume.
         """
         latent = self.sample_latent(
             src_latent, spacing, src_label, tgt_label, num_inference_steps
         )
         self.vae.eval()
-        # Decode under cuda autocast: the migrated VAE carries ``norm_float16``
-        # (half-precision norms), so a float32 decode path hits a Half/float
-        # dtype mismatch. Disabled off-cuda (mirrors LatentFlowPipeline).
-        with (
-            torch.inference_mode(),
-            torch.autocast(device_type=latent.device.type, enabled=latent.device.type == "cuda"),
-        ):
-            return self.vae.decode(latent)
+        with torch.inference_mode():
+            vol = self._decode_f32(latent)
+            return self._minmax_to_unit(vol)
+
+    # -- decode + post-process (mirror FID eval) ----------------------------
+
+    def _decode_f32(self, latents: Tensor) -> Tensor:
+        """Float32 VAE decode with ``norm_float16`` disabled (mirrors FID eval).
+
+        Mirrors ``FIDCallback._eval_decode`` (and ``PairedPSNRSSIMCallback``):
+        the migrated VAE's MaisiGroupNorm3D carries ``norm_float16`` (casts its
+        output to half unconditionally), so a downstream float32 conv raises a
+        Half/float bias-type mismatch unless an outer autocast reconciles it.
+        Disabling ``norm_float16`` once (idempotent) lets the whole decode run in
+        float32 - both robust and more correct than half precision. The latent is
+        moved to the VAE's device; the VAE undoes ``scaling_factor`` internally
+        (ADR-0003).
+        """
+        if not getattr(self, "_norm16_disabled", False):
+            for m in self.vae.modules():
+                if hasattr(m, "norm_float16"):
+                    m.norm_float16 = False
+            self._norm16_disabled = True
+        vae_device = next(self.vae.parameters()).device
+        return self.vae.decode(latents.float().to(vae_device))
+
+    @staticmethod
+    def _minmax_to_unit(vol: Tensor) -> Tensor:
+        """Per-volume min-max normalization to ``[0, 1]`` (FID feature-arm step).
+
+        Mirrors the per-volume min-max in FID's RadImageNet preprocessing
+        (``_RadImageNetFeatures.forward``: one global min/max over the whole
+        volume), so the published inference output is a normalized image regardless
+        of the raw VAE decode range. Per-sample (each volume in the batch is
+        normalized by its own ``[min, max]``); a degenerate zero-range volume maps
+        to zeros.
+        """
+        b = vol.shape[0]
+        flat = vol.reshape(b, -1)  # [B, C*D*H*W]
+        mn = flat.amin(dim=1).view(b, 1, 1, 1, 1)
+        mx = flat.amax(dim=1).view(b, 1, 1, 1, 1)
+        rng = mx - mn
+        rng = torch.where(rng > 0, rng, torch.ones_like(rng))  # avoid div-by-zero
+        return (vol - mn) / rng
 
 
 # -- model_index helper -----------------------------------------------------

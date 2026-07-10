@@ -115,19 +115,21 @@ def test_run_paired_training_smoke(tmp_path):
 
 def test_run_paired_training_wires_held_out_val_dataset(tmp_path, monkeypatch):
     """When the bundle carries a ``val_latent_ds``, it is wired as the held-out val
-    (NOT the train-as-val fallback). Spies on ``build_datamodule`` to capture the
-    ``val_dataset`` kwarg."""
+    (NOT the train-as-val fallback). Spies on the ``PairedWarmDataModule`` kwargs
+    (F2/F4: the warm moved into ``setup()``, so the val_dataset is plumbed via the
+    DataModule, not ``build_datamodule``)."""
+    from manifold.data import warm_datamodule
     from manifold.training import paired_cli
 
     captured: dict = {}
-    real_build = paired_cli.build_datamodule
+    real_cls = warm_datamodule.PairedWarmDataModule
 
-    def spy(train_dataset, batch_size, val_dataset=None, **kw):
-        captured["train"] = train_dataset
-        captured["val"] = val_dataset
-        return real_build(train_dataset, batch_size=batch_size, val_dataset=val_dataset, **kw)
+    def spy(**kw):
+        captured["train"] = kw.get("latent_ds")
+        captured["val"] = kw.get("val_latent_ds")
+        return real_cls(**kw)
 
-    monkeypatch.setattr(paired_cli, "build_datamodule", spy)
+    monkeypatch.setattr(warm_datamodule, "PairedWarmDataModule", spy)
 
     unet = _trainable_paired_unet()
     module = PairedLatentFlowModule(
@@ -157,7 +159,49 @@ def test_run_paired_training_wires_held_out_val_dataset(tmp_path, monkeypatch):
         every_n_epochs=1,
     )
     assert captured["train"] is train_ds
-    assert captured["val"] is val_ds, "held-out val_latent_ds must be wired through to build_datamodule"
+    assert captured["val"] is val_ds, "held-out val_latent_ds must be wired to the DataModule"
+
+
+# -- console-entry config helper (mirrors test_training_cli._write_tiny_configs) --
+
+
+def _write_paired_configs(tmp_path):
+    """Write the tiny env/train/network YAMLs the paired ``main`` consumes.
+
+    Factored out so the DDP-detection tests (and any future test driving the
+    full ``main`` path) share one pinned config. Returns ``(env, train, net)``.
+    """
+    model_dir = tmp_path / "model"
+    env_yaml = tmp_path / "env.yaml"
+    env_yaml.write_text(
+        "data_base_dir: /tmp/_unused_\n"
+        f"model_dir: {model_dir}\n"
+        "model_filename: paired_jit.pt\n"
+        "trained_autoencoder_path: /tmp/_unused_vae_\n"
+        "val_subset_size: 4\n"
+        "random_seed: 0\n"
+        "num_gpus: 1\n"
+    )
+    # Network config: the paired UNet doubles in_channels (2*C_latent = 8).
+    net_yaml = tmp_path / "net.yaml"
+    net_yaml.write_text(
+        "spatial_dims: 3\nlatent_channels: 4\n"
+        "diffusion_unet:\n"
+        "  spatial_dims: 3\n  in_channels: 8\n  out_channels: 4\n"
+        "  num_channels: [8, 8]\n  num_res_blocks: 1\n  norm_num_groups: 8\n"
+        "  num_head_channels: [4, 4]\n  attention_levels: [false, false]\n"
+        "  use_flash_attention: false\n  include_spacing_input: true\n"
+        "  num_class_embeds: 4\n  num_train_timesteps: 1000\n"
+        "scheduler:\n  num_train_timesteps: 1000\n  t_eps: 0.05\n"
+    )
+    train_yaml = tmp_path / "paired.yaml"
+    train_yaml.write_text(
+        "diffusion_unet_train: {batch_size: 2, lr: 1.0e-2, n_epochs: 1, lr_warmup_steps: 0, cache_rate: 0}\n"
+        "formulation: {p_mean: -0.8, p_std: 0.8, t_eps: 0.05}\n"
+        "diffusion_unet_inference: {dim: [4, 4, 4], spacing: [1.0, 1.0, 1.0], modality: 1, num_inference_steps: 2}\n"
+        "paired_eval: {num_inference_steps: 2, every_n_epochs: 1}\n"
+    )
+    return str(env_yaml), str(train_yaml), str(net_yaml)
 
 
 def test_main_data_provider_seam_runs_end_to_end(tmp_path):

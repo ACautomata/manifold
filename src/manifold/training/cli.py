@@ -34,7 +34,7 @@ from ..metrics import FIDCallback
 from ..modules.latent_flow import LatentFlowModule
 from .ema import DoubleEMACallback
 from .metrics import LatentX0MAE, TrainLossLogger
-from .trainer import build_trainer
+from .trainer import build_trainer, is_multi_gpu
 
 _log = logging.getLogger(__name__)
 
@@ -45,11 +45,21 @@ class _DataBundle:
 
     (Injection seam for the CPU smoke test, which feeds a fake latent cache + a
     tiny VAE instead of warming BraTS through a real VAE encode.)
+
+    ADR-0017 / F4 (issue #84): the VAE-encode warm now runs in
+    ``DataModule.setup()`` (post-PG). Two modes:
+    - **warmed** (the test smoke): ``latent_ds`` + ``val_latents`` already set,
+      ``warm_fn=None`` -> ``setup()`` is a no-op (single-GPU parity preserved).
+    - **cold** (production): ``latent_ds=None`` + ``warm_fn`` set (a closure over
+      :func:`warm_latent_pipeline`) -> ``setup()`` warms post-PG and computes
+      ``val_latents``. The Module is sized from ``num_examples`` (passed separately,
+      ``= len(vol_ds)``) so it does not need ``len(latent_ds)`` pre-warm.
     """
 
-    latent_ds: Any
-    vae: Any
-    val_latents: torch.Tensor
+    latent_ds: Any = None
+    vae: Any = None
+    val_latents: torch.Tensor | None = None
+    warm_fn: Any = None
 
 
 def _dict_subset(d: dict | None, keys: tuple[str, ...]) -> dict:
@@ -107,7 +117,8 @@ def run_training(
     *,
     module: LatentFlowModule,
     bundle: _DataBundle,
-    feature_net: Any,
+    feature_net: Any = None,
+    feature_net_factory: Any = None,
     model_dir: str,
     max_epochs: int,
     devices: int | str = "auto",
@@ -126,6 +137,7 @@ def run_training(
     center_slices_ratio: float = 0.5,
     cov_ridge: float = 1e-6,
     log_raw_fid: bool = True,
+    val_subset_size: int = 32,
 ) -> tuple[pl.Trainer, ModelCheckpoint]:
     """Assemble callbacks + ``Trainer`` and ``fit`` the module (the core seam).
 
@@ -141,15 +153,31 @@ def run_training(
     ema = DoubleEMACallback(module)
     callbacks: list = [TrainLossLogger(), LatentX0MAE(), ema]
 
-    multi_gpu = isinstance(devices, int) and devices > 1
+    multi_gpu = is_multi_gpu(devices)
     if enable_fid:
+        # F5: latent_shape derives from val_latents when present (warmed path);
+        # the cold path passes it via inference_recipe["latent_shape"] (it is known
+        # from the VAE stride + vol_ds target_dim, not from the not-yet-warmed
+        # val_latents). ``_inference_recipe`` honors an explicit latent_shape kwarg.
+        # On the cold path (val_latents=None) the caller MUST pass inference_recipe
+        # with latent_shape set (main() derives it via _derive_latent_shape); a
+        # bare None here is a wiring bug - fail with a clear message, not an
+        # AttributeError on ``None.shape`` deep in _inference_recipe.
+        if inference_recipe is None and bundle.val_latents is None:
+            raise ValueError(
+                "enable_fid=True with a cold bundle (val_latents=None) requires an "
+                "inference_recipe carrying 'latent_shape' (derive it from the VAE "
+                "stride + target_dim). main() does this via _derive_latent_shape."
+            )
         inf = inference_recipe or _inference_recipe(module, cfg=None, val_latents=bundle.val_latents)
         fid = FIDCallback(
             module=module,
             vae=bundle.vae,
             ema_callback=ema,
-            real_latents=bundle.val_latents,
+            real_latents=bundle.val_latents,  # F5: None on the cold path -> lazy
+            real_latents_source=None,  # set below once the datamodule exists
             feature_net=feature_net,
+            feature_net_factory=feature_net_factory,
             latent_shape=inf["latent_shape"],
             spacing=inf["spacing"],
             modality=inf["modality"],
@@ -175,9 +203,24 @@ def run_training(
     )
     callbacks.append(ckpt)
 
-    datamodule = build_datamodule(
-        bundle.latent_ds, batch_size=batch_size, num_workers=num_workers
+    # F4/F1 (ADR-0017): the warm runs in DataModule.setup() (post-PG, per-rank
+    # sharded) when bundle.warm_fn is set (the production cold path); the warmed
+    # test path (warm_fn=None) makes setup() a no-op. The FID callback pulls
+    # real_latents LAZILY from the datamodule (F5) so the first validation epoch
+    # (post-setup) finds them populated.
+    from ..data.warm_datamodule import LatentWarmDataModule
+
+    datamodule = LatentWarmDataModule(
+        latent_ds=bundle.latent_ds,
+        vae=bundle.vae,
+        batch_size=batch_size,
+        num_workers=num_workers,
+        val_latents=bundle.val_latents,
+        warm_fn=bundle.warm_fn,
+        val_subset_size=val_subset_size,
     )
+    if enable_fid and fid.real_latents is None:
+        fid._real_latents_source = datamodule  # F5: lazy pull at first _real_features
     trainer = build_trainer(
         max_epochs=max_epochs,
         callbacks=callbacks,
@@ -190,12 +233,33 @@ def run_training(
     return trainer, ckpt
 
 
+def _derive_latent_shape(cfg) -> tuple:
+    """The single-sample latent shape ``(1, C, D, H, W)`` from the config.
+
+    F5 (ADR-0017): the FIDCallback's ``latent_shape`` must be known at construction,
+    but on the cold path ``val_latents`` is ``None`` (the warm is deferred to
+    ``setup()``). Derive it from the VAE stride (``autoencoder_divisor``) and the
+    inference ``dim`` (the volume target_dim, padded to the divisor) so it matches
+    what ``val_latents.shape[1:]`` will be post-warm.
+    """
+    from ..config import autoencoder_divisor
+
+    inf_cfg = cfg.diffusion_unet_inference
+    div = autoencoder_divisor(cfg)
+    dim = tuple(int(d) for d in inf_cfg.dim)
+    # Volumes are padded to a multiple of the divisor (issue #16); the latent is
+    # the padded-vol // divisor.
+    latent_spatial = tuple((d + div - 1) // div * div // div for d in dim)
+    c = int(cfg.latent_channels) if hasattr(cfg, "latent_channels") else 4
+    return (1, c, *latent_spatial)
+
+
 def _plain_list(value):
     """Return OmegaConf/list/tuple values as a plain Python list."""
     return list(value) if value is not None else None
 
 
-def _inference_recipe(module: LatentFlowModule, *, cfg=None, val_latents: torch.Tensor) -> dict:
+def _inference_recipe(module: LatentFlowModule, *, cfg=None, val_latents: torch.Tensor | None = None, latent_shape=None) -> dict:
     """Generation recipe for the FID callback (mirrors configured inference).
 
     ``latent_shape`` is the single-sample template of the **real** validation
@@ -213,7 +277,7 @@ def _inference_recipe(module: LatentFlowModule, *, cfg=None, val_latents: torch.
     spacing = _plain_list(opt(inf_cfg, "spacing", [1.0, 1.0, 1.0])) if inf_cfg is not None else [1.0, 1.0, 1.0]
     cfg_interval = _plain_list(opt(form_cfg, "cfg_interval", None)) if form_cfg is not None else None
     return {
-        "latent_shape": (1,) + tuple(val_latents.shape[1:]),
+        "latent_shape": latent_shape if latent_shape is not None else (1,) + tuple(val_latents.shape[1:]),
         "spacing": spacing,
         "modality": int(opt(inf_cfg, "modality", 1)) if inf_cfg is not None else 1,
         "num_inference_steps": int(opt(inf_cfg, "num_inference_steps", 4)) if inf_cfg is not None else 4,
@@ -271,12 +335,16 @@ def main(argv: list[str] | None = None, *, data_provider=None) -> int:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     if data_provider is not None:
+        # Test smoke: the provider returns a WARMED bundle (latent_ds + val_latents
+        # already set, no warm_fn); num_examples comes from the warmed dataset.
         bundle = data_provider(cfg, device)
+        num_examples = len(bundle.latent_ds) if bundle.latent_ds is not None else 0
     else:
-        bundle = _warm_data(cfg, device)
+        # Production cold path (ADR-0017): the warm is deferred to
+        # DataModule.setup() (post-PG); num_examples = len(vol_ds) (pre-warm).
+        bundle, num_examples = _warm_data(cfg, device)
 
     train_cfg = cfg.diffusion_unet_train
-    num_examples = len(bundle.latent_ds)
     module = LatentFlowModule(
         build_unet(cfg),
         build_scheduler(cfg),
@@ -295,15 +363,22 @@ def main(argv: list[str] | None = None, *, data_provider=None) -> int:
     if args.warm_start:
         _load_warm_start(module.unet, args.warm_start)
 
-    feature_net = None
+    feature_net_factory = None
     if not args.no_fid:
         from ..metrics import make_feature_network
 
-        try:
-            feature_net = make_feature_network("resnet50")
-        except Exception as exc:  # pragma: no cover — torch.hub/network only on gauss
-            _log.warning("RadImageNet backbone unavailable (%r); disabling FID.", exc)
-            args.no_fid = True
+        # L3 + codex #85 P2: build the backbone LAZILY (rank-0-gated FID stage
+        # path) so non-root ranks never pay the ~100 MB load, and rank 0 builds
+        # exactly once. The factory is FAIL-SAFE (try/except -> None): a bad/corrupt
+        # cache or a no-network host makes FIDCallback skip gracefully instead of
+        # aborting training mid-fit, and the online torch.hub fallback stays
+        # reachable (no launch-time pre-disable on a missing cache). No eager probe.
+        def feature_net_factory():
+            try:
+                return make_feature_network("resnet50")
+            except Exception as exc:  # pragma: no cover - torch.hub/network only on gauss/dev
+                _log.warning("RadImageNet backbone unavailable (%r); FID will be skipped.", exc)
+                return None
 
     max_epochs = int(args.max_epochs or train_cfg.n_epochs)
 
@@ -319,26 +394,46 @@ def main(argv: list[str] | None = None, *, data_provider=None) -> int:
     run_training(
         module=module,
         bundle=bundle,
-        feature_net=feature_net,
+        feature_net_factory=feature_net_factory,
         model_dir=str(cfg.model_dir),
         max_epochs=max_epochs,
-        devices=args.num_gpus if args.num_gpus > 1 else "auto",
+        devices=args.num_gpus if args.num_gpus > 1 else 1,
         batch_size=int(train_cfg.batch_size),
         enable_fid=not args.no_fid,
         seed=seed,
         ckpt_path=args.resume,
-        inference_recipe=_inference_recipe(module, cfg=cfg, val_latents=bundle.val_latents),
+        inference_recipe=_inference_recipe(
+            module, cfg=cfg, val_latents=bundle.val_latents,
+            latent_shape=_derive_latent_shape(cfg) if bundle.val_latents is None else None,
+        ),
         save_top_k=ckpt_save_top_k,
         limit_val_batches=int(opt(cfg, "val_subset_size", 4)),
+        val_subset_size=int(opt(cfg, "val_subset_size", 32)),
         **fid_kwargs,
     )
     print(f"[manifold-train] done; checkpoints under {cfg.model_dir}")
     return 0
 
 
-def _warm_data(cfg, device) -> _DataBundle:
-    """Warm the real latent cache + held VAE (the production data path)."""
-    from ..data.latent_pipeline import build_volume_dataset, warm_latent_pipeline
+def _warm_data(cfg, device) -> tuple[_DataBundle, int]:
+    """Build the cold-start warm bundle + the source volume count (production path).
+
+    ADR-0017 / F1+F4 (issue #84): the warm is DEFERRED to ``DataModule.setup()``
+    (post-PG) so the per-rank ``i % world == rank`` sharding activates. Returns a
+    ``_DataBundle`` carrying ``warm_fn`` (a closure over
+    :func:`warm_latent_pipeline` - the atomic ``warm_cache`` -> ``free_encoder`` ->
+    ``estimate_scale_factor`` unit) with NO pre-warmed ``latent_ds`` / ``val_latents``
+    (those are populated inside ``setup()``). ``num_examples`` is the source volume
+    count ``len(vol_ds)`` (known pre-warm) so the Module's LR horizon is set without
+    needing ``len(latent_ds)``.
+    """
+    from ..data.latent_pipeline import (
+        build_encode_pipeline,
+        build_volume_dataset,
+        make_encode_fn,
+        resolve_warm_device,
+        warm_latent_pipeline,
+    )
 
     logger = logging.getLogger("manifold.train")
     inf_cfg = cfg.diffusion_unet_inference
@@ -346,21 +441,34 @@ def _warm_data(cfg, device) -> _DataBundle:
     vol_ds, _ = build_volume_dataset(
         cfg, target_dim=target_dim, include_modality=True, default_modality=int(inf_cfg.modality), logger=logger
     )
-    from ..data.latent_pipeline import build_encode_pipeline
+    # Build the VAE on CPU pre-PG (the launch-time ``device`` is the default cuda:0,
+    # which under DDP would load on GPU 0 before LOCAL_RANK is known). The warm
+    # re-stages it onto the per-rank local GPU inside setup() (P1/ADR-0017); FID's
+    # decode stages it to the UNet device at eval (rank 0). The CPU encode_fn built
+    # here is unused on the cold path (rebuilt on the local device in warm_fn).
+    autoencoder, _cpu_encode_fn = build_encode_pipeline(cfg, device=torch.device("cpu"), logger=logger)
+    cache_dir = str(opt(cfg, "latent_cache_dir", os.path.join(str(cfg.model_dir), "latent_cache")))
+    scale_sample = int(opt(cfg, "val_subset_size", 32))
 
-    autoencoder, encode_fn = build_encode_pipeline(cfg, device=device, logger=logger)
-    bundle = warm_latent_pipeline(
-        vol_ds, encode_fn, autoencoder,
-        cache_dir=str(opt(cfg, "latent_cache_dir", os.path.join(str(cfg.model_dir), "latent_cache"))),
-        cache_tag="train",
-        device=device, logger=logger,
-        scale_factor_sample_size=int(opt(cfg, "val_subset_size", 32)),
+    def warm_fn():
+        # P1: warm on the per-rank local CUDA device, not the launch-time ``device``
+        # (which is cuda:0 before Lightning assigns LOCAL_RANK). Rebuild the encode_fn
+        # bound to that device so the sliding-window predictor runs on the right GPU.
+        warm_device = resolve_warm_device(device)
+        autoencoder.to(warm_device)
+        encode_fn = make_encode_fn(autoencoder, warm_device, cfg)
+        # F3: rank/world derived from dist inside warm_latent_pipeline (post-PG).
+        return warm_latent_pipeline(
+            vol_ds, encode_fn, autoencoder,
+            cache_dir=cache_dir, cache_tag="train",
+            device=warm_device, logger=logger,
+            scale_factor_sample_size=scale_sample,
+        )
+
+    return (
+        _DataBundle(vae=autoencoder, warm_fn=warm_fn),
+        len(vol_ds),
     )
-    val_subset_size = int(opt(cfg, "val_subset_size", 32))
-    g = torch.Generator().manual_seed(0)
-    idx = torch.randperm(len(bundle.latent_ds), generator=g)[:val_subset_size].tolist()
-    val_latents = torch.stack([bundle.latent_ds.raw_latent(i) * bundle.latent_ds.scaling_factor for i in idx])
-    return _DataBundle(latent_ds=bundle.latent_ds, vae=bundle.autoencoder, val_latents=val_latents)
 
 
 def _load_warm_start(unet, ckpt_path: str) -> None:

@@ -81,8 +81,10 @@ class FIDCallback(pl.Callback):
         module,
         vae,
         ema_callback,
-        real_latents: torch.Tensor,
-        feature_net,
+        real_latents=None,
+        real_latents_source=None,
+        feature_net=None,
+        feature_net_factory=None,
         latent_shape,
         spacing,
         modality: int,
@@ -100,8 +102,19 @@ class FIDCallback(pl.Callback):
         self.module = module
         self.vae = vae
         self.ema_callback = ema_callback
+        # F5 (ADR-0017): ``real_latents`` may be ``None`` at construction (the warm
+        # has moved into DataModule.setup(), so the val reference does not exist
+        # until the first validation epoch). ``real_latents_source`` is a callable
+        # ``() -> Tensor`` (or an object exposing ``.val_latents``) pulled lazily at
+        # the first ``_real_features`` call. Both are populated before any FID math.
+        self._real_latents_source = real_latents_source
         self.real_latents = real_latents
         self.feature_net = feature_net
+        # L3 (ADR-0016): lazy RadImageNet build. ``_stage_eval_on_device`` is
+        # rank-0-gated, so a factory is only invoked on rank 0 - non-root ranks do
+        # no ``torch.hub``/disk load (saves ~100 MB × (N-1)). Construction is the
+        # only place the backbone was eagerly built on every rank pre-PG.
+        self.feature_net_factory = feature_net_factory
         self.latent_shape = tuple(latent_shape)
         self.spacing = spacing
         self.modality = int(modality)
@@ -119,18 +132,23 @@ class FIDCallback(pl.Callback):
     # -- internals -----------------------------------------------------------
 
     def _gated(self, trainer) -> bool:
-        """Rank-0 + cadence gate; warn loudly under DDP and skip otherwise."""
+        """Rank-0 + cadence gate; warn loudly under DDP and skip otherwise.
+
+        The warning is hoisted BELOW the ``is_global_zero`` guard so it fires
+        only on rank 0 (L1, ADR-0016) - emitting it on every rank every val
+        epoch was noise.
+        """
         world = 1
         if torch.distributed.is_available() and torch.distributed.is_initialized():
             world = torch.distributed.get_world_size()
         if world > 1:
+            if not trainer.is_global_zero:
+                return False
             _log.warning(
                 "FIDCallback: running only on rank 0 (world_size=%d). The other "
                 "ranks skip the generative FID and must NOT block on an NCCL "
                 "collective here — single-GPU is the supported config.", world
             )
-            if not trainer.is_global_zero:
-                return False
         epoch = trainer.current_epoch
         if self.every_n_epochs <= 1 or (epoch % self.every_n_epochs == 0):
             return True
@@ -147,6 +165,31 @@ class FIDCallback(pl.Callback):
         if not getattr(self, "_eval_staged", False):
             self._vae_cpu_state = {k: v.detach().clone() for k, v in self.vae.state_dict().items()}
             self.vae.to(self._device())
+            # Mark staged BEFORE any early return (codex #85 P2): the ``finally`` in
+            # on_validation_epoch_end calls _restore_eval_to_cpu(), which only
+            # restores the VAE to CPU when _eval_staged is True. A skip-path return
+            # before this flag would leave the full VAE resident on the training GPU
+            # for the rest of the run (the VRAM pressure the skip is meant to avoid).
+            self._eval_staged = True
+            # L3 + codex #85 P2: lazy feature_net build on the rank-0-gated stage
+            # path (the only place it is used). A factory defers the ~100 MB
+            # ``torch.hub`` load so non-root ranks never touch it; a direct
+            # ``feature_net`` is honored as-is. The call is FAIL-SAFE here (not just
+            # in main's factory): a raising factory (a bad/corrupt cache, a version
+            # mismatch, or a direct caller's non-fail-safe factory) is caught ->
+            # feature_net stays None -> FID is skipped gracefully
+            # (on_validation_epoch_end logs a sentinel so the checkpoint monitor does
+            # not crash on a never-logged metric) instead of aborting training mid-fit.
+            if self.feature_net is None and self.feature_net_factory is not None:
+                try:
+                    self.feature_net = self.feature_net_factory()
+                except Exception:  # pragma: no cover - backbone load failure
+                    _log.warning("RadImageNet backbone build failed; FID will be skipped.", exc_info=True)
+                    self.feature_net = None
+            if self.feature_net is None:
+                self._fid_disabled = True
+                return  # _eval_staged=True -> the finally restores the VAE to CPU.
+            self._fid_disabled = False
             if self.feature_net is not None:
                 self.feature_net.to(self._device())
                 # eval so BatchNorm uses fixed running stats (RadImageNet ResNet50
@@ -155,7 +198,9 @@ class FIDCallback(pl.Callback):
                 # since the raw arm is the checkpoint monitor, that contamination
                 # would distort selection. Also matches hope (net.eval().to()).
                 self.feature_net.eval()
-            self._eval_staged = True
+            # _eval_staged was set right after staging the VAE (above), so the
+            # finally's _restore_eval_to_cpu() always restores it - even on the
+            # skip-path early return.
 
     def _restore_eval_to_cpu(self) -> None:
         """Return VAE + feature_net to CPU after the FID phase (free VRAM for training)."""
@@ -186,7 +231,21 @@ class FIDCallback(pl.Callback):
 
     @torch.no_grad()
     def _real_features(self) -> list[torch.Tensor]:
-        """Decode the fixed real subset once and cache its per-plane features."""
+        """Decode the fixed real subset once and cache its per-plane features.
+
+        F5: if ``real_latents`` was ``None`` at construction (the warm moved into
+        ``DataModule.setup()``, so the val reference did not exist yet), pull it
+        from the ``real_latents_source`` here - the first ``_real_features`` call
+        runs inside the first validation epoch, after ``setup()`` populated it.
+        """
+        if self.real_latents is None and self._real_latents_source is not None:
+            src = self._real_latents_source
+            self.real_latents = src() if callable(src) else getattr(src, "val_latents")
+        if self.real_latents is None:
+            raise RuntimeError(
+                "FIDCallback.real_latents is None at the first _real_features call - "
+                "the DataModule.setup() warm has not populated it (F5 wiring bug)."
+            )
         self.vae.eval()
         real_images = self._eval_decode(self.real_latents)
         return get_features_2p5d(real_images, self.feature_net, center_slices_ratio=self.center_slices_ratio)
@@ -237,6 +296,22 @@ class FIDCallback(pl.Callback):
             return
         self._stage_eval_on_device()
         try:
+            # codex #85 P2: the lazy feature_net factory is fail-safe; if it returned
+            # None (bad/corrupt cache, no network), FID is unavailable. Log the
+            # monitored metrics as +inf ONCE so ModelCheckpoint(monitor='val/fid_*',
+            # mode='min') does not crash on a never-logged metric (inf is never the
+            # best, so selection falls through to save_last) instead of aborting the
+            # run mid-fit. The online torch.hub fallback stays reachable on hosts
+            # with network (no launch-time pre-disable on a missing cache).
+            if getattr(self, "_fid_disabled", False):
+                keys = (
+                    ["val/fid"]
+                    if self.ema_callback is None
+                    else (["val/fid_avg"] + (["val/fid_raw"] if self.log_raw_fid else []))
+                )
+                for key in keys:
+                    module.log(key, float("inf"))
+                return
             if self._real_planes is None:
                 self._real_planes = self._real_features()
             if self.ema_callback is None:

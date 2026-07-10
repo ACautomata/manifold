@@ -85,8 +85,8 @@ class PairedLatentDataset(MedicalDataset):
         device: torch.device,
         logger: logging.Logger | None = None,
         show_progress: bool = True,
-        rank: int = 0,
-        world: int = 1,
+        rank: int | None = None,
+        world: int | None = None,
     ) -> None:
         """Materialize an **unscaled** latent for every unique volume (disk hits skip encode).
 
@@ -98,6 +98,15 @@ class PairedLatentDataset(MedicalDataset):
         full set from disk (mirrors :meth:`LatentDataset.warm_cache` — one writer
         per file, identical RAM caches).
         """
+        # F3 (ADR-0017): derive rank/world from dist when the PG is initialized
+        # (fallback 0/1) so a post-PG DataModule.setup() caller need not thread them.
+        # Explicit kwargs are honored only when the PG is NOT initialized.
+        if dist.is_initialized():
+            rank = dist.get_rank()
+            world = dist.get_world_size()
+        else:
+            rank = 0 if rank is None else rank
+            world = 1 if world is None else world
         if self.cache_dir is not None:
             Path(self.cache_dir).mkdir(parents=True, exist_ok=True)
         sample_ids = self.source.unique_sample_ids()

@@ -130,27 +130,16 @@ def build_volume_dataset(
     return vol_ds, provider
 
 
-def build_encode_pipeline(
-    cfg: DictConfig,
-    *,
-    device: torch.device,
-    logger: logging.Logger | None = None,
-) -> tuple[nn.Module, EncodeFn]:
-    """Load + freeze the pretrained VAE and build the sliding-window ``encode_fn``.
+def make_encode_fn(autoencoder: nn.Module, device: torch.device, cfg: DictConfig) -> EncodeFn:
+    """Build the sliding-window ``encode_fn`` over ``autoencoder.encode_raw`` for *device*.
 
-    CLI-only path: the smoke test injects a fake ``encode_fn`` + dummy VAE
-    instead, bypassing this helper (it does not call :func:`load_vae`).
-
-    Returns ``(autoencoder, encode_fn)`` where ``encode_fn`` maps images to
-    **unscaled** latents via :meth:`~manifold.AutoencoderKL.encode_raw` under
-    sliding-window inference; ``autoencoder`` is still on *device* (the caller
-    moves it to CPU after the cache is warm).
+    Extracted from :func:`build_encode_pipeline` so a caller that has moved the VAE
+    to a different device (the post-PG ``DataModule.setup()`` warm moves it to the
+    per-rank local CUDA device, P1/ADR-0017) can rebuild the closure bound to that
+    device without re-loading the checkpoint. Returns a callable mapping images to
+    UNSCALED latents.
     """
     inf_cfg = cfg.diffusion_unet_inference
-    autoencoder = load_vae(cfg, device, logger)
-    for p in autoencoder.parameters():
-        p.requires_grad_(False)
-
     roi = list(inf_cfg.get("autoencoder_encode_sliding_window_infer_size", _DEFAULT_ENCODE_ROI))
     overlap = float(
         inf_cfg.get("autoencoder_encode_sliding_window_infer_overlap", _DEFAULT_ENCODE_OVERLAP)
@@ -168,7 +157,51 @@ def build_encode_pipeline(
             device=device,
         )
 
-    return autoencoder, encode_fn
+    return encode_fn
+
+
+def resolve_warm_device(fallback: torch.device) -> torch.device:
+    """The device for the post-PG VAE warm: the per-rank local CUDA device under DDP.
+
+    The launch-time ``fallback`` is captured in ``main()`` BEFORE Lightning
+    initializes the process group, so under DDP it is the default ``cuda:0`` (or
+    whatever GPU index the rank's ``CUDA_VISIBLE_DEVICES`` exposes as 0). With a
+    torchrun launch (no per-rank mask), every rank would warm on the same GPU 0 ->
+    memory concentration + device-mismatch failures (P1, ADR-0017). After the PG is
+    up (inside ``DataModule.setup()``), ``LOCAL_RANK`` names the rank's GPU: return
+    ``cuda:{local_rank}``. Off-CUDA / single-process -> the ``fallback`` unchanged.
+    """
+    if fallback.type == "cuda" and dist.is_initialized():
+        # LOCAL_RANK (set by the launcher) names the rank's GPU; fall back to the
+        # global rank only when it is unset. Use an explicit None check (not
+        # os.environ.get(key, default)) so dist.get_rank() is NOT eagerly evaluated
+        # when LOCAL_RANK is present (it would touch the PG needlessly).
+        local_rank_env = os.environ.get("LOCAL_RANK")
+        local_rank = int(local_rank_env) if local_rank_env is not None else dist.get_rank()
+        return torch.device(f"cuda:{local_rank}")
+    return fallback
+
+
+def build_encode_pipeline(
+    cfg: DictConfig,
+    *,
+    device: torch.device,
+    logger: logging.Logger | None = None,
+) -> tuple[nn.Module, EncodeFn]:
+    """Load + freeze the pretrained VAE and build the sliding-window ``encode_fn``.
+
+    CLI-only path: the smoke test injects a fake ``encode_fn`` + dummy VAE
+    instead, bypassing this helper (it does not call :func:`load_vae`).
+
+    Returns ``(autoencoder, encode_fn)`` where ``encode_fn`` maps images to
+    **unscaled** latents via :meth:`~manifold.AutoencoderKL.encode_raw` under
+    sliding-window inference; ``autoencoder`` is still on *device* (the caller
+    moves it to CPU after the cache is warm).
+    """
+    autoencoder = load_vae(cfg, device, logger)
+    for p in autoencoder.parameters():
+        p.requires_grad_(False)
+    return autoencoder, make_encode_fn(autoencoder, device, cfg)
 
 
 def warm_latent_pipeline(
@@ -180,8 +213,8 @@ def warm_latent_pipeline(
     cache_tag: str,
     device: torch.device,
     logger: logging.Logger | None,
-    rank: int = 0,
-    world: int = 1,
+    rank: int | None = None,
+    world: int | None = None,
     scale_factor_sample_size: int,
 ) -> LatentPipeline:
     """Warm the unscaled latent cache once, estimate scale, return the bundle.
@@ -198,6 +231,16 @@ def warm_latent_pipeline(
     5. :func:`estimate_scale_factor` → ``1/std(z)`` over the warmed cache, set on
        the VAE (and the dataset's scale-on-read multiplier).
     """
+    # F3 (ADR-0017): derive rank/world from dist when the PG is initialized
+    # (fallback 0/1) so the post-PG DataModule.setup() path activates the sharded
+    # branch without the caller threading rank/world through. Explicit kwargs
+    # (kept for back-compat) are honored only when the PG is NOT initialized.
+    if dist.is_initialized():
+        rank = dist.get_rank()
+        world = dist.get_world_size()
+    else:
+        rank = 0 if rank is None else rank
+        world = 1 if world is None else world
     if rank == 0:
         Path(cache_dir).mkdir(parents=True, exist_ok=True)
     if dist.is_initialized():

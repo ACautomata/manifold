@@ -499,7 +499,12 @@ class GRPOModule(spt.Module):
             opt.zero_grad(set_to_none=True)
             losses.append(loss.detach())
         mean_loss = torch.stack(losses).mean() if losses else torch.zeros((), device=self.device)
-        self.log("train/loss", mean_loss, on_step=True, on_epoch=True, prog_bar=True, batch_size=B)
+        # ``sync_dist=True`` reduces the per-rank epoch mean to the global mean across
+        # ranks (issue #82 / L5). Unlike the metrics callbacks (M6), ``train/loss`` is
+        # already logged WITH ``batch_size=B`` so Lightning's epoch aggregate is the
+        # sample-weighted mean; sync_dist just adds the cross-rank reduce. Exact even on
+        # unbalanced shards because of the weight.
+        self.log("train/loss", mean_loss, on_step=True, on_epoch=True, prog_bar=True, batch_size=B, sync_dist=True)
         return {"loss": mean_loss}
 
     # -- generation (the FID callback drives this; ADR-0005) -------------------
@@ -548,7 +553,22 @@ class GRPOModule(spt.Module):
         selected over a lower-FID one. ``sample_latent_flow`` takes a scalar
         modality, so a mixed-label val batch is generated under ``label[0]`` (the
         single-modality regime); per-sample generation is out of scope for v1.
+
+        **Rank-0-only** (ADR-0016, M3): generation + reward scoring run on
+        ``is_global_zero`` only; the non-root ranks skip and must NOT block on an
+        NCCL collective here. ``val/mean_reward`` is therefore **rank-0-shard-
+        scoped** (no ``sync_dist`` - the rank-0 gate removes the cross-rank
+        quantity). Multi-GPU GRPO *training* is NOT blocked here: an independent
+        codex review (G2=FALSE) confirmed the PPO inner loop is DDP-correct via
+        Lightning's manual-optimization bridge (``prepare_for_backward`` fires on
+        every ``manual_backward``; ``eta_step_list`` is config-identical across
+        ranks), so ``no_sync()`` would be wrong - the algorithm intentionally
+        steps every inner iteration. The rank-asymmetric early-return is safe:
+        generation + scoring are local forward passes with no DDP collective, so
+        no rank blocks waiting on another.
         """
+        if not self.trainer.is_global_zero:
+            return
         batch["batch_idx"] = batch_idx
         spacing_t, class_labels, B = self._conditioning_tensors(batch)
         noise = torch.randn(B, *self.latent_shape, device=self.device, dtype=self._policy_dtype())

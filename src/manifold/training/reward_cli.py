@@ -39,7 +39,7 @@ from ..config import opt
 from ..data.datamodule import build_datamodule
 from ..models.reward_model import RewardModel
 from ..modules.reward import RewardModule
-from .trainer import build_trainer
+from .trainer import build_trainer, is_multi_gpu
 
 _log = logging.getLogger(__name__)
 
@@ -140,7 +140,7 @@ def run_reward_training(
     # runs; ``main`` also seeds, harmlessly, before building the module. The
     # per-step t/noise draws then reproduce across runs.
     pl.seed_everything(seed, workers=True)
-    multi_gpu = isinstance(devices, int) and devices > 1
+    multi_gpu = is_multi_gpu(devices)
     ckpt = _build_checkpoint(
         model_dir, monitor_metric=monitor_metric, mode=mode, save_top_k=save_top_k, multi_gpu=multi_gpu
     )
