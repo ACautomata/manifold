@@ -219,7 +219,9 @@ def jit_ddp_worker(rank: int, world: int, results_dir: str, port: str, enable_fi
         torch.manual_seed(0)
         module = _tiny_jit_module()
         callbacks, ckpt = _jit_callbacks(module, enable_fid=enable_fid, devices=world)
-        datamodule = build_datamodule(_LatentDS(n=6), batch_size=2, num_workers=0)
+        datamodule = build_datamodule(
+            _LatentDS(n=6), batch_size=2, num_workers=0, allow_train_as_val=True
+        )
         trainer = build_trainer(
             max_epochs=1,
             callbacks=callbacks,

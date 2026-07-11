@@ -54,12 +54,18 @@ class _DataBundle:
       :func:`warm_latent_pipeline`) -> ``setup()`` warms post-PG and computes
       ``val_latents``. The Module is sized from ``num_examples`` (passed separately,
       ``= len(vol_ds)``) so it does not need ``len(latent_ds)`` pre-warm.
+
+    ``allow_train_as_val``: smoke-only opt-in to reuse the train cache as the val
+    loader + derive ``val_latents`` from it. Production leaves it ``False``: the
+    regular flow has no held-out val split, so :func:`run_training` DISABLES
+    validation (no FID, no ``val/x0_mae``) rather than leak train metrics as val.
     """
 
     latent_ds: Any = None
     vae: Any = None
     val_latents: torch.Tensor | None = None
     warm_fn: Any = None
+    allow_train_as_val: bool = False
 
 
 def _dict_subset(d: dict | None, keys: tuple[str, ...]) -> dict:
@@ -153,11 +159,21 @@ def run_training(
         ema_decays: EMA decays for the DoubleEMACallback (JiT default ``(0.9999, 0.9996)``);
             read from ``formulation.ema_decays`` by :func:`main`.
     """
+    # Validation requires a held-out set. The regular ``manifold-train`` flow has
+    # no val-split plumbing, so production (allow_train_as_val=False) DISABLES
+    # validation rather than silently reuse the train set - val/* metrics would
+    # otherwise be train metrics (val/train leakage). The CPU smoke opts in via
+    # allow_train_as_val=True to exercise the FID + x0-MAE plumbing on the train
+    # fixture (it tests wiring, not held-out generalization).
+    val_enabled = bundle.allow_train_as_val
     ema = DoubleEMACallback(module, decays=tuple(ema_decays))
-    callbacks: list = [TrainLossLogger(), LatentX0MAE(), ema]
+    callbacks: list = [TrainLossLogger(), ema]
+    if val_enabled:
+        callbacks.append(LatentX0MAE())
 
     multi_gpu = is_multi_gpu(devices)
-    if enable_fid:
+    fid_attached = enable_fid and val_enabled
+    if fid_attached:
         # F5: latent_shape derives from val_latents when present (warmed path);
         # the cold path passes it via inference_recipe["latent_shape"] (it is known
         # from the VAE stride + vol_ds target_dim, not from the not-yet-warmed
@@ -195,10 +211,17 @@ def run_training(
             log_raw_fid=log_raw_fid,
         )
         callbacks.append(fid)
+    elif not val_enabled:
+        _log.warning(
+            "manifold-train: no held-out validation set is configured (the regular "
+            "flow has no val-split plumbing). Validation is DISABLED - val/* metrics "
+            "will not be logged. Reusing the train set as val would leak train metrics "
+            "into validation, which is refused; wire a held-out val source to enable."
+        )
 
     ckpt = _build_checkpoint(
         model_dir,
-        monitor_fid=enable_fid and not multi_gpu,
+        monitor_fid=fid_attached and not multi_gpu,
         # monitor what's logged: raw arm if present, else the slow-EMA avg.
         monitor_metric="val/fid_raw" if log_raw_fid else "val/fid_avg",
         every_n_epochs=every_n_epochs,
@@ -221,16 +244,24 @@ def run_training(
         val_latents=bundle.val_latents,
         warm_fn=bundle.warm_fn,
         val_subset_size=val_subset_size,
+        allow_train_as_val=bundle.allow_train_as_val,
     )
-    if enable_fid and fid.real_latents is None:
+    if fid_attached and fid.real_latents is None:
         fid._real_latents_source = datamodule  # F5: lazy pull at first _real_features
+    # When validation is disabled, ``limit_val_batches=0`` makes every validation
+    # epoch a 0-batch no-op (the empty val_dataloader yields nothing) and
+    # ``num_sanity_val_steps=0`` skips the fit-start sanity probes; no val
+    # callback is attached, so no ``val/*`` metric is logged. (Do NOT also pass
+    # ``check_val_every_n_epoch=None`` - Lightning's contract then requires an
+    # integer ``val_check_interval``, which the float default violates.)
     trainer = build_trainer(
         max_epochs=max_epochs,
         callbacks=callbacks,
         model_dir=model_dir,
         devices=devices,
         accelerator=accelerator,
-        limit_val_batches=limit_val_batches,
+        limit_val_batches=limit_val_batches if val_enabled else 0,
+        extra_kwargs=None if val_enabled else {"num_sanity_val_steps": 0},
     )
     trainer.fit(module, datamodule=datamodule, ckpt_path=ckpt_path)
     return trainer, ckpt

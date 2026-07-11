@@ -399,7 +399,7 @@ def test_split_brats_pair_manifest_by_subject(tmp_path) -> None:
 
     5 complete subjects → 60 pairs; ``val_fraction=0.4`` → ``ceil(0.4·5)=2`` val
     subjects (24 val pairs) / 3 train subjects (36 train pairs), and no subject
-    appears in both splits. ``val_fraction <= 0`` → the val=train fallback.
+    appears in both splits. ``val_fraction <= 0`` → empty val (validation is then DISABLED upstream; the train set is never reused as val).
     """
     from manifold.data.paired_brats import split_brats_pair_manifest
 
@@ -421,7 +421,7 @@ def test_split_brats_pair_manifest_by_subject(tmp_path) -> None:
     assert train_subs.isdisjoint(val_subs), "a held-out subject leaked into train"
     assert len(train_subs) == 3 and len(val_subs) == 2
 
-    # val_fraction <= 0 → all train, empty val (the val=train fallback).
+    # val_fraction <= 0 → all train, empty val (validation DISABLED upstream; the train set is never reused as val).
     train0, val0 = split_brats_pair_manifest(manifest, 0.0)
     assert val0 == [] and len(train0) == 60
 
