@@ -29,6 +29,7 @@ Sibling of :mod:`manifold.data.reward_pairs` (the JiT reward); reuses
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 from typing import Sequence
 
 import torch
@@ -211,4 +212,49 @@ def build_paired_reward_probe(
     return RewardPairDataset(torch.cat(winners), torch.cat(losers))
 
 
-__all__ = ["build_paired_reward_pairs", "build_paired_reward_probe"]
+def load_frozen_paired_generator(native_dir: str | Path):
+    """Load the frozen Paired-JiT generator (the reward's fake source) from a paired native export.
+
+    The native dir is the layout written by
+    :meth:`~manifold.PairedLatentFlowPipeline.save_pretrained` /
+    :func:`~manifold.training.export_to_native` (with ``pipeline_cls=
+    PairedLatentFlowPipeline``, ``prefer_ema=True`` - the slow-EMA arm, ADR-0021).
+    The UNet is the trained paired src->tgt generator (``in_channels = 2·C_latent``,
+    one source of truth). ADR-0021 sibling of the JiT
+    :func:`~manifold.data.reward_pairs.load_frozen_denoiser`, with two inversions:
+
+    - the scheduler is the **base** :class:`FlowMatchHeunDiscreteScheduler` (the
+      loser is a full ``0 -> 1`` rollout), NOT re-instantiated as the Partial
+      subclass - only the probe path constructs that (ADR-0023); and
+    - the export baked the **slow-EMA arm** (``prefer_ema=True``), opposite the JiT
+      reward's raw arm - the arm paired checkpoint selection monitors
+      (``val/psnr @ slow-EMA``), so the reward's fakes come from the same weights
+      "the paired model" denotes (ADR-0021).
+
+    The VAE's ``scaling_factor`` is returned so callers can scale raw paired-cache
+    src latents into the generator's training space (the paired latent cache stores
+    **unscaled** latents; scale-on-read happens at ``__getitem__`` - ADR-0021: reuse
+    the export's ``scaling_factor`` verbatim, never re-estimate).
+
+    Returns:
+        ``(unet, scheduler, scaling_factor)`` - the frozen + eval + grad-disabled
+        paired UNet, the base scheduler, and the VAE scaling factor.
+    """
+    from ..pipelines.paired_latent_flow import PairedLatentFlowPipeline
+
+    pipe = PairedLatentFlowPipeline.from_pretrained(str(native_dir))
+    # The base scheduler (NOT the Partial subclass): the loser is a full 0->1
+    # rollout. Only the probe constructs Partial (ADR-0023).
+    scheduler = FlowMatchHeunDiscreteScheduler(**pipe.scheduler.config)
+    scaling_factor = float(pipe.vae.scaling_factor)
+    pipe.unet.eval()
+    for p in pipe.unet.parameters():
+        p.requires_grad_(False)
+    return pipe.unet, scheduler, scaling_factor
+
+
+__all__ = [
+    "build_paired_reward_pairs",
+    "build_paired_reward_probe",
+    "load_frozen_paired_generator",
+]

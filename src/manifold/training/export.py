@@ -64,6 +64,7 @@ def export_to_native(
     vae,
     scheduler,
     prefer_ema: bool = False,
+    pipeline_cls=None,
 ) -> str:
     """Convert a training ``.ckpt`` into a native per-component inference dir.
 
@@ -83,9 +84,23 @@ def export_to_native(
             where the 0.9999 EMA has converged (warm-start / long horizon, as
             hope trains), publishing that instead.
 
+        prefer_ema: bake the slowest EMA shadow when present; else (the default)
+            the raw ``state_dict`` UNet weights. The default ``False`` aligns the
+            published weights with what ``ModelCheckpoint`` selects - the raw-FID
+            monitor (``val/fid_raw``). Pass ``True`` for the Paired-JiT reward (whose
+            ``val/psnr`` checkpoint selection monitors the slow-EMA arm - ADR-0021).
+        pipeline_cls: (see below) the pipeline class whose ``save_pretrained`` writes
+            the dir - default :class:`~manifold.LatentFlowPipeline`; pass
+            :class:`~manifold.PairedLatentFlowPipeline` for the paired src->tgt export
+            (the reward's frozen generator, ADR-0021). One export path, not a fork: the
+            EMA-baking machinery is MAISI-backbone-keyed, so it is reused verbatim (the
+            paired UNet wraps the same backbone - only ``in_channels = 2*C_latent``).
+
     Returns:
         A short string naming which weights were baked (e.g. ``ema[decay=...]``).
     """
+    if pipeline_cls is None:
+        pipeline_cls = LatentFlowPipeline
     ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=False)
     shadow, decay = _slowest_ema_shadow(ckpt) if prefer_ema else (None, None)
     if shadow is not None:
@@ -105,5 +120,5 @@ def export_to_native(
         source = "unet_state_dict"
     _log.info("Export baking %s as the inference UNet -> %s", source, output_dir)
 
-    LatentFlowPipeline(unet, vae, scheduler).save_pretrained(output_dir)
+    pipeline_cls(unet, vae, scheduler).save_pretrained(output_dir)
     return source
