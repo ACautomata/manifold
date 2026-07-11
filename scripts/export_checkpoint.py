@@ -4,15 +4,26 @@
 The ADR-0006 bridge: load a Lightning ``.ckpt``, bake the inference UNet (the
 **raw UNet weights** by default, matching the ``val/fid_raw`` checkpoint monitor;
 ``--ema`` bakes the slowest EMA shadow instead), and write a directory
-:meth:`manifold.LatentFlowPipeline.from_pretrained` loads.
+:meth:`manifold.LatentFlowPipeline.from_pretrained` (or
+:meth:`manifold.PairedLatentFlowPipeline.from_pretrained` with ``--pipeline paired``)
+loads.
 
-Example (gauss)::
+Example (gauss, JiT noise->data)::
 
     python scripts/export_checkpoint.py \\
         --ckpt /data72/junran/manifold-runtime/lightning/last.ckpt \\
         --network-config configs/network/config_network.yaml \\
         --vae-checkpoint models/autoencoder_v1.pt \\
         --output /data72/junran/manifold-runtime/checkpoints/jit_exported
+
+Example (paired src->tgt, slow-EMA arm - the reward's frozen generator)::
+
+    python scripts/export_checkpoint.py \\
+        --ckpt <paired_run>/last.ckpt \\
+        --network-config configs/network/config_network.yaml \\
+        --vae-checkpoint models/autoencoder_v1.pt \\
+        --pipeline paired --ema \\
+        --output <paired_native>
 """
 
 from __future__ import annotations
@@ -53,7 +64,16 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="bake the slowest EMA shadow instead of the raw UNet weights (the "
         "default bakes raw, matching the val/fid_raw checkpoint monitor; use this "
-        "for warm-start / long-horizon runs where the 0.9999 EMA has converged).",
+        "for warm-start / long-horizon runs where the 0.9999 EMA has converged, or "
+        "for the paired reward whose val/psnr monitors the slow-EMA arm - ADR-0021).",
+    )
+    parser.add_argument(
+        "--pipeline",
+        choices=("jit", "paired"),
+        default="jit",
+        help="which native pipeline to write: 'jit' (LatentFlowPipeline, the "
+        "noise->data JiT - the default) or 'paired' (PairedLatentFlowPipeline, the "
+        "src->tgt translation - the reward's frozen generator, ADR-0021).",
     )
     args = parser.parse_args(argv)
 
@@ -71,6 +91,12 @@ def main(argv: list[str] | None = None) -> int:
         cfg = OmegaConf.merge(cfg, {"trained_autoencoder_path": args.vae_checkpoint})
         vae = _load_vae(cfg, torch.device("cpu"))
 
+    pipeline_cls = None
+    if args.pipeline == "paired":
+        from manifold.pipelines.paired_latent_flow import PairedLatentFlowPipeline
+
+        pipeline_cls = PairedLatentFlowPipeline
+
     source = export_to_native(
         args.ckpt,
         args.output,
@@ -78,8 +104,9 @@ def main(argv: list[str] | None = None) -> int:
         vae=vae,
         scheduler=scheduler,
         prefer_ema=args.ema,
+        pipeline_cls=pipeline_cls,
     )
-    print(f"Exported {args.ckpt} -> {args.output} ({source}).")
+    print(f"Exported {args.ckpt} -> {args.output} ({source}; pipeline={args.pipeline}).")
     return 0
 
 

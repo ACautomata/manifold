@@ -33,7 +33,11 @@ from .paired_latent_dataset import (
     PairedLatentDataset,
     estimate_paired_scale_factor,
 )
-from .paired_reward_pairs import build_paired_reward_pairs, build_paired_reward_probe
+from .paired_reward_pairs import (
+    build_paired_reward_pairs,
+    build_paired_reward_probe,
+    load_frozen_paired_generator,
+)
 from .paired_volume_dataset import PairedNiftiVolumeDataset
 from .reward_pairs import (
     RewardPairDataset,
@@ -78,6 +82,7 @@ __all__ = [
     "label_provider_from_config",
     "load_brats_labels",
     "load_frozen_denoiser",
+    "load_frozen_paired_generator",
     "load_reward_pairs",
     "load_vae",
     "normalize_to_01",
