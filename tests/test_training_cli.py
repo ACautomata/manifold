@@ -195,6 +195,11 @@ def test_run_training_skips_validation_when_no_held_out_val(tmp_path):
     assert ckpt.monitor is None  # no val/* metric to monitor
     assert not any(k.startswith("val/") for k in trainer.callback_metrics)
     assert any(Path(str(tmp_path)).glob("*.ckpt"))  # training still produced a ckpt
+    # Regression (codex #90 P1): the no-val path must NOT set
+    # ``check_val_every_n_epoch=None`` - Lightning's contract then requires an integer
+    # ``val_check_interval``, which the float default violates (a MisconfigurationException
+    # on versions that enforce it). ``limit_val_batches=0`` alone makes val a no-op.
+    assert trainer.check_val_every_n_epoch is not None
 
 
 def test_build_checkpoint_monitor_matches_logged_arm(tmp_path):

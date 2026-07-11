@@ -294,6 +294,11 @@ def test_run_paired_training_skips_validation_when_no_held_out_val(tmp_path):
     assert ckpt.monitor is None  # no val/psnr to monitor
     assert not any(k.startswith("val/") for k in trainer.callback_metrics)
     assert any((tmp_path / "paired_run").glob("*.ckpt"))  # training still produced a ckpt
+    # Regression (codex #90 P2): the no-val path must NOT set
+    # ``check_val_every_n_epoch=None`` - Lightning's contract then requires an integer
+    # ``val_check_interval``, which the float default violates. ``limit_val_batches=0``
+    # alone makes val a no-op.
+    assert trainer.check_val_every_n_epoch is not None
 
 
 # -- console-entry config helper (mirrors test_training_cli._write_tiny_configs) --

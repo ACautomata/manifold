@@ -197,9 +197,12 @@ def run_paired_training(
         warm_fn=bundle.warm_fn,
         allow_train_as_val=bundle.allow_train_as_val,
     )
-    # When validation is disabled, fully skip it: limit_val_batches=0 AND no val
-    # epoch scheduled (check_val_every_n_epoch=None) + no sanity checks, so the
-    # val_dataloader is never iterated and no val/* metric is logged.
+    # When validation is disabled, ``limit_val_batches=0`` makes every validation
+    # epoch a 0-batch no-op (the empty val_dataloader yields nothing) and
+    # ``num_sanity_val_steps=0`` skips the fit-start sanity probes; the PSNR
+    # callback is not attached, so no ``val/*`` metric is logged. (Do NOT also pass
+    # ``check_val_every_n_epoch=None`` - Lightning's contract then requires an
+    # integer ``val_check_interval``, which the float default violates.)
     trainer = build_trainer(
         max_epochs=max_epochs,
         callbacks=callbacks,
@@ -207,11 +210,7 @@ def run_paired_training(
         devices=devices,
         accelerator=accelerator,
         limit_val_batches=limit_val_batches if val_enabled else 0,
-        extra_kwargs=(
-            None
-            if val_enabled
-            else {"num_sanity_val_steps": 0, "check_val_every_n_epoch": None}
-        ),
+        extra_kwargs=None if val_enabled else {"num_sanity_val_steps": 0},
     )
     trainer.fit(module, datamodule=datamodule, ckpt_path=ckpt_path)
     return trainer, ckpt
