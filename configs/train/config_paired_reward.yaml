@@ -1,0 +1,41 @@
+# Paired-reward recipe preset - the Paired-JiT reward model (real-vs-fake,
+# condition-aware, offline-precompute; ADR-0018-0023 / issue #93). Composed with a
+# BraTS2023 env + the network config (which carries the `reward_model` block with
+# `in_channels = 2·C_latent` - the condition-aware concat, ADR-0019). The train set
+# is a precomputed `{winner, loser}` pair dataset (built once from the fake cache);
+# the Module holds NO generator (ADR-0020 - inverts the JiT reward's online rollout).
+# Validation (real-vs-fake pairs) + the generated-end probe are precomputed once at
+# startup from --native-dir + --latents-dir (the frozen paired generator ⇒ static).
+#
+# Consumed by manifold-train-paired-reward. The reward job needs no VAE / paired-UNet
+# checkpoint path (the generator comes from the paired native export) - only the
+# output model_dir.
+
+paired_reward_train:
+  batch_size: 16
+  lr: 1.0e-4
+  n_epochs: 50
+
+# Offline real-data wiring (issue #95). The frozen paired generator loads from
+# --native-dir (issue #94's paired export bridge, slow-EMA arm); the paired latent
+# cache from --latents-dir (the warmed `paired_train` cache). The 2-way subject split
+# reuses the PAIRED split mechanism (_train_val_manifests / val_data_base_dir), NOT
+# JiT reward's partition_subjects (ADR-0022 - different subject-id derivation ⇒ leak).
+paired_reward:
+  # The rollout Heun budget - a ONE-TIME precompute cost (ADR-0020), not a
+  # per-step-per-epoch cost (the paired rollout is deterministic ⇒ fakes are cached
+  # once). A larger budget is affordable offline (cf. JiT's precompute_num_steps=4 vs
+  # train num_steps=2). Default 8 matches the paired model's production inference
+  # count (paired_eval.num_inference_steps=8) - the fakes sample the generator at the
+  # step resolution the model is published at.
+  num_steps: 8
+  precompute_num_steps: 8  # reserved alias (the probe precompute budget); defaults to num_steps.
+  val_fraction: 0.1        # held-out subject fraction (real-vs-fake val pairs + probe). 0 -> native split.
+  gen_batch_size: 4        # one-time fake-cache + probe precompute rollout batch size.
+  n_probe: 64             # max val latents for the generated-end probe.
+
+# Stock Lightning ModelCheckpoint: monitor val/gen_pair_acc (the within-fake-ranking
+# metric, max), save top-1 + last. Under DDP the rank-local monitor is dropped
+# (save_last + save_top_k=1 keep the latest) - mirrors the JiT reward checkpoint.
+checkpoint:
+  save_top_k: 1

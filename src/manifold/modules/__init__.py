@@ -16,7 +16,8 @@ from .grpo import (
 )
 from .latent_flow import LatentFlowModule, SampleDict
 from .paired_latent_flow import PairedLatentFlowModule, PairedSampleDict
-from .paired_sampler import sample_paired_latent_flow
+from .paired_reward import PairedRewardBatch, PairedRewardModule
+from .paired_sampler import partial_paired_rollout, sample_paired_latent_flow
 from .partial_denoise import partial_denoise_rollout
 from .reward import RewardBatch, RewardModule, bradley_terry_loss, reward_roc_auc
 from .sampler import sample_latent_flow
@@ -26,6 +27,8 @@ __all__ = [
     "GRPOModule",
     "LatentFlowModule",
     "PairedLatentFlowModule",
+    "PairedRewardBatch",
+    "PairedRewardModule",
     "PairedSampleDict",
     "RewardBatch",
     "RewardModule",
@@ -36,6 +39,7 @@ __all__ = [
     "gaussian_log_prob",
     "group_advantage",
     "partial_denoise_rollout",
+    "partial_paired_rollout",
     "reward_roc_auc",
     "sample_latent_flow",
     "sample_paired_latent_flow",

@@ -198,6 +198,37 @@ disjoint `[0.5, 1) / [0, 0.5)` halves, which saturated `val/pair_acc` at 0.997.)
 _Avoid_: positive/negative sample (say winner/loser — those name the half-pair, not
 a label).
 
+### Paired reward model (GRPO)
+
+**real tgt / generated tgt** (paired reward):
+The two halves of a paired reward preference pair — **real-vs-fake** supervision
+(ADR-0018). The **real tgt** is the ground-truth target latent `x_tgt` (the VAE
+encode of the target volume) — the **winner**; the **generated tgt** is the
+paired-JiT model's src→tgt Heun rollout output — the **loser** (the "fake").
+Distinct from the JiT reward's corruption-level preference (ADR-0009/0010), where
+both halves are *generated*. Both live in scaled latent space; the generated tgt is
+never VAE-decoded/re-encoded.
+_Avoid_: positive/negative sample, fake/real sample (say real tgt / generated tgt —
+those name the source: ground truth vs the model's rollout).
+
+**Condition-aware reward** (paired):
+The paired reward scores `concat([x_src, tgt])` (`in_channels = 2·C_latent`,
+ADR-0019) so it judges "is this tgt a faithful translation *of* this src" — able to
+catch **copy-src** (`tgt == src`), the dominant paired failure. Distinct from an
+**unconditional realism** reward (`tgt` alone, `in_channels = C_latent`), which
+*rewards* copy-src because `x_src` is itself a real latent. The same `RewardModel`
+class is reused (caller concats; `forward` is channel-agnostic).
+_Avoid_: conditional discriminator (say condition-aware reward).
+
+**Fake cache** (paired reward):
+The disk cache of precomputed generated-tgt fakes — one src→tgt rollout per pair,
+written **once before training** (`roll → cache → train`, the latent-cache analogue;
+ADR-0020). Forced by the deterministic paired rollout: re-rolling each fit step
+yields byte-identical fakes at epoch× compute, so ADR-0010's online rollout is
+inverted for paired. The Paired Reward Module holds **no** generator; `fit` consumes
+precomputed `{real tgt, generated tgt}` pairs (structurally the JiT `validate` path).
+_Avoid_: pair cache, online rollout (the paired reward has neither).
+
 ### GRPO policy learning
 
 **Anchor trajectory** (GRPO):

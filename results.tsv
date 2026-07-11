@@ -1,0 +1,2 @@
+commit	val_psnr	val_ssim	train_loss	grad_norm	status	description
+baseline	13.75071907043457	0.08408639580011368	0.0023315518628805876	12.947310447692871	baseline	default recipe 20ep last-epoch val

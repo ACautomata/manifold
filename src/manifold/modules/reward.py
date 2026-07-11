@@ -112,6 +112,21 @@ def reward_roc_auc(reward_winner: Tensor, reward_loser: Tensor) -> Tensor:
     return (sum_pos_ranks - n_pos * (n_pos + 1) / 2) / (n_pos * n_neg)
 
 
+def _score_pair(reward_model, winner: Tensor, loser: Tensor) -> tuple[Tensor, Tensor]:
+    """Forward both halves of a pair in one batch -> ``(r_w, r_l)`` each ``[B]``.
+
+    Concatenating ``[winner, loser]`` runs a single discriminator forward (and lets
+    BatchNorm see both halves together); the per-sample rewards are then split back
+    into the winner / loser halves. Shared by :class:`RewardModule` (the JiT reward)
+    and :class:`~manifold.modules.paired_reward.PairedRewardModule` (the paired
+    reward) - the condition-aware paired module passes already-concatenated
+    ``[2·C]`` pairs, so the same scorer applies verbatim (ADR-0019).
+    """
+    batch_size = winner.shape[0]
+    rewards = reward_model(torch.cat([winner, loser], dim=0))  # [2B]
+    return rewards[:batch_size], rewards[batch_size:]
+
+
 class RewardModule(spt.Module):
     """Bradley–Terry preference training over the Reward Model.
 
@@ -221,11 +236,10 @@ class RewardModule(spt.Module):
 
         Concatenating ``[winner, loser]`` runs a single discriminator forward
         (and lets BatchNorm see both halves together); the per-sample rewards are
-        then split back into the winner / loser halves.
+        then split back into the winner / loser halves. Thin delegate over the
+        module-level :func:`_score_pair` (shared with the paired reward module).
         """
-        batch_size = winner.shape[0]
-        rewards = self.reward_model(torch.cat([winner, loser], dim=0))  # [2B]
-        return rewards[:batch_size], rewards[batch_size:]
+        return _score_pair(self.reward_model, winner, loser)
 
     def _online_rollout(self, batch: RewardBatch) -> tuple[Tensor, Tensor]:
         """Per-step online preference-pair rollout: clean latents → ``(winner, loser)``.
