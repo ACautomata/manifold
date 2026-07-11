@@ -113,6 +113,95 @@ def test_run_paired_training_smoke(tmp_path):
     assert ckpt.last_model_path or any((tmp_path / "paired_run").glob("*.ckpt"))
 
 
+def test_run_paired_training_threads_ema_decays(tmp_path):
+    """``ema_decays`` flows run_paired_training -> DoubleEMACallback.
+
+    Guards the ema_decays wiring: without it the callback hardcodes JiT's
+    ``(0.9999, 0.9996)`` and ``formulation.ema_decays`` is a dead knob. Asserts the
+    decays land on the callback (the ``decays`` property at ema.py).
+    """
+    unet = _trainable_paired_unet()
+    module = PairedLatentFlowModule(
+        unet,
+        FlowMatchHeunDiscreteScheduler(),
+        lr=1e-2,
+        lr_warmup_steps=0,
+        num_train_examples=4,
+        train_batch_size=2,
+        n_epochs=1,
+    )
+    bundle = _DataBundle(latent_ds=_FakePairedDataset(n=4), vae=AutoencoderKL(scaling_factor=0.5))
+
+    trainer, _ = run_paired_training(
+        module=module,
+        bundle=bundle,
+        model_dir=str(tmp_path / "paired_run"),
+        max_epochs=1,
+        batch_size=2,
+        num_workers=0,
+        limit_val_batches=2,
+        num_inference_steps=2,
+        every_n_epochs=1,
+        ema_decays=(0.999, 0.9996),
+    )
+    ema_cb = next(cb for cb in trainer.callbacks if isinstance(cb, DoubleEMACallback))
+    assert ema_cb.decays == (0.999, 0.9996), "ema_decays must flow to the DoubleEMACallback"
+
+
+def test_main_reads_ema_decays_from_config(tmp_path, monkeypatch):
+    """``formulation.ema_decays`` flows config -> main -> DoubleEMACallback.
+
+    Mirrors ``test_main_reads_loss_weight_from_config``: a regression in the config
+    read would silently revert the callback to the hardcoded ``(0.9999, 0.9996)``
+    while the run_paired_training-level test (which passes the kwarg directly) stays
+    green. Spies on the DoubleEMACallback constructor.
+    """
+    from manifold.training import paired_cli
+
+    captured: dict = {}
+    real_cls = paired_cli.DoubleEMACallback
+
+    def spy(*args, **kwargs):
+        captured["decays"] = tuple(kwargs.get("decays", (0.9999, 0.9996)))
+        return real_cls(*args, **kwargs)
+
+    monkeypatch.setattr(paired_cli, "DoubleEMACallback", spy)
+
+    model_dir = tmp_path / "model"
+    env_yaml = tmp_path / "env.yaml"
+    env_yaml.write_text(
+        "data_base_dir: /tmp/_unused_\n"
+        f"model_dir: {model_dir}\n"
+        "model_filename: paired_jit.pt\n"
+        "trained_autoencoder_path: /tmp/_unused_vae_\n"
+        "val_subset_size: 4\nrandom_seed: 0\nnum_gpus: 1\n"
+    )
+    net_yaml = tmp_path / "net.yaml"
+    net_yaml.write_text(
+        "spatial_dims: 3\nlatent_channels: 4\n"
+        "diffusion_unet:\n"
+        "  spatial_dims: 3\n  in_channels: 8\n  out_channels: 4\n"
+        "  num_channels: [8, 8]\n  num_res_blocks: 1\n  norm_num_groups: 8\n"
+        "  num_head_channels: [4, 4]\n  attention_levels: [false, false]\n"
+        "  use_flash_attention: false\n  include_spacing_input: true\n"
+        "  num_class_embeds: 4\n  num_train_timesteps: 1000\n"
+        "scheduler:\n  num_train_timesteps: 1000\n  t_eps: 0.05\n"
+    )
+    train_yaml = tmp_path / "paired.yaml"
+    train_yaml.write_text(
+        "diffusion_unet_train: {batch_size: 2, lr: 1.0e-2, n_epochs: 1, lr_warmup_steps: 0, cache_rate: 0}\n"
+        "formulation: {p_mean: -0.8, p_std: 0.8, t_eps: 0.05, ema_decays: [0.999, 0.9996]}\n"
+        "diffusion_unet_inference: {dim: [4, 4, 4], spacing: [1.0, 1.0, 1.0], modality: 1, num_inference_steps: 2}\n"
+        "paired_eval: {num_inference_steps: 2, every_n_epochs: 1}\n"
+    )
+    bundle = _DataBundle(latent_ds=_FakePairedDataset(n=4), vae=AutoencoderKL(scaling_factor=0.5))
+
+    argv = ["-e", str(env_yaml), "-c", str(train_yaml), "-t", str(net_yaml), "--max-epochs", "1"]
+    rc = paired_cli.main(argv, data_provider=lambda cfg, device: bundle)
+    assert rc == 0
+    assert captured.get("decays") == (0.999, 0.9996), "ema_decays must flow config -> DoubleEMACallback"
+
+
 def test_run_paired_training_wires_held_out_val_dataset(tmp_path, monkeypatch):
     """When the bundle carries a ``val_latent_ds``, it is wired as the held-out val
     (NOT the train-as-val fallback). Spies on the ``PairedWarmDataModule`` kwargs
