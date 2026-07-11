@@ -164,10 +164,24 @@ def run_paired_training(
         # The PSNR/SSIM pipeline carries the LIVE module UNet by reference, so
         # optimizer updates + the EMA swap-in are visible at validation.
         pipeline = PairedLatentFlowPipeline(module.unet, bundle.vae, module.scheduler)
+        # When last-epoch-only val is active (check_val_every_n_epoch set), Lightning
+        # already gates WHEN validation runs. The callback's own ``every_n_epochs`` is
+        # then redundant + harmful: its 0-based ``epoch % every_n_epochs`` check could
+        # SKIP the single final-epoch pass when every_n_epochs>1 (e.g. epoch 19 % 5),
+        # leaving no val/psnr — the run finishes with no ranking metric. Force it to 1
+        # so the decode always runs whenever Lightning validates (codex #91).
+        if check_val_every_n_epoch is not None and every_n_epochs > 1:
+            _log.warning(
+                "paired last-epoch-only val (check_val_every_n_epoch=%s) ignores "
+                "paired_eval.every_n_epochs=%d — forcing the PSNR/SSIM cadence to 1 so "
+                "the callback does not skip the single final-epoch validation pass.",
+                check_val_every_n_epoch,
+                every_n_epochs,
+            )
         psnr = PairedPSNRSSIMCallback(
             pipeline=pipeline,
             num_inference_steps=num_inference_steps,
-            every_n_epochs=every_n_epochs,
+            every_n_epochs=1 if check_val_every_n_epoch is not None else every_n_epochs,
             ema_callback=ema,  # report on the slow-EMA arm (criterion 2)
         )
         callbacks.append(psnr)

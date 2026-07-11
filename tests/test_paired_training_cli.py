@@ -199,6 +199,49 @@ def test_run_paired_training_threads_check_val_every_n_epoch(tmp_path):
     assert trainer.num_sanity_val_steps == 0, "num_sanity_val_steps=0 must be applied alongside"
 
 
+def test_check_val_every_n_epoch_forces_psnr_cadence_to_1(tmp_path):
+    """Last-epoch-only val forces the PSNR/SSIM callback cadence to 1 (codex #91).
+
+    With ``check_val_every_n_epoch`` set, Lightning validates only every N epochs; the
+    callback's own ``every_n_epochs`` gate (0-based ``epoch % n``) could otherwise SKIP
+    that single pass when ``every_n_epochs>1`` (e.g. the final epoch 19 % 5 != 0),
+    leaving the run with no val/psnr. The callback cadence is forced to 1 so the decode
+    always runs whenever Lightning validates.
+    """
+    unet = _trainable_paired_unet()
+    module = PairedLatentFlowModule(
+        unet,
+        FlowMatchHeunDiscreteScheduler(),
+        lr=1e-2,
+        lr_warmup_steps=0,
+        num_train_examples=4,
+        train_batch_size=2,
+        n_epochs=1,
+    )
+    bundle = _DataBundle(
+        latent_ds=_FakePairedDataset(n=4), vae=AutoencoderKL(scaling_factor=0.5),
+        allow_train_as_val=True,
+    )
+
+    trainer, _ = run_paired_training(
+        module=module,
+        bundle=bundle,
+        model_dir=str(tmp_path / "paired_run"),
+        max_epochs=1,
+        batch_size=2,
+        num_workers=0,
+        limit_val_batches=2,
+        num_inference_steps=2,
+        every_n_epochs=5,
+        check_val_every_n_epoch=20,
+    )
+    psnr_cb = next(cb for cb in trainer.callbacks if isinstance(cb, PairedPSNRSSIMCallback))
+    assert psnr_cb.every_n_epochs == 1, (
+        "under last-epoch-only val the PSNR cadence must be forced to 1 so the gate "
+        "never skips Lightning's single final-epoch validation pass"
+    )
+
+
 def test_main_reads_ema_decays_from_config(tmp_path, monkeypatch):
     """``formulation.ema_decays`` flows config -> main -> DoubleEMACallback.
 
