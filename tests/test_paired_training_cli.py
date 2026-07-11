@@ -88,7 +88,13 @@ def test_run_paired_training_smoke(tmp_path):
         train_batch_size=2,
         n_epochs=1,
     )
-    bundle = _DataBundle(latent_ds=_FakePairedDataset(n=4), vae=AutoencoderKL(scaling_factor=0.5))
+    # allow_train_as_val=True: the smoke reuses the train fixture as val to
+    # exercise the PSNR/SSIM plumbing (it tests wiring, not held-out
+    # generalization). Production leaves this False -> validation disabled.
+    bundle = _DataBundle(
+        latent_ds=_FakePairedDataset(n=4), vae=AutoencoderKL(scaling_factor=0.5),
+        allow_train_as_val=True,
+    )
 
     trainer, ckpt = run_paired_training(
         module=module,
@@ -130,7 +136,13 @@ def test_run_paired_training_threads_ema_decays(tmp_path):
         train_batch_size=2,
         n_epochs=1,
     )
-    bundle = _DataBundle(latent_ds=_FakePairedDataset(n=4), vae=AutoencoderKL(scaling_factor=0.5))
+    # allow_train_as_val=True: the smoke reuses the train fixture as val to
+    # exercise the PSNR/SSIM plumbing (it tests wiring, not held-out
+    # generalization). Production leaves this False -> validation disabled.
+    bundle = _DataBundle(
+        latent_ds=_FakePairedDataset(n=4), vae=AutoencoderKL(scaling_factor=0.5),
+        allow_train_as_val=True,
+    )
 
     trainer, _ = run_paired_training(
         module=module,
@@ -194,7 +206,13 @@ def test_main_reads_ema_decays_from_config(tmp_path, monkeypatch):
         "diffusion_unet_inference: {dim: [4, 4, 4], spacing: [1.0, 1.0, 1.0], modality: 1, num_inference_steps: 2}\n"
         "paired_eval: {num_inference_steps: 2, every_n_epochs: 1}\n"
     )
-    bundle = _DataBundle(latent_ds=_FakePairedDataset(n=4), vae=AutoencoderKL(scaling_factor=0.5))
+    # allow_train_as_val=True: the smoke reuses the train fixture as val to
+    # exercise the PSNR/SSIM plumbing (it tests wiring, not held-out
+    # generalization). Production leaves this False -> validation disabled.
+    bundle = _DataBundle(
+        latent_ds=_FakePairedDataset(n=4), vae=AutoencoderKL(scaling_factor=0.5),
+        allow_train_as_val=True,
+    )
 
     argv = ["-e", str(env_yaml), "-c", str(train_yaml), "-t", str(net_yaml), "--max-epochs", "1"]
     rc = paired_cli.main(argv, data_provider=lambda cfg, device: bundle)
@@ -249,6 +267,33 @@ def test_run_paired_training_wires_held_out_val_dataset(tmp_path, monkeypatch):
     )
     assert captured["train"] is train_ds
     assert captured["val"] is val_ds, "held-out val_latent_ds must be wired to the DataModule"
+
+
+def test_run_paired_training_skips_validation_when_no_held_out_val(tmp_path):
+    """No val_latent_ds and not opted in -> validation DISABLED (never reuse train).
+
+    The paired flow's safety guard: with no held-out val split (val_fraction=0 /
+    no val_data_base_dir -> empty val_manifest) and allow_train_as_val=False, no
+    PairedPSNRSSIMCallback is attached, the checkpoint monitor is dropped, and no
+    ``val/*`` metric is logged - the train set is never reused as val.
+    """
+    unet = _trainable_paired_unet()
+    module = PairedLatentFlowModule(
+        unet, FlowMatchHeunDiscreteScheduler(), lr=1e-2, lr_warmup_steps=0,
+        num_train_examples=4, train_batch_size=2, n_epochs=1,
+    )
+    # No val_latent_ds, allow_train_as_val defaults False -> has_val False -> disabled.
+    bundle = _DataBundle(latent_ds=_FakePairedDataset(n=4), vae=AutoencoderKL(scaling_factor=0.5))
+
+    trainer, ckpt = run_paired_training(
+        module=module, bundle=bundle, model_dir=str(tmp_path / "paired_run"),
+        max_epochs=1, batch_size=2, num_workers=0, limit_val_batches=2,
+        num_inference_steps=2, every_n_epochs=1,
+    )
+    assert not any(type(c).__name__ == "PairedPSNRSSIMCallback" for c in trainer.callbacks)
+    assert ckpt.monitor is None  # no val/psnr to monitor
+    assert not any(k.startswith("val/") for k in trainer.callback_metrics)
+    assert any((tmp_path / "paired_run").glob("*.ckpt"))  # training still produced a ckpt
 
 
 # -- console-entry config helper (mirrors test_training_cli._write_tiny_configs) --
@@ -329,7 +374,13 @@ def test_main_data_provider_seam_runs_end_to_end(tmp_path):
         "paired_eval: {num_inference_steps: 2, every_n_epochs: 1}\n"
     )
 
-    bundle = _DataBundle(latent_ds=_FakePairedDataset(n=4), vae=AutoencoderKL(scaling_factor=0.5))
+    # allow_train_as_val=True: the smoke reuses the train fixture as val to
+    # exercise the PSNR/SSIM plumbing (it tests wiring, not held-out
+    # generalization). Production leaves this False -> validation disabled.
+    bundle = _DataBundle(
+        latent_ds=_FakePairedDataset(n=4), vae=AutoencoderKL(scaling_factor=0.5),
+        allow_train_as_val=True,
+    )
 
     def provider(cfg, device):
         return bundle
@@ -385,7 +436,13 @@ def test_main_reads_loss_weight_from_config(tmp_path, monkeypatch):
         "diffusion_unet_inference: {dim: [4, 4, 4], spacing: [1.0, 1.0, 1.0], modality: 1, num_inference_steps: 2}\n"
         "paired_eval: {num_inference_steps: 2, every_n_epochs: 1}\n"
     )
-    bundle = _DataBundle(latent_ds=_FakePairedDataset(n=4), vae=AutoencoderKL(scaling_factor=0.5))
+    # allow_train_as_val=True: the smoke reuses the train fixture as val to
+    # exercise the PSNR/SSIM plumbing (it tests wiring, not held-out
+    # generalization). Production leaves this False -> validation disabled.
+    bundle = _DataBundle(
+        latent_ds=_FakePairedDataset(n=4), vae=AutoencoderKL(scaling_factor=0.5),
+        allow_train_as_val=True,
+    )
 
     argv = ["-e", str(env_yaml), "-c", str(train_yaml), "-t", str(net_yaml), "--max-epochs", "1"]
     rc = paired_cli.main(argv, data_provider=lambda cfg, device: bundle)

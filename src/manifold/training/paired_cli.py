@@ -53,14 +53,18 @@ class _DataBundle:
     (Injection seam for the CPU smoke test, which feeds a fake paired latent cache
     + a tiny VAE instead of warming BraTS through a real VAE encode.)
 
-    ``val_latent_ds`` is an optional subject-level held-out validation dataset
-    (``None`` → ``run_paired_training`` falls back to val=train, the legacy path).
+    ``val_latent_ds`` is an optional subject-level held-out validation dataset.
+    When absent (and not the smoke opt-in) :func:`run_paired_training` DISABLES
+    validation rather than reuse train (val/train leakage); ``has_val`` carries
+    the cold-path split decision, ``allow_train_as_val`` the smoke opt-in.
     """
 
     latent_ds: Any = None
     vae: Any = None
     val_latent_ds: Any = None
     warm_fn: Any = None
+    has_val: bool | None = None
+    allow_train_as_val: bool = False
 
 
 def _build_checkpoint(
@@ -68,6 +72,8 @@ def _build_checkpoint(
     *,
     monitor_metric: str = "val/psnr",
     save_top_k: int = 3,
+    monitor: bool = True,
+    every_n_epochs: int = 1,
 ) -> ModelCheckpoint:
     """Stock Lightning ``ModelCheckpoint`` (ADR-0006), monitoring ``val/psnr``.
 
@@ -78,7 +84,21 @@ def _build_checkpoint(
     path, which stays rank-0-only). ``mode="max"``, top-k, last, full state; the
     raw-optimizer metric is sufficient on a short from-scratch run.
     ``auto_insert_metric_name = False`` because the metric key contains a ``/``.
+
+    ``monitor=False`` (no held-out val -> validation disabled): no metric to
+    monitor, so keep ``save_last`` + a periodic ``every_n_epochs`` checkpoint.
     """
+    if not monitor:
+        return ModelCheckpoint(
+            dirpath=model_dir,
+            filename="paired-{epoch:03d}-{step}",
+            save_last=True,
+            save_top_k=1,
+            save_on_train_epoch_end=True,
+            every_n_epochs=max(1, every_n_epochs),
+            auto_insert_metric_name=False,
+            save_weights_only=False,
+        )
     return ModelCheckpoint(
         dirpath=model_dir,
         filename=f"paired-{{epoch:03d}}-{{step}}-{{{monitor_metric}:.3f}}",
@@ -125,26 +145,42 @@ def run_paired_training(
         ema_decays: EMA decays for the DoubleEMACallback (JiT default ``(0.9999, 0.9996)``);
             read from ``formulation.ema_decays`` by :func:`main`.
     """
+    # Validation requires a held-out val split. When none is configured
+    # (val_fraction=0 / no val_data_base_dir AND not the smoke opt-in), validation
+    # is DISABLED rather than silently reuse train - val/psnr would otherwise be a
+    # train metric (val/train leakage). ``has_val`` is the resolved split decision
+    # (cold path: from the val manifest; warmed path: inferred from val_latent_ds).
+    has_val = bundle.has_val if bundle.has_val is not None else (bundle.val_latent_ds is not None)
+    val_enabled = has_val or bundle.allow_train_as_val
     ema = DoubleEMACallback(module, decays=tuple(ema_decays))
-    # The PSNR/SSIM pipeline carries the LIVE module UNet by reference, so
-    # optimizer updates + the EMA swap-in are visible at validation.
-    pipeline = PairedLatentFlowPipeline(module.unet, bundle.vae, module.scheduler)
-    psnr = PairedPSNRSSIMCallback(
-        pipeline=pipeline,
-        num_inference_steps=num_inference_steps,
-        every_n_epochs=every_n_epochs,
-        ema_callback=ema,  # report on the slow-EMA arm (criterion 2)
-    )
-    callbacks: list = [TrainLossLogger(), LatentX0MAE(), ema, psnr]
-
-    # val/psnr is a global cross-rank mean under DDP (the PSNR/SSIM callback
-    # all_gather's the per-volume sums), so the monitor stays on under multi-GPU -
-    # unlike the noise->data FID path (FIDCallback is rank-0-only, ADR-0016).
-    ckpt = _build_checkpoint(
-        model_dir,
-        monitor_metric=monitor_metric,
-        save_top_k=save_top_k,
-    )
+    callbacks: list = [TrainLossLogger(), LatentX0MAE(), ema]
+    if val_enabled:
+        # The PSNR/SSIM pipeline carries the LIVE module UNet by reference, so
+        # optimizer updates + the EMA swap-in are visible at validation.
+        pipeline = PairedLatentFlowPipeline(module.unet, bundle.vae, module.scheduler)
+        psnr = PairedPSNRSSIMCallback(
+            pipeline=pipeline,
+            num_inference_steps=num_inference_steps,
+            every_n_epochs=every_n_epochs,
+            ema_callback=ema,  # report on the slow-EMA arm (criterion 2)
+        )
+        callbacks.append(psnr)
+        ckpt = _build_checkpoint(
+            model_dir,
+            monitor_metric=monitor_metric,
+            save_top_k=save_top_k,
+        )
+    else:
+        _log.warning(
+            "manifold-train-paired: no held-out validation split configured "
+            "(val_fraction=0 / no val_data_base_dir). Validation is DISABLED - "
+            "val/psnr will not be logged. Reusing the train set as val would leak "
+            "train metrics into validation, which is refused; hold out subjects "
+            "(val_fraction>0) or set val_data_base_dir to enable."
+        )
+        ckpt = _build_checkpoint(
+            model_dir, save_top_k=save_top_k, monitor=False, every_n_epochs=every_n_epochs
+        )
     callbacks.append(ckpt)
 
     # F2/F4 (ADR-0017): the paired warm runs in DataModule.setup() (post-PG,
@@ -159,14 +195,23 @@ def run_paired_training(
         num_workers=num_workers,
         val_latent_ds=bundle.val_latent_ds,
         warm_fn=bundle.warm_fn,
+        allow_train_as_val=bundle.allow_train_as_val,
     )
+    # When validation is disabled, fully skip it: limit_val_batches=0 AND no val
+    # epoch scheduled (check_val_every_n_epoch=None) + no sanity checks, so the
+    # val_dataloader is never iterated and no val/* metric is logged.
     trainer = build_trainer(
         max_epochs=max_epochs,
         callbacks=callbacks,
         model_dir=model_dir,
         devices=devices,
         accelerator=accelerator,
-        limit_val_batches=limit_val_batches,
+        limit_val_batches=limit_val_batches if val_enabled else 0,
+        extra_kwargs=(
+            None
+            if val_enabled
+            else {"num_sanity_val_steps": 0, "check_val_every_n_epoch": None}
+        ),
     )
     trainer.fit(module, datamodule=datamodule, ckpt_path=ckpt_path)
     return trainer, ckpt
@@ -351,6 +396,7 @@ def _warm_data(cfg, device) -> tuple[_DataBundle, int]:
             f"(need ≥1 subject with all 4 contrasts)."
         )
     train_manifest, val_manifest = _train_val_manifests(cfg, manifest)
+    has_val = bool(val_manifest)
     vol_ds = PairedNiftiVolumeDataset(train_manifest, target_dim=target_dim, divisor=divisor)
     val_dir = opt(cfg, "val_data_base_dir", None)
     split_note = (
@@ -361,6 +407,13 @@ def _warm_data(cfg, device) -> tuple[_DataBundle, int]:
         f"paired manifest: {len(train_manifest)} train / {len(val_manifest)} val "
         f"pairs ({split_note}; {len(vol_ds.unique_sample_ids())} train unique volumes)."
     )
+    if not has_val:
+        logger.warning(
+            "paired: no held-out val split resolved (%s) - validation will be "
+            "DISABLED (val/psnr not logged). Hold out subjects (val_fraction>0) or "
+            "set val_data_base_dir to enable; train data is never reused as val.",
+            split_note,
+        )
 
     # Build the VAE on CPU pre-PG (P1/ADR-0017): the launch-time ``device`` is the
     # default cuda:0 before LOCAL_RANK is known, so loading on it under DDP would
@@ -401,4 +454,4 @@ def _warm_data(cfg, device) -> tuple[_DataBundle, int]:
             val_latent_ds.scaling_factor = latent_ds.scaling_factor
         return latent_ds, val_latent_ds, autoencoder
 
-    return _DataBundle(vae=autoencoder, warm_fn=warm_fn), len(vol_ds)
+    return _DataBundle(vae=autoencoder, warm_fn=warm_fn, has_val=has_val), len(vol_ds)

@@ -109,7 +109,13 @@ def test_single_gpu_paired_matches_baseline(tmp_path):
         unet, FlowMatchHeunDiscreteScheduler(), lr=1e-2, lr_warmup_steps=0,
         num_train_examples=4, train_batch_size=2, n_epochs=1,
     )
-    bundle = _DataBundle(latent_ds=_FakePairedDataset(n=4), vae=AutoencoderKL(scaling_factor=0.5))
+    # allow_train_as_val=True: the smoke reuses the train fixture as val so the
+    # PSNR/SSIM + x0-MAE plumbing runs (tests wiring + a stable baseline, not
+    # held-out generalization). Production leaves this False -> validation disabled.
+    bundle = _DataBundle(
+        latent_ds=_FakePairedDataset(n=4), vae=AutoencoderKL(scaling_factor=0.5),
+        allow_train_as_val=True,
+    )
     trainer, _ckpt = run_paired_training(
         module=module, bundle=bundle, model_dir=str(tmp_path / "p"), max_epochs=1, batch_size=2,
         num_workers=0, limit_val_batches=2, num_inference_steps=2, every_n_epochs=1,

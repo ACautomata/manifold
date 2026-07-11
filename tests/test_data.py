@@ -234,11 +234,31 @@ def test_build_datamodule_returns_spt_datamodule() -> None:
     ds = LatentDataset(_FakeVolumeDataset(4), encode_fn=_mock_encode_fn())
     ds.warm_cache(torch.device("cpu"), show_progress=False)
     estimate_scale_factor(ds, AutoencoderKL(scaling_factor=1.0), sample_size=4)
-    dm = build_datamodule(ds, batch_size=2)
+    # allow_train_as_val=True: this plumbing test does not hold out a val set, so
+    # it opts into train-as-val (smoke only). Production passes a disjoint
+    # val_dataset - build_datamodule REFUSES to silently reuse train as val.
+    dm = build_datamodule(ds, batch_size=2, allow_train_as_val=True)
     assert isinstance(dm, SptDataModule)
     batch = next(iter(dm.train_dataloader()))
     assert {"latent", "spacing", "label"} <= set(batch)
     assert batch["latent"].shape[0] == 2  # batch_size
+
+
+def test_build_datamodule_refuses_train_as_val_without_opt_in() -> None:
+    """No held-out val_dataset and no opt-in -> ValueError (never silently reuse train).
+
+    The guard against val/train leakage: a caller that forgets the val split gets a
+    clear error instead of train metrics silently reported as val/*. The smoke opt-in
+    (allow_train_as_val=True) reuses train with a warning, for plumbing tests only.
+    """
+    ds = LatentDataset(_FakeVolumeDataset(4), encode_fn=_mock_encode_fn())
+    ds.warm_cache(torch.device("cpu"), show_progress=False)
+    estimate_scale_factor(ds, AutoencoderKL(scaling_factor=1.0), sample_size=4)
+    with pytest.raises(ValueError, match="held-out validation dataset"):
+        build_datamodule(ds, batch_size=2)  # no val_dataset, no opt-in -> raise
+    # The opt-in restores the legacy train-as-val plumbing path.
+    dm = build_datamodule(ds, batch_size=2, allow_train_as_val=True)
+    assert isinstance(dm, SptDataModule)
 
 
 def test_warm_latent_pipeline_orchestration(tmp_path) -> None:

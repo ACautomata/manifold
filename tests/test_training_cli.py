@@ -69,8 +69,12 @@ def _module():
 
 def _bundle():
     vae = AutoencoderKL(scaling_factor=0.5)
+    # allow_train_as_val=True: the smoke reuses the train fixture as val to
+    # exercise the FID + x0-MAE plumbing (it tests wiring, not held-out
+    # generalization). Production leaves this False -> validation disabled.
     return _DataBundle(
-        latent_ds=_LatentDS(), vae=vae, val_latents=torch.randn(5, 4, 4, 4, 4)
+        latent_ds=_LatentDS(), vae=vae, val_latents=torch.randn(5, 4, 4, 4, 4),
+        allow_train_as_val=True,
     )
 
 
@@ -166,6 +170,31 @@ def test_run_training_writes_ckpt_and_logs_metrics(tmp_path):
     # The monitored checkpoint resolved a best path distinct from last.ckpt.
     assert ckpt.best_model_path and Path(ckpt.best_model_path).is_file()
     assert Path(ckpt.best_model_path).name != "last.ckpt"
+
+
+def test_run_training_skips_validation_when_no_held_out_val(tmp_path):
+    """Production (allow_train_as_val=False, no val plumbing): validation is DISABLED.
+
+    The regular ``manifold-train`` flow has no held-out val source, so it must NOT
+    silently reuse train as val. With ``allow_train_as_val=False`` (the default) and
+    ``enable_fid=True``, no FIDCallback is attached, no ``val/x0_mae`` is logged, the
+    checkpoint monitor is dropped (no val/* metric to monitor), and no ``val/*`` key
+    appears - validation is skipped, never run on train data.
+    """
+    vae = AutoencoderKL(scaling_factor=0.5)
+    bundle = _DataBundle(  # allow_train_as_val defaults False -> production: no val
+        latent_ds=_LatentDS(), vae=vae, val_latents=torch.randn(5, 4, 4, 4, 4)
+    )
+    trainer, ckpt = run_training(
+        module=_module(), bundle=bundle, feature_net=_FakeFeatureNet(),
+        model_dir=str(tmp_path), max_epochs=1, devices=1, accelerator="cpu",
+        enable_fid=True, num_synth=2, limit_val_batches=2, cov_ridge=1e-2,
+    )
+    assert not any(type(c).__name__ == "FIDCallback" for c in trainer.callbacks)
+    assert not any(type(c).__name__ == "LatentX0MAE" for c in trainer.callbacks)
+    assert ckpt.monitor is None  # no val/* metric to monitor
+    assert not any(k.startswith("val/") for k in trainer.callback_metrics)
+    assert any(Path(str(tmp_path)).glob("*.ckpt"))  # training still produced a ckpt
 
 
 def test_build_checkpoint_monitor_matches_logged_arm(tmp_path):
