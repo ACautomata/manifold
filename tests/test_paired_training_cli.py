@@ -160,6 +160,45 @@ def test_run_paired_training_threads_ema_decays(tmp_path):
     assert ema_cb.decays == (0.999, 0.9996), "ema_decays must flow to the DoubleEMACallback"
 
 
+def test_run_paired_training_threads_check_val_every_n_epoch(tmp_path):
+    """``check_val_every_n_epoch`` flows run_paired_training -> Trainer kwargs.
+
+    Guards the last-epoch-only-val wiring (autoresearch): when set, the Trainer is
+    built with ``check_val_every_n_epoch=<N>`` AND ``num_sanity_val_steps=0`` so
+    validation runs only at the final epoch. ``None`` (default) leaves Lightning's
+    per-epoch cadence untouched.
+    """
+    unet = _trainable_paired_unet()
+    module = PairedLatentFlowModule(
+        unet,
+        FlowMatchHeunDiscreteScheduler(),
+        lr=1e-2,
+        lr_warmup_steps=0,
+        num_train_examples=4,
+        train_batch_size=2,
+        n_epochs=1,
+    )
+    bundle = _DataBundle(
+        latent_ds=_FakePairedDataset(n=4), vae=AutoencoderKL(scaling_factor=0.5),
+        allow_train_as_val=True,
+    )
+
+    trainer, _ = run_paired_training(
+        module=module,
+        bundle=bundle,
+        model_dir=str(tmp_path / "paired_run"),
+        max_epochs=1,
+        batch_size=2,
+        num_workers=0,
+        limit_val_batches=2,
+        num_inference_steps=2,
+        every_n_epochs=1,
+        check_val_every_n_epoch=20,
+    )
+    assert trainer.check_val_every_n_epoch == 20, "check_val_every_n_epoch must reach the Trainer"
+    assert trainer.num_sanity_val_steps == 0, "num_sanity_val_steps=0 must be applied alongside"
+
+
 def test_main_reads_ema_decays_from_config(tmp_path, monkeypatch):
     """``formulation.ema_decays`` flows config -> main -> DoubleEMACallback.
 

@@ -63,6 +63,12 @@ paired_eval:
                            # more steps diverge on the undertrained high-t velocity field.
   every_n_epochs: 1        # cadence (1 = every validation epoch)
   save_top_k: 3            # top-k checkpoints on the monitored metric
+  # Last-epoch-only val (autoresearch "train fully, then val once"): set = n_epochs so
+  # Lightning validates ONLY at the final epoch (Trainer.check_val_every_n_epoch), instead
+  # of every epoch. null/absent = validate every epoch (the default). When non-null,
+  # num_sanity_val_steps=0 is also applied (skip the 2-batch pre-training probe) → exactly
+  # one val pass, after all training. The PSNR/SSIM callback then logs a single val/psnr.
+  check_val_every_n_epoch: null
 
 # Stock Lightning ModelCheckpoint (ADR-0006). Single-GPU monitors val/psnr
 # (mode=max, top-3, last, full state); under DDP (PSNR/SSIM is rank-0-only)

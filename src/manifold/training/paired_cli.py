@@ -130,6 +130,7 @@ def run_paired_training(
     monitor_metric: str = "val/psnr",
     ckpt_path: str | None = None,
     ema_decays: tuple[float, ...] = (0.9999, 0.9996),
+    check_val_every_n_epoch: int | None = None,
 ) -> tuple[pl.Trainer, ModelCheckpoint]:
     """Assemble callbacks + ``Trainer`` and ``fit`` the paired module (the core seam).
 
@@ -144,6 +145,11 @@ def run_paired_training(
         ckpt_path: optional resume checkpoint passed to ``fit``.
         ema_decays: EMA decays for the DoubleEMACallback (JiT default ``(0.9999, 0.9996)``);
             read from ``formulation.ema_decays`` by :func:`main`.
+        check_val_every_n_epoch: when set (and validation is enabled), forward
+            ``check_val_every_n_epoch`` + ``num_sanity_val_steps=0`` to the Trainer so
+            validation runs only every N epochs — e.g. ``=max_epochs`` yields a single
+            end-of-training val pass (the autoresearch "train fully, then val once" mode).
+            ``None`` (default) keeps Lightning's per-epoch validation cadence.
     """
     # Validation requires a held-out val split. When none is configured
     # (val_fraction=0 / no val_data_base_dir AND not the smoke opt-in), validation
@@ -203,6 +209,21 @@ def run_paired_training(
     # callback is not attached, so no ``val/*`` metric is logged. (Do NOT also pass
     # ``check_val_every_n_epoch=None`` - Lightning's contract then requires an
     # integer ``val_check_interval``, which the float default violates.)
+    extra_kwargs: dict | None = None
+    if not val_enabled:
+        extra_kwargs = {"num_sanity_val_steps": 0}
+    elif check_val_every_n_epoch is not None:
+        # Last-epoch-only val (autoresearch): validate ONLY every N epochs instead
+        # of every epoch. ``check_val_every_n_epoch=max_epochs`` makes Lightning run
+        # a single validation pass at the final epoch; paired with
+        # ``num_sanity_val_steps=0`` (skip the 2-batch pre-training probe), the
+        # PSNR/SSIM callback decodes exactly once — after all training. The PSNR
+        # callback's own ``every_n_epochs`` is left at 1 so it runs whenever
+        # Lightning validation runs.
+        extra_kwargs = {
+            "check_val_every_n_epoch": int(check_val_every_n_epoch),
+            "num_sanity_val_steps": 0,
+        }
     trainer = build_trainer(
         max_epochs=max_epochs,
         callbacks=callbacks,
@@ -210,7 +231,7 @@ def run_paired_training(
         devices=devices,
         accelerator=accelerator,
         limit_val_batches=limit_val_batches if val_enabled else 0,
-        extra_kwargs=None if val_enabled else {"num_sanity_val_steps": 0},
+        extra_kwargs=extra_kwargs,
     )
     trainer.fit(module, datamodule=datamodule, ckpt_path=ckpt_path)
     return trainer, ckpt
@@ -310,6 +331,7 @@ def main(argv: list[str] | None = None, *, data_provider=None) -> int:
         monitor_metric=args.monitor,
         save_top_k=int(paired_eval.get("save_top_k", 3)),
         limit_val_batches=int(opt(cfg, "val_subset_size", 4)),
+        check_val_every_n_epoch=paired_eval.get("check_val_every_n_epoch", None),
     )
     print(f"[manifold-train-paired] done; checkpoints under {cfg.model_dir}")
     return 0
