@@ -243,14 +243,93 @@ def _real_inputs(cfg, native_dir: str, latents_dir: str, device: torch.device) -
     """Build the real paired-reward inputs from the paired native export + latent cache.
 
     Loads the frozen paired generator (``--native-dir``, issue #94's
-    :func:`~manifold.data.paired_reward_pairs.load_frozen_paired_generator`), builds
-    train/val/probe condition-aware pairs over the paired-train / paired-val subjects
-    (the **paired** split mechanism, ADR-0022), and returns the precomputed pair
-    datasets. The generator/scheduler are discarded - the Module holds no generator
-    (ADR-0020). Implemented in issue #95 (the real fake-cache builder + 2-way split).
+    :func:`~manifold.data.paired_reward_pairs.load_frozen_paired_generator` - slow-EMA
+    arm + base scheduler + scaling_factor), resolves the **paired** train/val split
+    (``_train_val_manifests`` / ``val_data_base_dir`` / ``val_fraction`` - NOT JiT
+    reward's ``partition_subjects``, ADR-0022), warms the paired latent cache over
+    each split (reusing the existing ``paired_train`` cache - disjoint sample_ids
+    -> free disk hits), sets each dataset's ``scaling_factor`` to the export's
+    (ADR-0021 - scale-consistency: reuse verbatim, never re-estimate), and builds
+    the train/val/probe condition-aware pairs via
+    :func:`~manifold.data.paired_reward_pairs.build_paired_reward_inputs` (the
+    offline fake-cache builder, ADR-0020). The generator is used once; the returned
+    inputs carry only precomputed pairs - the Module holds no generator.
     """
-    raise NotImplementedError(
-        "Real paired-reward inputs land in issue #95 (the real fake-cache builder + "
-        "2-way subject split). Slice #93 ships the synthetic data_provider smoke only; "
-        "pass --data-provider (or the data_provider seam) for the CPU smoke."
+    import os
+
+    from ..config import autoencoder_divisor
+    from ..data.paired_brats import build_brats_pair_manifest
+    from ..data.paired_latent_dataset import PairedLatentDataset
+    from ..data.paired_reward_pairs import build_paired_reward_inputs, load_frozen_paired_generator
+    from ..data.paired_volume_dataset import PairedNiftiVolumeDataset
+    from .paired_cli import _train_val_manifests
+
+    # target_dim MUST match the paired_train cache the generator trained on (cache
+    # reuse, ADR-0021/0022: sample_ids are derived from the volume + target_dim, so
+    # a mismatch breaks disk hits). Read directly (not opt()) - it is load-bearing.
+    inf_cfg = cfg.diffusion_unet_inference
+    target_dim = tuple(int(d) for d in inf_cfg.dim)
+    divisor = autoencoder_divisor(cfg)
+
+    # The frozen paired generator (slow-EMA arm, base scheduler, scaling_factor).
+    generator, base_scheduler, scaling_factor = load_frozen_paired_generator(native_dir)
+    generator.to(device).eval()
+    for p in generator.parameters():
+        p.requires_grad_(False)
+
+    # The PAIRED 2-way subject split (ADR-0022): resolve via _train_val_manifests
+    # (val_data_base_dir / val_fraction), NOT JiT reward's partition_subjects.
+    brats_dir = str(cfg.data_base_dir)
+    manifest = build_brats_pair_manifest(brats_dir)
+    if not manifest:
+        raise FileNotFoundError(
+            f"No paired BraTS volumes found under data_base_dir={brats_dir} "
+            f"(need >=1 subject with all 4 contrasts)."
+        )
+    train_manifest, val_manifest = _train_val_manifests(cfg, manifest)
+    if not val_manifest:
+        raise ValueError(
+            "Paired reward needs a held-out val split (val_data_base_dir set, or "
+            "val_fraction > 0); train data is never reused as val (ADR-0022)."
+        )
+
+    # Reuse the existing paired_train cache (disjoint sample_ids -> free disk hits,
+    # no write conflict, ADR-0022). No VAE is needed: the cache is the fully-warmed
+    # `paired_train` cache from a manifold-train-paired run, so warm_cache reads
+    # every volume from disk (encode_fn=None is tolerated on cache hits). A partial
+    # cache fails fast (PairedLatentDataset raises a clear "cache miss - no encoder"
+    # error) rather than silently re-encoding. --latents-dir overrides latent_cache_dir.
+    cache_dir = str(
+        latents_dir
+        or opt(cfg, "latent_cache_dir", os.path.join(str(cfg.model_dir), "paired_latent_cache"))
+    )
+    cache_tag = str(opt(cfg, "paired_reward.cache_tag", "paired_train"))
+
+    def _ds(manifest_split):
+        vol_ds = PairedNiftiVolumeDataset(manifest_split, target_dim=target_dim, divisor=divisor)
+        ds = PairedLatentDataset(vol_ds, encode_fn=None, cache_dir=cache_dir, cache_tag=cache_tag)
+        ds.warm_cache(device, logger=_log, show_progress=False)
+        # Scale-on-read uses the EXPORT scaling_factor verbatim (ADR-0021): the
+        # generator trained on latents scaled by this factor, so the rollout
+        # operates in its training space. Never re-estimate.
+        ds.scaling_factor = float(scaling_factor)
+        return ds
+
+    train_ds, val_ds = _ds(train_manifest), _ds(val_manifest)
+
+    num_steps = int(opt(cfg, "paired_reward.num_steps", 8))
+    probe_num_steps = int(opt(cfg, "paired_reward.precompute_num_steps", num_steps))
+    n_probe = int(opt(cfg, "paired_reward.n_probe", 64))
+    gen_batch_size = int(opt(cfg, "paired_reward.gen_batch_size", 4))
+    return build_paired_reward_inputs(
+        train_ds=train_ds,
+        val_ds=val_ds,
+        generator=generator,
+        base_scheduler=base_scheduler,
+        num_steps=num_steps,
+        probe_num_steps=probe_num_steps,
+        n_probe=n_probe,
+        batch_size=gen_batch_size,
+        seed=int(opt(cfg, "random_seed", 0)),
+        device=device,
     )

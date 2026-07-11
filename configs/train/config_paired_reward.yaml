@@ -39,3 +39,21 @@ paired_reward:
 # (save_last + save_top_k=1 keep the latest) - mirrors the JiT reward checkpoint.
 checkpoint:
   save_top_k: 1
+
+# Inference block read by manifold-train-paired-reward's --native-dir real path
+# (_real_inputs): target_dim MUST match the paired_train cache the generator trained
+# on (cache reuse, ADR-0021/0022 - sample_ids derive from the volume + target_dim, so
+# a mismatch breaks disk hits). Mirrors config_paired_jit.yaml verbatim.
+diffusion_unet_inference:
+  dim: [256, 256, 128]          # latent target shape [C, D, H, W] (B prepended)
+  spacing: [1.7, 1.7, 2]
+  top_region_index: [0, 1, 0, 0]
+  bottom_region_index: [0, 0, 1, 0]
+  random_seed: 0
+  num_inference_steps: 8
+  modality: 1
+  autoencoder_sliding_window_infer_size: [80, 80, 80]
+  autoencoder_sliding_window_infer_overlap: 0.4
+  autoencoder_encode_sliding_window_infer_size: [320, 320, 160]
+  autoencoder_encode_sliding_window_infer_overlap: 0.4
+

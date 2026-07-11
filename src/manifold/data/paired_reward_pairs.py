@@ -253,8 +253,112 @@ def load_frozen_paired_generator(native_dir: str | Path):
     return pipe.unet, scheduler, scaling_factor
 
 
+def _stack_paired_latents(dataset) -> tuple[Tensor, Tensor, Tensor, Tensor, Tensor]:
+    """Stack a warmed :class:`~manifold.data.PairedLatentDataset` into ``(src, tgt, src_lab, tgt_lab, spacing)``.
+
+    The dataset's ``__getitem__`` emits ``{src_latent, tgt_latent, src_label,
+    tgt_label, spacing}`` (both latents **scaled** by ``dataset.scaling_factor`` -
+    scale-on-read, ADR-0003); stacking them yields the per-sample tensors the
+    reward builders consume. The latents are already scaled into the generator's
+    training space (the caller sets ``dataset.scaling_factor`` to the export's
+    ``vae.scaling_factor`` verbatim - ADR-0021).
+    """
+    srcs, tgts, src_labs, tgt_labs, spacings = [], [], [], [], []
+    for i in range(len(dataset)):
+        item = dataset[i]
+        srcs.append(item["src_latent"])
+        tgts.append(item["tgt_latent"])
+        src_labs.append(torch.as_tensor(item["src_label"], dtype=torch.long))
+        tgt_labs.append(torch.as_tensor(item["tgt_label"], dtype=torch.long))
+        spacings.append(torch.as_tensor(item["spacing"], dtype=torch.float32))
+    # Each item's spacing is a [3] tensor -> stack yields per-sample [N, 3]; the
+    # builder slices it per batch (and the rollout also accepts a [3] broadcast).
+    return (
+        torch.stack(srcs),
+        torch.stack(tgts),
+        torch.stack(src_labs),
+        torch.stack(tgt_labs),
+        torch.stack(spacings),
+    )
+
+
+def build_paired_reward_inputs(
+    *,
+    train_ds,
+    val_ds,
+    generator,
+    base_scheduler: FlowMatchHeunDiscreteScheduler,
+    num_steps: int,
+    probe_num_steps: int | None = None,
+    n_probe: int = 64,
+    batch_size: int = 4,
+    seed: int = 0,
+    device: torch.device | str | None = None,
+):
+    """Build the real paired-reward inputs from warmed train/val paired latent datasets.
+
+    The offline fake-cache builder (ADR-0020): stack the warmed train + val paired
+    latent datasets (both **scaled** via ``dataset.scaling_factor`` = the export's
+    ``vae.scaling_factor``, ADR-0021), then build the condition-aware real-vs-fake
+    pairs over each split + the generated-end probe over the val split. The generator
+    is used **once** (the rollout is deterministic - fakes are precomputed, not
+    re-rolled); the returned :class:`PairedRewardInputs` carries only precomputed
+    pairs - the Module holds no generator (ADR-0020).
+
+    The 2-way split is the caller's responsibility (ADR-0022): pass train/val
+    :class:`~manifold.data.PairedLatentDataset` over the **paired** split's train /
+    val subjects (resolved via ``_train_val_manifests`` / ``val_data_base_dir`` in
+    the CLI), NOT JiT reward's ``partition_subjects`` (different subject-id
+    derivation -> silent leak).
+
+    Args:
+        train_ds / val_ds: warmed :class:`PairedLatentDataset` (scale-on-read; set
+            ``scaling_factor`` to the export's before calling).
+        generator: the frozen Paired-JiT UNet (``in_channels = 2·C_latent``).
+        base_scheduler: the base :class:`FlowMatchHeunDiscreteScheduler` (the loser
+            is a full rollout).
+        num_steps: rollout Heun budget (a one-time precompute cost, ADR-0020).
+        probe_num_steps: probe rollout budget (defaults to ``num_steps``).
+        n_probe: max val latents for the generated-end probe.
+        batch_size: rollout batch size.
+
+    Returns:
+        A :class:`PairedRewardInputs` (train pairs + val pairs + the probe).
+    """
+    from ..training.paired_reward_cli import PairedRewardInputs
+
+    device = torch.device(device) if device is not None else next(generator.parameters()).device
+    partial_scheduler = PartialFlowMatchHeunScheduler(**base_scheduler.config)
+    probe_steps = int(probe_num_steps) if probe_num_steps is not None else int(num_steps)
+
+    x_src_tr, x_tgt_tr, src_lab_tr, tgt_lab_tr, spacing_tr = _stack_paired_latents(train_ds)
+    train_pairs = build_paired_reward_pairs(
+        x_src_tr, x_tgt_tr, generator, base_scheduler,
+        src_label=src_lab_tr, tgt_label=tgt_lab_tr, spacing=spacing_tr,
+        num_steps=num_steps, batch_size=batch_size, device=device,
+    )
+    x_src_va, x_tgt_va, src_lab_va, tgt_lab_va, spacing_va = _stack_paired_latents(val_ds)
+    val_pairs = build_paired_reward_pairs(
+        x_src_va, x_tgt_va, generator, base_scheduler,
+        src_label=src_lab_va, tgt_label=tgt_lab_va, spacing=spacing_va,
+        num_steps=num_steps, batch_size=batch_size, device=device,
+    )
+    n_probe = min(n_probe, len(val_ds))
+    probe = build_paired_reward_probe(
+        x_src_va[:n_probe], x_tgt_va[:n_probe], generator, partial_scheduler,
+        src_label=src_lab_va[:n_probe], tgt_label=tgt_lab_va[:n_probe], spacing=spacing_va[:n_probe],
+        num_steps=probe_steps, batch_size=batch_size, seed=seed, device=device,
+    )
+    _log.info(
+        "build_paired_reward_inputs: %d train / %d val pairs + %d probe (num_steps=%d).",
+        len(train_pairs), len(val_pairs), len(probe), num_steps,
+    )
+    return PairedRewardInputs(train_pair_ds=train_pairs, val_pair_ds=val_pairs, val_probe=probe)
+
+
 __all__ = [
     "build_paired_reward_pairs",
+    "build_paired_reward_inputs",
     "build_paired_reward_probe",
     "load_frozen_paired_generator",
 ]
