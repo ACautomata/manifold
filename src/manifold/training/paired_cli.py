@@ -109,6 +109,7 @@ def run_paired_training(
     every_n_epochs: int = 1,
     monitor_metric: str = "val/psnr",
     ckpt_path: str | None = None,
+    ema_decays: tuple[float, ...] = (0.9999, 0.9996),
 ) -> tuple[pl.Trainer, ModelCheckpoint]:
     """Assemble callbacks + ``Trainer`` and ``fit`` the paired module (the core seam).
 
@@ -121,8 +122,10 @@ def run_paired_training(
         num_inference_steps: Heun integration steps for the validation rollout.
         monitor_metric: ``"val/psnr"`` or ``"val/ssim"`` (both ``mode="max"``).
         ckpt_path: optional resume checkpoint passed to ``fit``.
+        ema_decays: EMA decays for the DoubleEMACallback (JiT default ``(0.9999, 0.9996)``);
+            read from ``formulation.ema_decays`` by :func:`main`.
     """
-    ema = DoubleEMACallback(module)
+    ema = DoubleEMACallback(module, decays=tuple(ema_decays))
     # The PSNR/SSIM pipeline carries the LIVE module UNet by reference, so
     # optimizer updates + the EMA swap-in are visible at validation.
     pipeline = PairedLatentFlowPipeline(module.unet, bundle.vae, module.scheduler)
@@ -246,6 +249,7 @@ def main(argv: list[str] | None = None, *, data_provider=None) -> int:
     )
 
     paired_eval = opt(cfg, "paired_eval", {})
+    ema_decays = opt(cfg.formulation, "ema_decays", [0.9999, 0.9996])
     max_epochs = int(args.max_epochs or train_cfg.n_epochs)
     run_paired_training(
         module=module,
@@ -256,6 +260,7 @@ def main(argv: list[str] | None = None, *, data_provider=None) -> int:
         batch_size=int(train_cfg.batch_size),
         seed=seed,
         ckpt_path=args.resume,
+        ema_decays=ema_decays,
         num_inference_steps=int(paired_eval.get("num_inference_steps", 4)),
         every_n_epochs=int(paired_eval.get("every_n_epochs", 1)),
         monitor_metric=args.monitor,

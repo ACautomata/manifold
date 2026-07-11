@@ -138,6 +138,7 @@ def run_training(
     cov_ridge: float = 1e-6,
     log_raw_fid: bool = True,
     val_subset_size: int = 32,
+    ema_decays: tuple[float, ...] = (0.9999, 0.9996),
 ) -> tuple[pl.Trainer, ModelCheckpoint]:
     """Assemble callbacks + ``Trainer`` and ``fit`` the module (the core seam).
 
@@ -149,8 +150,10 @@ def run_training(
         bundle: the warmed latent dataset + held VAE + fixed real-subset latents.
         feature_net: the FID feature network (RadImageNet, or a test fake).
         ckpt_path: optional warm-start / resume checkpoint passed to ``fit``.
+        ema_decays: EMA decays for the DoubleEMACallback (JiT default ``(0.9999, 0.9996)``);
+            read from ``formulation.ema_decays`` by :func:`main`.
     """
-    ema = DoubleEMACallback(module)
+    ema = DoubleEMACallback(module, decays=tuple(ema_decays))
     callbacks: list = [TrainLossLogger(), LatentX0MAE(), ema]
 
     multi_gpu = is_multi_gpu(devices)
@@ -384,6 +387,7 @@ def main(argv: list[str] | None = None, *, data_provider=None) -> int:
 
     # Thread the optional config blocks (from the train recipe) as overrides so
     # fid_eval.* / checkpoint.* knobs are actually reachable via dotlist/YAML.
+    ema_decays = opt(cfg.formulation, "ema_decays", [0.9999, 0.9996])
     fid_cfg = opt(cfg, "fid_eval", {})
     ckpt_cfg = opt(cfg, "checkpoint", {})
     fid_kwargs = _dict_subset(
@@ -409,6 +413,7 @@ def main(argv: list[str] | None = None, *, data_provider=None) -> int:
         save_top_k=ckpt_save_top_k,
         limit_val_batches=int(opt(cfg, "val_subset_size", 4)),
         val_subset_size=int(opt(cfg, "val_subset_size", 32)),
+        ema_decays=ema_decays,
         **fid_kwargs,
     )
     print(f"[manifold-train] done; checkpoints under {cfg.model_dir}")
