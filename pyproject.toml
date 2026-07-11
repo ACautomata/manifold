@@ -61,6 +61,10 @@ manifold-train-grpo = "manifold.training.grpo_cli:main"
 # The Paired JiT (src→tgt flow) launcher (issue #69): warms the paired BraTS
 # latent cache (Slice 2) and fits the paired Module + double-EMA + PSNR/SSIM.
 manifold-train-paired = "manifold.training.paired_cli:main"
+# The Paired-JiT reward model launcher (issue #93): real-vs-fake, condition-aware
+# PatchGAN reward (in_channels = 2·C_latent), offline-precomputed pairs -> fit.
+# The frozen paired generator loads from --native-dir (issue #94's paired export).
+manifold-train-paired-reward = "manifold.training.paired_reward_cli:main"
 
 [project.urls]
 Homepage = "https://github.com/junran/manifold"

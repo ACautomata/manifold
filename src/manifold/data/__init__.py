@@ -33,6 +33,7 @@ from .paired_latent_dataset import (
     PairedLatentDataset,
     estimate_paired_scale_factor,
 )
+from .paired_reward_pairs import build_paired_reward_pairs, build_paired_reward_probe
 from .paired_volume_dataset import PairedNiftiVolumeDataset
 from .reward_pairs import (
     RewardPairDataset,
@@ -64,6 +65,8 @@ __all__ = [
     "build_brats_pair_manifest",
     "build_datamodule",
     "build_encode_pipeline",
+    "build_paired_reward_pairs",
+    "build_paired_reward_probe",
     "build_volume_dataset",
     "collect_nifti_paths",
     "detect_brats_contrast",

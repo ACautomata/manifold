@@ -16,6 +16,7 @@ from .ema import DoubleEMACallback
 from .export import export_to_native
 from .grpo_cli import run_grpo_training
 from .metrics import LatentX0MAE, TrainLossLogger
+from .paired_reward_cli import run_paired_reward_training
 from .reward_cli import run_reward_training
 from .trainer import build_trainer
 
@@ -26,6 +27,7 @@ __all__ = [
     "build_trainer",
     "export_to_native",
     "run_grpo_training",
+    "run_paired_reward_training",
     "run_reward_training",
     "run_training",
 ]
