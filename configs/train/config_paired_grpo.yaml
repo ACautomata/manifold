@@ -1,0 +1,65 @@
+# G2RPO recipe preset — Granular-GRPO policy post-training of the Paired JiT UNet
+# over a src→tgt Brownian bridge (ADR-0024 / issues #102/#103). Composed with a
+# BraTS env + the network config (latent metadata). The train/val sets carry the
+# source latent + the contrast direction (pure-RL — the target volume is unused at
+# train; the bridge pins Z_1 → x̂₁_θ).
+#
+# Consumed by manifold-train-paired-grpo. G2RPO needs no VAE / image data — the
+# reward scores the terminal latent cat([x_src, z_K]) (no VAE decode per branch).
+# The real-data launch (slow-EMA paired UNet + trained paired reward) is gated on
+# the bridge-noise reward-ranking probe + a tiny-config measurement (#106).
+
+paired_grpo_train:
+  batch_size: 2
+  lr: 1.0e-6
+  n_epochs: 50
+  # The anchor grid resolution (two-eval Heun steps over t: 0 → 1). 8 matches the
+  # Paired JiT production inference count, so the bridge rollout samples the policy
+  # at the resolution it deploys at (anchor / suffix / deployed sampler all share it).
+  num_steps: 8
+  # The group size — bridge-branch siblings sharing one (x_src, direction) pair,
+  # over whose terminal rewards the advantage is normalized.
+  G: 8
+  # The perturbed step indices (the first half) — one stochastic bridge SDE step off
+  # the anchor at each, then a deterministic Heun suffix to the terminal latent. The
+  # first half stays away from the §7 var-collapse terminal (σ² → 0 as t_next → 1).
+  eta_step_list: [0, 1, 2, 3]
+  # The bridge diffusion scale η (σ² = η·Δt·(1−t_next)/(1−t)) — the single exploration
+  # knob. The η-ramp (#104) warms this from η_min → η_max over the first ~0.3 epochs
+  # (the paired UNet was trained on a zero-noise deterministic transport, so a static
+  # high η shocks it); the value below is η_max.
+  eta: 0.7
+  # The PPO clipped-surrogate ε — tight, so each update is microscopic and stable.
+  clip_range: 1.0e-4
+  # The advantage-magnitude clip (a single spoofed-reward outlier cannot dominate a step).
+  adv_clip_max: 5.0
+  # anti-reward-hacking knobs (ADR-0015, carried over from the noise→data GRPO v2
+  # fix). kl_coef is on the PER-ELEMENT scale: _transition_kl returns the per-element
+  # mean (joint KL = D × it, D = C·D·H·W), so the effective joint-KL weight = kl_coef/D.
+  # For a textbook β anchor set kl_coef = β·D. The closed form is valid ONLY while σ
+  # stays θ-independent (the bridge σ depends only on (t, t_next, η) — ADR-0024).
+  # reward_bound: "tanh" caps the raw logit into (−1, 1) — monotone, so sibling rewards
+  #   stay distinct; reward_temp ≈ the paired PatchGAN's real-data reward std
+  #   (recalibrated at startup in #104).
+  kl_coef: 0.1
+  reward_bound: "tanh"
+  reward_temp: 8.0
+  # The source-latent shape (C_latent, D, H, W) — the bridge's t=0 data endpoint and
+  # the concat conditioning (the UNet doubles it to 2·C_latent internally). Override
+  # per dataset.
+  latent_shape: [4, 64, 64, 32]
+
+# Real-data wiring (the #104 launch). The slow-EMA Paired JiT policy loads from
+# --native-dir (load_frozen_paired_generator, ADR-0021); the trained paired
+# RewardModel (in_channels = 2·C_latent) from --reward-path; the source latents +
+# contrast labels from --latents-dir. The RewardModel architecture comes from the
+# network config (``-t``).
+paired_grpo:
+  val_fraction: 0.2  # held-out subject fraction (val source latents).
+
+# Stock Lightning ModelCheckpoint: #103 monitors val/mean_reward (the progress
+# signal, max); #105 switches selection to val/psnr (max, the reproducible
+# deterministic-Heun goal metric) when the PSNR callback is attached. Under DDP the
+# rank-local val/mean_reward monitor is dropped (val/psnr is a global cross-rank mean).
+checkpoint:
+  save_top_k: 1

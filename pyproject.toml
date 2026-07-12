@@ -65,6 +65,11 @@ manifold-train-paired = "manifold.training.paired_cli:main"
 # PatchGAN reward (in_channels = 2·C_latent), offline-precomputed pairs -> fit.
 # The frozen paired generator loads from --native-dir (issue #94's paired export).
 manifold-train-paired-reward = "manifold.training.paired_reward_cli:main"
+# The Paired-JiT GRPO launcher (issue #103, G2RPO / ADR-0024): Granular-GRPO
+# singular-branch post-training of the Paired JiT UNet over a src→tgt Brownian
+# bridge against the frozen paired reward. The bridge is training-only; inference
+# reuses manifold-train-paired's deterministic Heun pipeline.
+manifold-train-paired-grpo = "manifold.training.paired_grpo_cli:main"
 
 [project.urls]
 Homepage = "https://github.com/junran/manifold"
