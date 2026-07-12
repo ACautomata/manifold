@@ -142,12 +142,15 @@ class EtaRampCallback(pl.Callback):
         return self.eta_min + (self.eta_max - self.eta_min) * frac
 
     def on_train_batch_start(self, trainer, pl_module, batch, batch_idx) -> None:
-        # Batch-timeline (NOT global_step): estimated_stepping_batches is the BATCH count
-        # and batch_idx is the batch index, so the ramp spans ramp_fraction of batches.
-        # global_step counts opt steps (len(eta_step_list) per batch) -> would finish
-        # Lx too early (codex #109 P2).
+        # Fit-wide batch index (NOT epoch-local batch_idx): batch_idx resets to 0 each
+        # epoch while estimated_stepping_batches spans the WHOLE fit, so feeding batch_idx
+        # restarts the ramp at eta_min every epoch and never holds eta_max in multi-epoch
+        # runs (codex #110 P1). current_epoch * num_training_batches + batch_idx is the
+        # fit-wide batch counter that matches estimated_stepping_batches' denominator.
         total = int(trainer.estimated_stepping_batches) or 1
-        self.scheduler.eta = self.eta_at(int(batch_idx), total)
+        per_epoch = int(trainer.num_training_batches) or 1
+        fit_step = int(trainer.current_epoch) * per_epoch + int(batch_idx)
+        self.scheduler.eta = self.eta_at(fit_step, total)
 
 
 def calibrate_reward_temp(reward_model, samples: torch.Tensor, *, batch_size: int = 8) -> float:
@@ -173,7 +176,19 @@ def calibrate_reward_temp(reward_model, samples: torch.Tensor, *, batch_size: in
             f"need >=2 real reward samples to compute a std, got {r.numel()}; "
             "pass more calibration samples."
         )
-    return float(r.std())
+    std = r.std()
+    # Reject a zero / non-finite std (constant or NaN/Inf reward scores): stored as the
+    # tanh bound's reward_temp it would divide rewards by 0 -> NaN advantages with no
+    # ranking signal (codex #110 P2). Fail closed so a degenerate calibration can't
+    # silently poison the next tanh-bounded run.
+    if not bool(torch.isfinite(std)) or float(std) <= 0.0:
+        raise ValueError(
+            f"calibrated reward_temp is non-positive/non-finite (std={float(std)}; the "
+            "calibration rewards are constant or unstable). Can't set reward_temp=0 "
+            "(tanh bound divides by it); pass more/diverse calibration samples or set "
+            "reward_temp explicitly in the config."
+        )
+    return float(std)
 
 
 def _calibrate_reward_temp_from_val(module, val_ds, *, n: int = 16) -> None:
@@ -228,7 +243,10 @@ def _latent_psnr(pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
     pred = pred.float()
     target = target.float()
     n = pred.shape[0]
-    out = torch.full((n,), float("inf"))
+    # Allocate on pred.device: z_K / rewards live on the policy device (CUDA at launch),
+    # so a CPU out -> cross-device argmax/comparison crashes the GPU launch gate right
+    # after a successful rollout (codex #110 P2).
+    out = torch.full((n,), float("inf"), device=pred.device)
     for i in range(n):
         t = target[i : i + 1]
         rng = float(t.max() - t.min())
@@ -238,7 +256,7 @@ def _latent_psnr(pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
         if mse <= 0.0:
             out[i] = 100.0  # bit-identical -> cap at 100 dB
         else:
-            out[i] = 10.0 * torch.log10(torch.tensor(rng * rng / mse))
+            out[i] = 10.0 * torch.log10(torch.tensor(rng * rng / mse, device=pred.device))
     return out
 
 
@@ -249,6 +267,7 @@ def bridge_noise_reward_ranking_probe(
     *,
     G: int = 2, perturbed_step: int = 1, num_steps: int = 8,
     batch_size: int = 4,
+    reward_bound: str = "none", reward_temp: float = 8.0,
 ) -> dict:
     """The bridge-noise reward-ranking launch gate (ADR-0024 R1 / #106).
 
@@ -264,12 +283,15 @@ def bridge_noise_reward_ranking_probe(
     Default ``G=2`` (pairwise preference, matching the paired reward's Bradley-Terry
     training - random baseline 0.5; the design's ``acc ~ 0.5 => fail``).
 
+    ``reward_bound`` / ``reward_temp`` apply the SAME transform training uses to build
+    advantages (``tanh(r / reward_temp)``): ranking RAW logits can pass the gate on
+    OOD-large logits that tanh saturates to identical values (zero training signal) -
+    mirror ``PairedGRPOModule._bound_reward`` (codex #110 P2).
+
     Returns:
         ``{"acc", "n", "G", "perturbed_step", "eta"}`` - ``acc`` is the fraction of
         sources whose reward's top-1 sibling matches the PSNR's top-1.
     """
-    import math as _math
-
     from ..modules.paired_grpo import _heun_rollout_paired, _paired_unet_call
     from ..modules.paired_sampler import _as_label_tensor
 
@@ -285,10 +307,20 @@ def bridge_noise_reward_ranking_probe(
     src_labels_full = _as_label_tensor(src_label, n, device)
     tgt_labels_full = _as_label_tensor(tgt_label, n, device)
     nodes = scheduler.set_timesteps(num_steps, device=device)  # (num_steps+1,)
-    if perturbed_step >= num_steps - 1:
+    if perturbed_step < 0 or perturbed_step >= num_steps - 1:
+        # A negative perturbed_step slips past an upper-bound-only check (nodes[-1]=1.0,
+        # nodes[0]=0.0) -> a backwards bridge step dividing by (1-1)=0 (codex #110 P2).
         raise ValueError(
-            f"perturbed_step ({perturbed_step}) must be < num_steps-1 ({num_steps-1}) to "
-            "avoid the §7 var-collapse terminal (the probe branches at this step)."
+            f"perturbed_step ({perturbed_step}) must be in [0, num_steps-1) "
+            f"(= [0, {num_steps - 1})) to avoid the §7 var-collapse terminal the probe "
+            "branches at."
+        )
+    if G < 2:
+        # G=1 makes every group trivially agree (argmax of a single element = 0 for both
+        # reward and psnr) -> acc=1.0 with no ranking signal (codex #110 P2).
+        raise ValueError(
+            f"probe requires G>=2 for a ranking signal (got G={G}); G=1 trivially passes "
+            "the gate."
         )
     unet.eval()
     reward_model.eval()
@@ -298,7 +330,11 @@ def bridge_noise_reward_ranking_probe(
         b = min(batch_size, n - s)
         src_b = src[s : s + b].to(device=device, dtype=dtype)
         tgt_b = tgt[s : s + b].to(device=device, dtype=dtype)
-        spacing_b = spacing_t.repeat_interleave(b, dim=0) if spacing_t.dim() == 2 else spacing_t
+        # Per-source (dim-2) spacing: SLICE to the current batch's sources, then expand
+        # by G below. repeat_interleave(b) here would instead repeat ALL n rows b times
+        # (n*b rows vs b sources) and mis-condition the paired UNet's spacing input
+        # (codex #110 P1).
+        spacing_b = spacing_t[s : s + b] if spacing_t.dim() == 2 else spacing_t
         src_lab = src_labels_full[s : s + b] if isinstance(src_labels_full, torch.Tensor) else src_labels_full
         tgt_lab = tgt_labels_full[s : s + b] if isinstance(tgt_labels_full, torch.Tensor) else tgt_labels_full
         # Anchor rollout to the perturbed step (the deployed-Heun path from x_src).
@@ -326,11 +362,25 @@ def bridge_noise_reward_ranking_probe(
         z_K = suffix[-1]  # (b·G, *spatial)
         # Reward + PSNR-to-x_tgt per sibling, then per-source top-1 agreement.
         rewards = reward_model(torch.cat([x_src_bg, z_K], dim=1)).float().reshape(b, G)
-        tgt_bg = src_b.repeat_interleave(G, dim=0)  # placeholder; replaced below
+        # Apply the SAME reward transform training uses to build advantages: with the tanh
+        # bound, training consumes tanh(r / reward_temp); ranking RAW logits can pass the
+        # gate on OOD-large logits that tanh saturates to identical values (zero training
+        # signal). Mirror PairedGRPOModule._bound_reward (codex #110 P2).
+        if reward_bound == "tanh":
+            rewards = torch.tanh(rewards / float(reward_temp))
+        elif reward_bound != "none":
+            raise ValueError(
+                f"unknown reward_bound {reward_bound!r} (expected 'none' or 'tanh')."
+            )
         tgt_bg = tgt_b.repeat_interleave(G, dim=0)
         psnr = _latent_psnr(z_K, tgt_bg).reshape(b, G)
-        # Exclude sources whose PSNR is all-inf (constant tgt -> ranking undefined).
+        # Exclude degenerate groups: a constant target (all-inf PSNR) OR a tie (identical
+        # rewards / identical PSNR) makes argmax an arbitrary index 0 for both, falsely
+        # counted as agreement -> acc=1.0 with no ranking signal (codex #110 P2).
         valid = torch.isfinite(psnr).all(dim=1)
+        reward_spread = rewards.max(dim=1).values - rewards.min(dim=1).values
+        psnr_spread = psnr.max(dim=1).values - psnr.min(dim=1).values
+        valid = valid & (reward_spread > 0) & (psnr_spread > 0)
         if not valid.any():
             continue
         reward_top = rewards[valid].argmax(dim=1)
@@ -383,6 +433,7 @@ def _run_probe(module, inputs, cfg, *, n_probe: int = 16) -> float:
         module.unet, module.scheduler, module.reward_model, x_src, x_tgt, spacing,
         torch.stack(src_labs), torch.stack(tgt_labs),
         G=G, perturbed_step=perturbed_step, num_steps=num_steps,
+        reward_bound=module.reward_bound, reward_temp=module.reward_temp,
     )
     _log.info("bridge-noise probe: acc=%.3f (n=%d, G=%d, step=%d, eta=%.3f)",
               res["acc"], res["n"], res["G"], res["perturbed_step"], res["eta"])

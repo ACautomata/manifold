@@ -494,8 +494,11 @@ def build_paired_bridge_noised_fakes(
     if src.shape != tgt.shape:
         raise ValueError(f"x_src {tuple(src.shape)} and x_tgt {tuple(tgt.shape)} must match.")
     device = _resolve_rollout_device(generator, device)
-    if not isinstance(spacing, Tensor):
-        spacing = torch.as_tensor(spacing)
+    # Move spacing to the rollout device: this builder calls _heun_rollout_paired directly
+    # (which does NOT move spacing), so a CPU spacing into a CUDA generator crashes the
+    # paired UNet's spacing conditioning. Mirrors singular_branch_rollout_paired (codex
+    # #110 P2).
+    spacing = torch.as_tensor(spacing, device=device)
     n = len(src)
     spatial = src.shape[1:]
     src_lab_full = _as_label_tensor(src_label, n, device)
