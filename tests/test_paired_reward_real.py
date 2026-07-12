@@ -704,7 +704,168 @@ def test_real_inputs_rejects_stale_cache_shape(tmp_path, monkeypatch):
             "random_seed": 0,
         }
     )
-    with pytest.raises(ValueError, match="Cached paired latent spatial shape"):
+    with pytest.raises(ValueError, match="Cached paired latent"):
+        paired_reward_cli._real_inputs(
+            cfg, str(tmp_path / "native"), str(tmp_path / "cache"), torch.device("cpu")
+        )
+
+
+# -- codex #100 round-3 regression guards --------------------------------------
+
+
+def test_real_inputs_preserves_explicit_root_val_fraction(tmp_path, monkeypatch):
+    """An explicit ROOT val_fraction override is NOT clobbered by paired_reward.val_fraction.
+
+    Regression for codex #100 (P2 round-3 #E): the mirror fired unconditionally, so a
+    CLI/profile root ``val_fraction=0.5`` would be overwritten by paired_reward.val_fraction
+    (0.1). Now the mirror fires only when the root key is absent.
+    """
+    import omegaconf
+    import pytest
+
+    from manifold import AutoencoderKL, PairedLatentFlowPipeline, UNet3DConditionModel
+    from manifold.data import paired_brats as pb
+    from manifold.training import paired_cli as pcli
+    from manifold.training import paired_reward_cli
+
+    torch.manual_seed(0)
+    unet = UNet3DConditionModel(
+        in_channels=2 * C_LATENT,
+        out_channels=C_LATENT,
+        num_class_embeds=4,
+        include_spacing_input=True,
+    )
+    PairedLatentFlowPipeline(
+        unet, AutoencoderKL(scaling_factor=0.5), FlowMatchHeunDiscreteScheduler()
+    ).save_pretrained(str(tmp_path / "native"))
+
+    train_manifest = [
+        {"src": f"/t/s{i}-t1n.nii.gz", "tgt": f"/t/s{i}-t1c.nii.gz", "src_label": 0, "tgt_label": 1}
+        for i in range(4)
+    ]
+    monkeypatch.setattr(pb, "build_brats_pair_manifest", lambda *a, **k: train_manifest)
+
+    seen = {}
+
+    def fake_split(cfg, manifest):
+        seen["val_fraction"] = float(omegaconf.OmegaConf.select(cfg, "val_fraction", default=-1.0))
+        return manifest, []
+
+    monkeypatch.setattr(pcli, "_train_val_manifests", fake_split)
+
+    # Root val_fraction=0.5 is set EXPLICITLY; paired_reward.val_fraction=0.1 must NOT
+    # overwrite it. _train_val_manifests reads the root -> sees 0.5.
+    cfg = omegaconf.OmegaConf.create(
+        {
+            "data_base_dir": "/tmp/_unused_",
+            "val_fraction": 0.5,
+            "diffusion_unet_inference": {"dim": [8, 8, 8]},
+            "autoencoder": {"num_channels": [8, 8]},
+            "paired_reward": {"num_steps": 2, "val_fraction": 0.1},
+        }
+    )
+    with pytest.raises(ValueError, match="val split"):
+        paired_reward_cli._real_inputs(
+            cfg, str(tmp_path / "native"), str(tmp_path / "cache"), torch.device("cpu")
+        )
+    assert seen["val_fraction"] == 0.5, "explicit root val_fraction must not be clobbered"
+
+
+def test_real_inputs_rejects_mixed_cache_shape(tmp_path, monkeypatch):
+    """A mixed cache (first entry OK, a later entry wrong) is caught (#100 P2 round-3 #F).
+
+    Validating only the first entry would let a partial/mixed cache slip through; the
+    check now walks every entry in both splits.
+    """
+    import omegaconf
+    import pytest
+
+    from manifold import AutoencoderKL, PairedLatentFlowPipeline, UNet3DConditionModel
+    from manifold.data import paired_brats as pb
+    from manifold.data import paired_latent_dataset as pld_mod
+    from manifold.training import paired_cli as pcli
+    from manifold.training import paired_reward_cli
+
+    torch.manual_seed(0)
+    unet = UNet3DConditionModel(
+        in_channels=2 * C_LATENT,
+        out_channels=C_LATENT,
+        num_class_embeds=4,
+        include_spacing_input=True,
+    )
+    PairedLatentFlowPipeline(
+        unet, AutoencoderKL(scaling_factor=0.5), FlowMatchHeunDiscreteScheduler()
+    ).save_pretrained(str(tmp_path / "native"))
+
+    train_manifest = [
+        {"src": f"/t/s{i}-t1n.nii.gz", "tgt": f"/t/s{i}-t1c.nii.gz", "src_label": 0, "tgt_label": 1}
+        for i in range(4)
+    ]
+    val_manifest = [
+        {"src": f"/v/s{i}-t1n.nii.gz", "tgt": f"/v/s{i}-t1c.nii.gz", "src_label": 0, "tgt_label": 1}
+        for i in range(2)
+    ]
+    monkeypatch.setattr(
+        pb, "build_brats_pair_manifest", lambda *a, **k: train_manifest + val_manifest
+    )
+    monkeypatch.setattr(
+        pcli, "_train_val_manifests", lambda cfg, manifest: (train_manifest, val_manifest)
+    )
+
+    # A mixed cache: the FIRST train entry matches expected (2,2,2); a LATER train
+    # entry is wrong (8,8,8). A first-only check would miss it; the every-entry check
+    # catches it.
+    good = torch.randn(C_LATENT, 4, 4, 4)  # matches target_dim [8,8,8] / divisor 2
+    bad = torch.randn(C_LATENT, 8, 8, 8)
+    sids = ["s0", "s1", "s2", "s3", "v0", "v1"]
+    # Map: first sid good, second bad -> the first-only check would pass; every-entry catches.
+    latents_by_sid = {"s0": good, "s1": bad, "s2": good, "s3": good, "v0": good, "v1": good}
+
+    class _FakePLDMixed:
+        class source:
+            @staticmethod
+            def unique_sample_ids():
+                return sids
+
+        def __init__(self, vol_ds, encode_fn=None, cache_dir=None, cache_tag=None):
+            self.scaling_factor = None
+
+        def warm_cache(self, *a, **k):
+            return None
+
+        def __len__(self):
+            return 4
+
+        def __getitem__(self, i):
+            return {
+                "src_latent": good,
+                "tgt_latent": good,
+                "src_label": 0,
+                "tgt_label": 1,
+                "spacing": torch.tensor([1.0, 1.0, 1.0]),
+            }
+
+        def raw_latent(self, sid):
+            return latents_by_sid[sid]
+
+    monkeypatch.setattr(pld_mod, "PairedLatentDataset", _FakePLDMixed)
+
+    cfg = omegaconf.OmegaConf.create(
+        {
+            "data_base_dir": "/tmp/_unused_",
+            "latent_cache_dir": str(tmp_path / "cache"),
+            "diffusion_unet_inference": {"dim": [8, 8, 8]},
+            "autoencoder": {"num_channels": [8, 8]},  # divisor 2 -> expected (4,4,4)
+            "paired_reward": {
+                "num_steps": 2,
+                "precompute_num_steps": 2,
+                "n_probe": 4,
+                "gen_batch_size": 4,
+            },
+            "random_seed": 0,
+        }
+    )
+    with pytest.raises(ValueError, match="Cached paired latent.*s1"):
         paired_reward_cli._real_inputs(
             cfg, str(tmp_path / "native"), str(tmp_path / "cache"), torch.device("cpu")
         )
