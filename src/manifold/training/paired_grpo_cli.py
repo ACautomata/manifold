@@ -363,7 +363,17 @@ def bridge_noise_reward_ranking_probe(
         )
         z_K = suffix[-1]  # (b·G, *spatial)
         # Reward + PSNR-to-x_tgt per sibling, then per-source top-1 agreement.
-        rewards = reward_model(torch.cat([x_src_bg, z_K], dim=1)).float().reshape(b, G)
+        reward_input = torch.cat([x_src_bg, z_K], dim=1)
+        # Cast the reward input to the reward model's dtype: the rollout runs in the
+        # POLICY dtype (an fp16/bfloat16 launch policy to fit 3D), but the frozen
+        # RewardModel is fp32, so feeding the policy-dtype cat straight in is an
+        # input/weight dtype mismatch (singular_branch_rollout_paired wraps its whole
+        # rollout in cuda autocast; the probe does not, so cast explicitly) (codex #110 P2).
+        # Fall back to fp32 when the model has no parameters (test stubs) - a real
+        # PatchGAN always has parameters, so this is the safe default, not a silent path.
+        _params = list(reward_model.parameters())
+        reward_dtype = _params[0].dtype if _params else torch.float32
+        rewards = reward_model(reward_input.to(dtype=reward_dtype)).float().reshape(b, G)
         # Apply the SAME reward transform training uses to build advantages: with the tanh
         # bound, training consumes tanh(r / reward_temp); ranking RAW logits can pass the
         # gate on OOD-large logits that tanh saturates to identical values (zero training
@@ -381,7 +391,10 @@ def bridge_noise_reward_ranking_probe(
         # [1, 1, 0.8] - spread>0 but the top value is shared, so argmax breaks the tie by
         # sibling order, making "agreement" an artifact of indexing, not ranking signal).
         # Require the top reward AND top PSNR to be unique (codex #110 P2 round-3).
-        valid = torch.isfinite(psnr).all(dim=1)
+        # Also reject non-finite rewards: with reward_bound='none' an OOD bridge-noised
+        # sibling can overflow to inf, and a group like [inf, 0] would otherwise pass as a
+        # valid unique ranking (training's group_advantage would NaN on inf) (codex #110 P2).
+        valid = torch.isfinite(psnr).all(dim=1) & torch.isfinite(rewards).all(dim=1)
         reward_max = rewards.max(dim=1, keepdim=True).values
         psnr_max = psnr.max(dim=1, keepdim=True).values
         reward_top_unique = (rewards == reward_max).sum(dim=1) == 1
@@ -421,6 +434,11 @@ def _run_probe(module, inputs, cfg, *, n_probe: int = 16) -> float:
     # var-collapse terminal) - the most informative single bridge-noise level.
     perturbed_step = int(opt(cfg, "paired_grpo.probe_step", 1))
     G = int(opt(cfg, "paired_grpo.probe_G", 2))
+    # Use the configured training batch_size (not the probe fn default of 4): the committed
+    # recipe sets batch_size=2, so the default 2x over-allocates per-batch source/target
+    # rollouts (+ G siblings) on memory-limited 3D runs and can OOM before the gate reports
+    # (codex #110 P2).
+    batch_size = int(opt(gcfg, "batch_size", 4))
     # Pull (src, tgt) val pairs (the probe needs the GT target for the PSNR surrogate).
     srcs, tgts, spacings, src_labs, tgt_labs = [], [], [], [], []
     for i in range(min(n_probe, len(inputs.val_ds))):
@@ -443,7 +461,7 @@ def _run_probe(module, inputs, cfg, *, n_probe: int = 16) -> float:
     res = bridge_noise_reward_ranking_probe(
         module.unet, module.scheduler, module.reward_model, x_src, x_tgt, spacing,
         torch.stack(src_labs), torch.stack(tgt_labs),
-        G=G, perturbed_step=perturbed_step, num_steps=num_steps,
+        G=G, perturbed_step=perturbed_step, num_steps=num_steps, batch_size=batch_size,
         reward_bound=module.reward_bound, reward_temp=module.reward_temp,
     )
     _log.info("bridge-noise probe: acc=%.3f (n=%d, G=%d, step=%d, eta=%.3f)",

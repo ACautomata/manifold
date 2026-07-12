@@ -1985,3 +1985,117 @@ def test_as_label_tensor_normalizes_sequences():
     )
     with pytest.raises(ValueError, match="per-sample label sequence length"):
         _as_label_tensor([0, 1], 3, dev)
+
+
+# -- codex #110 round-4: autocast dtype, probe batch_size, non-finite rewards ----
+
+
+class _InfReward(nn.Module):
+    """A reward that returns inf for the FIRST sibling of each group (the OOD overflow
+    case with reward_bound='none'): [inf, 0, 0, ...] -> a group training's
+    group_advantage would NaN on, but the probe's PSNR-only finiteness check let through."""
+
+    def __init__(self):
+        super().__init__()
+        self.dummy = nn.Parameter(torch.ones(1))
+
+    def forward(self, cat_input):
+        n = cat_input.shape[0]
+        r = torch.zeros(n)
+        r[0::2] = float("inf")  # every other sibling overflows (G=2: sibling 0 = inf)
+        return r
+
+
+def test_bridge_noise_probe_casts_reward_input_to_reward_dtype():
+    """The probe casts cat([x_src_bg, z_K]) to the reward model's dtype before scoring:
+    an fp16 launch policy + fp32 frozen RewardModel would otherwise hit an input/weight
+    dtype mismatch (singular_branch_rollout_paired wraps its rollout in cuda autocast; the
+    probe does not, so cast explicitly) (codex #110 P2)."""
+    from manifold.training.paired_grpo_cli import bridge_noise_reward_ranking_probe
+
+    class _DtypeRecordingReward(nn.Module):
+        """Records the dtype it was called with (the cast contract) + ranks by -MSE."""
+
+        def __init__(self, x_tgt_fixed):
+            super().__init__()
+            self.x_tgt = x_tgt_fixed
+            self.seen_dtypes = set()
+            self.dummy = nn.Parameter(torch.ones(1))  # so next(.parameters()) yields a dtype
+
+        def forward(self, cat_input):
+            self.seen_dtypes.add(cat_input.dtype)
+            C = self.x_tgt.shape[0]
+            z_K = cat_input[:, C:]
+            tgt = self.x_tgt.to(device=z_K.device, dtype=z_K.dtype)
+            return -((z_K - tgt).pow(2).mean(dim=tuple(range(1, z_K.dim()))))
+
+    # An fp16 policy (the launch case) + an fp32 reward model (the frozen case).
+    half_policy = _SoftPairedPolicy().half()
+    x_src, x_tgt, shared_tgt = _probe_src_tgt(n=4)
+    reward = _DtypeRecordingReward(shared_tgt).eval().float()  # fp32 params
+    res = bridge_noise_reward_ranking_probe(
+        half_policy, FlowMatchBridgeGRPOScheduler(eta=0.7), reward,
+        x_src, x_tgt, [1.0, 1.0, 1.0], 1, 2,
+        G=2, perturbed_step=1, num_steps=4, batch_size=4,
+    )
+    # The reward model was called with fp32 input (the cast): before the fix, the fp16
+    # policy-dtype cat was fed straight into the fp32 PatchGAN -> dtype mismatch crash.
+    assert torch.float32 in reward.seen_dtypes, (
+        f"reward input must be cast to the fp32 reward model dtype, saw: {reward.seen_dtypes}"
+    )
+    assert res["n"] == 4
+
+
+def test_run_probe_passes_configured_batch_size(tmp_path):
+    """_run_probe passes paired_grpo_train.batch_size into the probe (not the fn default
+    of 4): the committed recipe sets batch_size=2, so the default would 2x over-allocate
+    +G siblings on memory-limited 3D runs and OOM before the gate reports (codex #110 P2)."""
+    from manifold.modules import PairedGRPOModule
+    from manifold.training.paired_grpo_cli import _run_probe
+
+    captured = {}
+    import manifold.training.paired_grpo_cli as cli
+    real_probe = cli.bridge_noise_reward_ranking_probe
+
+    def spy(*a, **kw):
+        captured["batch_size"] = kw.get("batch_size", 4)
+        return {"acc": 0.5, "n": 4, "G": kw.get("G", 2),
+                "perturbed_step": kw.get("perturbed_step", 1), "eta": 0.7}
+
+    cli.bridge_noise_reward_ranking_probe = spy
+    try:
+        torch.manual_seed(0)
+        inputs = _inputs()
+        # _run_probe needs val pairs WITH tgt_latent (the PSNR surrogate); _ToyPairedValDS
+        # carries it (the default _ToyPairedDS val_ds does not).
+        import dataclasses
+        inputs = dataclasses.replace(inputs, val_ds=_ToyPairedValDS(n=4))
+        module = PairedGRPOModule(
+            inputs.policy, inputs.reward_model, inputs.scheduler,
+            G=2, eta_step_list=(0,), num_steps=3, lr=1e-3,
+        )
+        # A toy config with batch_size=2 (the committed recipe value).
+        from omegaconf import OmegaConf
+        cfg = OmegaConf.create({"paired_grpo_train": {"num_steps": 4, "batch_size": 2}})
+        _run_probe(module, inputs, cfg, n_probe=4)
+        assert captured.get("batch_size") == 2, (
+            f"_run_probe must pass the configured batch_size=2, got {captured.get('batch_size')}"
+        )
+    finally:
+        cli.bridge_noise_reward_ranking_probe = real_probe
+
+
+def test_bridge_noise_probe_rejects_non_finite_reward_groups():
+    """A group whose reward overflows to inf (reward_bound='none', OOD bridge-noised
+    sibling) is rejected: training's group_advantage would NaN on inf, so the gate must not
+    treat [inf, 0] as a valid unique ranking (codex #110 P2)."""
+    from manifold.training.paired_grpo_cli import bridge_noise_reward_ranking_probe
+
+    x_src, x_tgt, _ = _probe_src_tgt(n=4)
+    with pytest.raises(ValueError, match="scored 0 sources with a ranking signal"):
+        bridge_noise_reward_ranking_probe(
+            _SoftPairedPolicy(), FlowMatchBridgeGRPOScheduler(eta=0.7),
+            _InfReward().eval(), x_src, x_tgt, [1.0, 1.0, 1.0], 1, 2,
+            G=2, perturbed_step=1, num_steps=4, batch_size=4,
+            reward_bound="none",
+        )
