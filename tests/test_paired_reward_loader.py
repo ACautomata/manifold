@@ -116,9 +116,13 @@ def test_export_to_native_writes_paired_native_dir_with_slow_ema(tmp_path):
     ckpt_path, unet, vae = _build_paired_ckpt(tmp_path)
     fresh_unet = _trainable_paired_unet()
     source = export_to_native(
-        ckpt_path, str(tmp_path / "paired_native"),
-        unet=fresh_unet, vae=vae, scheduler=FlowMatchHeunDiscreteScheduler(),
-        prefer_ema=True, pipeline_cls=PairedLatentFlowPipeline,
+        ckpt_path,
+        str(tmp_path / "paired_native"),
+        unet=fresh_unet,
+        vae=vae,
+        scheduler=FlowMatchHeunDiscreteScheduler(),
+        prefer_ema=True,
+        pipeline_cls=PairedLatentFlowPipeline,
     )
     assert source.startswith("ema[decay=")  # the slow-EMA shadow was baked
     # The dir is a paired native export (model_index.json + the paired pipeline class).
@@ -146,14 +150,26 @@ def test_export_to_native_default_pipeline_is_jit(tmp_path):
         if p.abs().sum().item() == 0.0:
             nn.init.normal_(p, std=0.01)
     module = LatentFlowModule(
-        jit_unet, FlowMatchHeunDiscreteScheduler(), lr=1e-2, lr_warmup_steps=0,
-        num_train_examples=4, train_batch_size=2, n_epochs=1,
+        jit_unet,
+        FlowMatchHeunDiscreteScheduler(),
+        lr=1e-2,
+        lr_warmup_steps=0,
+        num_train_examples=4,
+        train_batch_size=2,
+        n_epochs=1,
     )
     vae = AutoencoderKL(scaling_factor=0.5)
     ema = DoubleEMACallback(module)
     trainer = pl.Trainer(
-        accelerator="cpu", devices=1, max_epochs=1, logger=False, enable_progress_bar=False,
-        enable_checkpointing=False, enable_model_summary=False, callbacks=[ema], num_sanity_val_steps=0,
+        accelerator="cpu",
+        devices=1,
+        max_epochs=1,
+        logger=False,
+        enable_progress_bar=False,
+        enable_checkpointing=False,
+        enable_model_summary=False,
+        callbacks=[ema],
+        num_sanity_val_steps=0,
     )
 
     class _DS(torch.utils.data.Dataset):
@@ -172,8 +188,11 @@ def test_export_to_native_default_pipeline_is_jit(tmp_path):
     trainer.save_checkpoint(ckpt_path)
     fresh = UNet3DConditionModel(num_class_embeds=4, include_spacing_input=True)
     source = export_to_native(
-        ckpt_path, str(tmp_path / "jit_native"),
-        unet=fresh, vae=vae, scheduler=FlowMatchHeunDiscreteScheduler(),
+        ckpt_path,
+        str(tmp_path / "jit_native"),
+        unet=fresh,
+        vae=vae,
+        scheduler=FlowMatchHeunDiscreteScheduler(),
     )
     assert source == "unet_state_dict"
     from manifold import LatentFlowPipeline
@@ -189,9 +208,13 @@ def test_load_frozen_paired_generator_recovers_2c_unet_base_scheduler_and_scale(
     ckpt_path, _unet, vae = _build_paired_ckpt(tmp_path)
     fresh_unet = _trainable_paired_unet()
     export_to_native(
-        ckpt_path, str(tmp_path / "paired_native"),
-        unet=fresh_unet, vae=vae, scheduler=FlowMatchHeunDiscreteScheduler(),
-        prefer_ema=True, pipeline_cls=PairedLatentFlowPipeline,
+        ckpt_path,
+        str(tmp_path / "paired_native"),
+        unet=fresh_unet,
+        vae=vae,
+        scheduler=FlowMatchHeunDiscreteScheduler(),
+        prefer_ema=True,
+        pipeline_cls=PairedLatentFlowPipeline,
     )
 
     unet, scheduler, scaling_factor = load_frozen_paired_generator(tmp_path / "paired_native")
@@ -210,9 +233,13 @@ def test_load_frozen_paired_generator_is_frozen_and_eval(tmp_path):
     ckpt_path, _unet, vae = _build_paired_ckpt(tmp_path)
     fresh_unet = _trainable_paired_unet()
     export_to_native(
-        ckpt_path, str(tmp_path / "paired_native"),
-        unet=fresh_unet, vae=vae, scheduler=FlowMatchHeunDiscreteScheduler(),
-        prefer_ema=True, pipeline_cls=PairedLatentFlowPipeline,
+        ckpt_path,
+        str(tmp_path / "paired_native"),
+        unet=fresh_unet,
+        vae=vae,
+        scheduler=FlowMatchHeunDiscreteScheduler(),
+        prefer_ema=True,
+        pipeline_cls=PairedLatentFlowPipeline,
     )
     unet, _scheduler, _scale = load_frozen_paired_generator(tmp_path / "paired_native")
     assert not unet.training
@@ -229,17 +256,25 @@ def test_load_frozen_paired_generator_rolls_deterministic_fake(tmp_path):
     ckpt_path, _unet, vae = _build_paired_ckpt(tmp_path)
     fresh_unet = _trainable_paired_unet()
     export_to_native(
-        ckpt_path, str(tmp_path / "paired_native"),
-        unet=fresh_unet, vae=vae, scheduler=FlowMatchHeunDiscreteScheduler(),
-        prefer_ema=True, pipeline_cls=PairedLatentFlowPipeline,
+        ckpt_path,
+        str(tmp_path / "paired_native"),
+        unet=fresh_unet,
+        vae=vae,
+        scheduler=FlowMatchHeunDiscreteScheduler(),
+        prefer_ema=True,
+        pipeline_cls=PairedLatentFlowPipeline,
     )
     unet, scheduler, _scale = load_frozen_paired_generator(tmp_path / "paired_native")
     from manifold.modules.paired_sampler import sample_paired_latent_flow
 
     torch.manual_seed(0)
     src = torch.randn(2, C_LATENT, 4, 4, 4)
-    out_a = sample_paired_latent_flow(unet, scheduler, src, [1.0, 1.0, 1.0], 0, 1, num_inference_steps=3)
-    out_b = sample_paired_latent_flow(unet, scheduler, src, [1.0, 1.0, 1.0], 0, 1, num_inference_steps=3)
+    out_a = sample_paired_latent_flow(
+        unet, scheduler, src, [1.0, 1.0, 1.0], 0, 1, num_inference_steps=3
+    )
+    out_b = sample_paired_latent_flow(
+        unet, scheduler, src, [1.0, 1.0, 1.0], 0, 1, num_inference_steps=3
+    )
     assert torch.equal(out_a, out_b)
     assert out_a.shape == (2, C_LATENT, 4, 4, 4)
     assert torch.isfinite(out_a).all()
@@ -257,9 +292,13 @@ def test_load_frozen_paired_generator_reuses_export_scaling_factor(tmp_path):
     vae.scaling_factor.fill_(2.5)
     fresh_unet = _trainable_paired_unet()
     export_to_native(
-        ckpt_path, str(tmp_path / "paired_native"),
-        unet=fresh_unet, vae=vae, scheduler=FlowMatchHeunDiscreteScheduler(),
-        prefer_ema=True, pipeline_cls=PairedLatentFlowPipeline,
+        ckpt_path,
+        str(tmp_path / "paired_native"),
+        unet=fresh_unet,
+        vae=vae,
+        scheduler=FlowMatchHeunDiscreteScheduler(),
+        prefer_ema=True,
+        pipeline_cls=PairedLatentFlowPipeline,
     )
     _unet, _scheduler, scaling_factor = load_frozen_paired_generator(tmp_path / "paired_native")
     assert scaling_factor == 2.5
@@ -281,10 +320,18 @@ def test_export_checkpoint_script_paired_pipeline(tmp_path):
     # export loads it (else a fresh VAE is baked - acceptable, but we want the scale factor).
     rc = cli.main(
         [
-            "--ckpt", ckpt_path,
-            "--output", str(tmp_path / "paired_cli_native"),
-            "--network-config", net,
-            "--pipeline", "paired",
+            "--ckpt",
+            ckpt_path,
+            "--output",
+            str(tmp_path / "paired_cli_native"),
+            "--network-config",
+            net,
+            "--pipeline",
+            "paired",
+            # Fix #4 (codex #98 P1): paired exports must bake the generator's training
+            # scale into the VAE (the reward pairs scale src latents by it; ADR-0021).
+            "--scaling-factor",
+            "2.5",
             "--ema",
         ]
     )
@@ -292,6 +339,147 @@ def test_export_checkpoint_script_paired_pipeline(tmp_path):
     # The CLI wrote a paired native export (loads as PairedLatentFlowPipeline).
     pipe = PairedLatentFlowPipeline.from_pretrained(str(tmp_path / "paired_cli_native"))
     assert pipe.unet.config["in_channels"] == 2 * C_LATENT
+    # The exported VAE carries the supplied scaling factor (baked, not the 1.0 placeholder).
+    assert float(pipe.vae.scaling_factor) == 2.5
+
+
+# -- codex #98 export-script regression guards --------------------------------
+
+
+def _write_jit_shaped_network(tmp_path):
+    """Network config with the STOCK JiT ``diffusion_unet.in_channels`` (=4 via interpolation).
+
+    Used to verify ``--pipeline paired`` overrides in_channels to 2·C (codex #98 #3):
+    the stock config builds a 4-ch UNet; the paired export must build 8-ch before the
+    backbone load or it hits a conv size mismatch.
+    """
+    net_yaml = tmp_path / "net_jit.yaml"
+    net_yaml.write_text(
+        "spatial_dims: 3\nlatent_channels: 4\nimage_channels: 1\n"
+        "autoencoder:\n"
+        "  spatial_dims: ${spatial_dims}\n  in_channels: ${image_channels}\n"
+        "  out_channels: ${image_channels}\n  latent_channels: ${latent_channels}\n"
+        "  num_channels: [8, 8]\n  num_res_blocks: [1, 1]\n  norm_num_groups: 8\n"
+        "  norm_float16: false\n  num_splits: 1\n  save_mem: false\n  scaling_factor: 0.5\n"
+        "diffusion_unet:\n"
+        "  spatial_dims: 3\n  in_channels: ${latent_channels}\n  out_channels: ${latent_channels}\n"
+        "  num_channels: [8, 8]\n  num_res_blocks: 1\n  norm_num_groups: 8\n"
+        "  num_head_channels: [4, 4]\n  attention_levels: [false, false]\n"
+        "  use_flash_attention: false\n  include_spacing_input: true\n"
+        "  num_class_embeds: 4\n  num_train_timesteps: 1000\n"
+        "scheduler:\n  num_train_timesteps: 1000\n  t_eps: 0.05\n"
+    )
+    return str(net_yaml)
+
+
+def test_export_checkpoint_paired_overrides_jit_in_channels_to_2c(tmp_path):
+    """--pipeline paired overrides the stock JiT in_channels (4) to 2·C (8).
+
+    Regression for codex #98 (P1, #3): build_unet runs before the pipeline swap, so the
+    stock config's in_channels=${latent_channels}=4 would build a 4-ch UNet and the
+    backbone load would hit a conv-weight size mismatch. The script now overrides
+    in_channels=2·C for paired (out_channels stays C).
+    """
+    ckpt_path, _unet, _vae = _build_paired_ckpt(tmp_path)
+    net = _write_jit_shaped_network(tmp_path)
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
+    try:
+        import export_checkpoint as cli  # type: ignore[import-not-found]
+    finally:
+        sys.path.pop(0)
+    rc = cli.main(
+        [
+            "--ckpt",
+            ckpt_path,
+            "--output",
+            str(tmp_path / "paired_override_native"),
+            "--network-config",
+            net,
+            "--pipeline",
+            "paired",
+            "--scaling-factor",
+            "0.5",
+        ]
+    )
+    assert rc == 0
+    pipe = PairedLatentFlowPipeline.from_pretrained(str(tmp_path / "paired_override_native"))
+    assert pipe.unet.config["in_channels"] == 2 * C_LATENT
+    # out_channels stays C (the paired UNet predicts the tgt velocity, one endpoint).
+    assert pipe.unet.config["out_channels"] == C_LATENT
+
+
+def test_export_checkpoint_paired_requires_scaling_factor(tmp_path):
+    """--pipeline paired without --scaling-factor raises (the YAML placeholder is 1.0).
+
+    Regression for codex #98 (P1, #4): the reward pairs scale src latents by the
+    generator's training scale (ADR-0021); the export must bake it, not ship the 1.0
+    placeholder. Fail fast if the caller forgets the flag.
+    """
+    import pytest
+
+    ckpt_path, _unet, _vae = _build_paired_ckpt(tmp_path)
+    net = _write_jit_shaped_network(tmp_path)
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
+    try:
+        import export_checkpoint as cli  # type: ignore[import-not-found]
+    finally:
+        sys.path.pop(0)
+    with pytest.raises(ValueError, match="scaling-factor"):
+        cli.main(
+            [
+                "--ckpt",
+                ckpt_path,
+                "--output",
+                str(tmp_path / "paired_noscale"),
+                "--network-config",
+                net,
+                "--pipeline",
+                "paired",
+            ]
+        )
+
+
+def test_export_checkpoint_paired_forces_slow_ema(tmp_path):
+    """--pipeline paired forces prefer_ema=True even without --ema (ADR-0021).
+
+    Regression for codex #98 (P2, #5): paired checkpoint selection + the reward's
+    frozen-generator contract monitor the slow-EMA arm; exporting raw weights would
+    silently mis-calibrate the reward. The script forces EMA for paired (spied call).
+    """
+    from unittest.mock import patch
+
+    ckpt_path, _unet, _vae = _build_paired_ckpt(tmp_path)
+    net = _write_jit_shaped_network(tmp_path)
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
+    try:
+        import export_checkpoint as cli  # type: ignore[import-not-found]
+    finally:
+        sys.path.pop(0)
+    seen = {}
+    real = cli.export_to_native
+
+    def spy(*a, **kw):
+        seen["prefer_ema"] = kw.get("prefer_ema")
+        return real(*a, **kw)
+
+    with patch.object(cli, "export_to_native", spy):
+        rc = cli.main(
+            [
+                "--ckpt",
+                ckpt_path,
+                "--output",
+                str(tmp_path / "paired_forceema"),
+                "--network-config",
+                net,
+                "--pipeline",
+                "paired",
+                "--scaling-factor",
+                "0.5",
+                # --ema deliberately OMITTED; paired must force it.
+            ]
+        )
+    assert rc == 0
+    assert seen["prefer_ema"] is True, "paired export must force the slow-EMA arm (ADR-0021)"
 
 
 # -- the export bridge also serves paired inference (ADR-0006, ADR-0021) ------
@@ -302,9 +490,13 @@ def test_paired_export_round_trips_inference(tmp_path):
     ckpt_path, unet, vae = _build_paired_ckpt(tmp_path)
     fresh_unet = _trainable_paired_unet()
     export_to_native(
-        ckpt_path, str(tmp_path / "paired_native"),
-        unet=fresh_unet, vae=vae, scheduler=FlowMatchHeunDiscreteScheduler(),
-        prefer_ema=True, pipeline_cls=PairedLatentFlowPipeline,
+        ckpt_path,
+        str(tmp_path / "paired_native"),
+        unet=fresh_unet,
+        vae=vae,
+        scheduler=FlowMatchHeunDiscreteScheduler(),
+        prefer_ema=True,
+        pipeline_cls=PairedLatentFlowPipeline,
     )
     # A direct (non-ckpt) save/load round-trip of the exported pipeline infers identically
     # (the export's UNet weights are the baked slow-EMA arm; reloading reproduces them).

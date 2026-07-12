@@ -22,8 +22,13 @@ Example (paired src->tgt, slow-EMA arm - the reward's frozen generator)::
         --ckpt <paired_run>/last.ckpt \\
         --network-config configs/network/config_network.yaml \\
         --vae-checkpoint models/autoencoder_v1.pt \\
-        --pipeline paired --ema \\
+        --pipeline paired \\
+        --scaling-factor $(python -c "import torch;print(torch.load('<paired_run>/paired_scaling_factor.pt', weights_only=True))") \\
         --output <paired_native>
+
+    ``--pipeline paired`` forces the slow-EMA arm (ADR-0021) and builds the 2·C_latent
+    UNet; ``--scaling-factor`` (read from the paired run's paired_scaling_factor.pt)
+    bakes the generator's training scale into the exported VAE.
 """
 
 from __future__ import annotations
@@ -75,9 +80,31 @@ def main(argv: list[str] | None = None) -> int:
         "noise->data JiT - the default) or 'paired' (PairedLatentFlowPipeline, the "
         "src->tgt translation - the reward's frozen generator, ADR-0021).",
     )
+    parser.add_argument(
+        "--scaling-factor",
+        type=float,
+        default=None,
+        help="the VAE scaling_factor (1/std(z)) to bake into the exported VAE. The "
+        "network YAML carries a 1.0 placeholder; paired training writes the real "
+        "value to <model_dir>/paired_scaling_factor.pt. REQUIRED for --pipeline "
+        "paired (the reward pairs scale src latents by vae.scaling_factor - "
+        "ADR-0021; codex #98 P1). Optional (defaults to the YAML value) for jit.",
+    )
     args = parser.parse_args(argv)
 
     cfg = load_config(args.network_config, None, args.network_config)
+
+    # Paired src->tgt checkpoints train a 2·C_latent condition-aware UNet: the input
+    # is the [x_src, x_tgt_noisy] concat (in_channels=2·C), the output predicts the
+    # tgt velocity (out_channels=C, unchanged). The stock network config builds
+    # in_channels=${latent_channels}=4; override in_channels before construction or
+    # the backbone load hits a conv-weight size mismatch (codex #98 P1).
+    if args.pipeline == "paired":
+        from omegaconf import OmegaConf
+
+        latent_c = int(cfg.get("latent_channels", 4))
+        cfg = OmegaConf.merge(cfg, {"diffusion_unet": {"in_channels": 2 * latent_c}})
+
     unet = build_unet(cfg)
     vae = build_vae(cfg)
     scheduler = build_scheduler(cfg)
@@ -91,11 +118,33 @@ def main(argv: list[str] | None = None) -> int:
         cfg = OmegaConf.merge(cfg, {"trained_autoencoder_path": args.vae_checkpoint})
         vae = _load_vae(cfg, torch.device("cpu"))
 
+    # The paired reward's frozen generator runs on the generator's TRAINING scale
+    # (1/std(z), ADR-0021); the reward pairs scale src latents by vae.scaling_factor.
+    # The network YAML carries a 1.0 placeholder, so paired exports must override it
+    # (read from <paired_model_dir>/paired_scaling_factor.pt, written after the warm)
+    # or the rollout receives unscaled src -> garbage fakes (codex #98 P1).
+    if args.scaling_factor is not None:
+        vae.scaling_factor.fill_(float(args.scaling_factor))
+    elif args.pipeline == "paired":
+        raise ValueError(
+            "--scaling-factor is required for --pipeline paired: the reward's frozen "
+            "generator must be exported at its training scale (1/std(z), ADR-0021). "
+            "Read it from <paired_model_dir>/paired_scaling_factor.pt (written by "
+            "manifold-train-paired after the VAE warm)."
+        )
+
     pipeline_cls = None
     if args.pipeline == "paired":
         from manifold.pipelines.paired_latent_flow import PairedLatentFlowPipeline
 
         pipeline_cls = PairedLatentFlowPipeline
+
+    # Paired checkpoint selection + the reward's frozen-generator contract monitor the
+    # slow-EMA arm (val/psnr @ slow-EMA, ADR-0021). Force it for paired exports rather
+    # than silently baking raw non-EMA weights (codex #98 P2).
+    prefer_ema = args.ema or args.pipeline == "paired"
+    if args.pipeline == "paired" and not args.ema:
+        print("[export_checkpoint] paired export: forcing slow-EMA arm (ADR-0021).")
 
     source = export_to_native(
         args.ckpt,
@@ -103,7 +152,7 @@ def main(argv: list[str] | None = None) -> int:
         unet=unet,
         vae=vae,
         scheduler=scheduler,
-        prefer_ema=args.ema,
+        prefer_ema=prefer_ema,
         pipeline_cls=pipeline_cls,
     )
     print(f"Exported {args.ckpt} -> {args.output} ({source}; pipeline={args.pipeline}).")
