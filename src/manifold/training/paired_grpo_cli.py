@@ -376,13 +376,19 @@ def bridge_noise_reward_ranking_probe(
             )
         tgt_bg = tgt_b.repeat_interleave(G, dim=0)
         psnr = _latent_psnr(z_K, tgt_bg).reshape(b, G)
-        # Exclude degenerate groups: a constant target (all-inf PSNR) OR a tie (identical
-        # rewards / identical PSNR) makes argmax an arbitrary index 0 for both, falsely
-        # counted as agreement -> acc=1.0 with no ranking signal (codex #110 P2).
+        # Exclude degenerate groups: a constant target (all-inf PSNR), a fully-tied reward
+        # OR PSNR (zero spread), OR a TIED MAXIMUM (e.g. tanh-saturated rewards like
+        # [1, 1, 0.8] - spread>0 but the top value is shared, so argmax breaks the tie by
+        # sibling order, making "agreement" an artifact of indexing, not ranking signal).
+        # Require the top reward AND top PSNR to be unique (codex #110 P2 round-3).
         valid = torch.isfinite(psnr).all(dim=1)
-        reward_spread = rewards.max(dim=1).values - rewards.min(dim=1).values
-        psnr_spread = psnr.max(dim=1).values - psnr.min(dim=1).values
-        valid = valid & (reward_spread > 0) & (psnr_spread > 0)
+        reward_max = rewards.max(dim=1, keepdim=True).values
+        psnr_max = psnr.max(dim=1, keepdim=True).values
+        reward_top_unique = (rewards == reward_max).sum(dim=1) == 1
+        psnr_top_unique = (psnr == psnr_max).sum(dim=1) == 1
+        reward_spread = reward_max.squeeze(1) - rewards.min(dim=1).values
+        psnr_spread = psnr_max.squeeze(1) - psnr.min(dim=1).values
+        valid = valid & (reward_spread > 0) & (psnr_spread > 0) & reward_top_unique & psnr_top_unique
         if not valid.any():
             continue
         reward_top = rewards[valid].argmax(dim=1)

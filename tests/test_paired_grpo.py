@@ -1903,3 +1903,85 @@ def test_build_paired_bridge_noised_fakes_runs_under_no_grad(monkeypatch):
         "the builder must run under no_grad (grad disabled at every UNet call); "
         f"observed grad states: {grad_states}"
     )
+
+
+# -- codex #110 round-3: tied maxima + label sequences (2 P2) ------------------
+
+
+class _TiedMaxReward(nn.Module):
+    """A reward whose top value is TIED across siblings (spread>0 but argmax is a tie).
+
+    reward = [1.0, 1.0, 0.8]-style per group: two siblings share the max -> argmax picks
+    index 0 (sibling order), not ranking signal. The probe must drop these groups."""
+
+    def __init__(self):
+        super().__init__()
+        self.dummy = nn.Parameter(torch.ones(1))
+
+    def forward(self, cat_input):
+        n = cat_input.shape[0]
+        # Per the G=3 layout: siblings 0,1 tie at the max (1.0), sibling 2 lower (0.8).
+        # n is a multiple of G=3; build the per-row reward from its sibling index.
+        G = 3
+        idx = torch.arange(n) % G
+        r = torch.where(idx < 2, 1.0, 0.8)
+        return r
+
+
+def test_bridge_noise_probe_rejects_tied_reward_maxima():
+    """Groups whose top reward is tied (spread>0 but max shared, e.g. tanh-saturated
+    [1,1,0.8]) are dropped: argmax would break the tie by sibling order, making
+    "agreement" an indexing artifact, not ranking signal (codex #110 P2 round-3)."""
+    from manifold.training.paired_grpo_cli import bridge_noise_reward_ranking_probe
+
+    torch.manual_seed(0)
+    n = 3  # one group of G=3
+    x_src, x_tgt, shared_tgt = _probe_src_tgt(n=n)
+    # _TiedMaxReward ties the reward max across siblings -> the group is degenerate.
+    with pytest.raises(ValueError, match="scored 0 sources with a ranking signal"):
+        bridge_noise_reward_ranking_probe(
+            _SoftPairedPolicy(), FlowMatchBridgeGRPOScheduler(eta=0.7),
+            _TiedMaxReward().eval(), x_src, x_tgt, [1.0, 1.0, 1.0], 1, 2,
+            G=3, perturbed_step=1, num_steps=4, batch_size=3,
+        )
+
+
+def test_build_paired_bridge_noised_fakes_accepts_per_sample_label_sequence(paired_unet):
+    """Per-sample labels as a Python list/tuple are normalized to a [B] long tensor
+    (mirrors the sibling builders' _as_per_sample sequence path); before the fix,
+    _as_label_tensor called int() on the sequence and crashed (codex #110 P2 round-3)."""
+    from manifold.data.paired_reward_pairs import build_paired_bridge_noised_fakes
+
+    torch.manual_seed(0)
+    n = 3
+    x_src = torch.randn(n, *_LAT)
+    x_tgt = torch.randn(n, *_LAT)
+    sched = FlowMatchBridgeGRPOScheduler(eta=0.7)
+    # Per-sample labels as a Python list (the form the sibling builders accept).
+    pairs = build_paired_bridge_noised_fakes(
+        x_src, x_tgt, paired_unet, sched,
+        src_label=[0, 1, 2], tgt_label=[1, 2, 3], spacing=[[1.0, 1.0, 1.0]] * n,
+        num_steps=4, perturbed_step=1, G=2, batch_size=2, seed=0,
+    )
+    assert len(pairs) == n * 2
+
+
+def test_as_label_tensor_normalizes_sequences():
+    """_as_label_tensor turns a list/tuple into a [B] long tensor; a scalar int broadcasts;
+    a [B] tensor passes through; a wrong-length sequence fails fast (codex #110 P2 round-3)."""
+    from manifold.modules.paired_sampler import _as_label_tensor
+
+    dev = torch.device("cpu")
+    assert torch.equal(
+        _as_label_tensor([0, 1, 2], 3, dev), torch.tensor([0, 1, 2], dtype=torch.long)
+    )
+    assert torch.equal(
+        _as_label_tensor((1, 1, 1), 3, dev), torch.tensor([1, 1, 1], dtype=torch.long)
+    )
+    assert torch.equal(_as_label_tensor(5, 3, dev), torch.tensor([5, 5, 5], dtype=torch.long))
+    assert torch.equal(
+        _as_label_tensor(torch.tensor([2, 1, 0]), 3, dev),
+        torch.tensor([2, 1, 0], dtype=torch.long),
+    )
+    with pytest.raises(ValueError, match="per-sample label sequence length"):
+        _as_label_tensor([0, 1], 3, dev)
