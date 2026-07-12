@@ -449,7 +449,109 @@ def build_paired_reward_inputs(
     return PairedRewardInputs(train_pair_ds=train_pairs, val_pair_ds=val_pairs, val_probe=probe)
 
 
+def build_paired_bridge_noised_fakes(
+    x_src: Tensor | Sequence[Tensor],
+    x_tgt: Tensor | Sequence[Tensor],
+    generator,
+    bridge_scheduler,
+    *,
+    src_label,
+    tgt_label,
+    spacing: Sequence[float] | Tensor,
+    num_steps: int = 8,
+    perturbed_step: int = 1,
+    G: int = 2,
+    batch_size: int = 4,
+    seed: int = 0,
+    device: torch.device | str | None = None,
+) -> RewardPairDataset:
+    """Build the bridge-noised-fake escalation pairs (ADR-0024 R1 / #106).
+
+    The paired reward was trained real-vs-DETERMINISTIC-fake (ADR-0020). If the
+    bridge-noise reward-ranking probe fails (the reward can't rank bridge-noised
+    fakes), retrain the reward with the LOSER a bridge-noised generation (the kind of
+    fake G2RPO actually produces) instead of the deterministic rollout. This builder
+    generates ``G`` bridge-branch siblings per source (one bridge SDE draw off the
+    anchor at ``perturbed_step`` at the bridge ``eta``, deterministic Heun suffix to
+    ``z_K``), concatenates ``cat([x_src, z_K])`` for condition-aware scoring, and pairs
+    them with the real ``cat([x_src, x_tgt])`` winners (``G`` pairs per source).
+
+    Sibling of :func:`build_paired_reward_pairs`; the loser is the BRIDGE rollout
+    (stochastic, ADR-0024) not the deterministic full rollout. Deterministic given the
+    seed (the bridge draw uses a fresh seeded generator).
+    """
+    from ..modules.paired_grpo import _heun_rollout_paired, _paired_unet_call
+    from ..modules.paired_sampler import _as_label_tensor
+    from ..schedulers.scheduling_flow_match_bridge_grpo import FlowMatchBridgeGRPOScheduler
+
+    if not isinstance(bridge_scheduler, FlowMatchBridgeGRPOScheduler):
+        raise TypeError(
+            f"bridge_scheduler must be a FlowMatchBridgeGRPOScheduler, got {type(bridge_scheduler)}; "
+            "the bridge-noised fakes need the bridge SDE (sde_step_mean)."
+        )
+    src = x_src if isinstance(x_src, Tensor) else torch.stack(list(x_src))
+    tgt = x_tgt if isinstance(x_tgt, Tensor) else torch.stack(list(x_tgt))
+    if src.shape != tgt.shape:
+        raise ValueError(f"x_src {tuple(src.shape)} and x_tgt {tuple(tgt.shape)} must match.")
+    device = _resolve_rollout_device(generator, device)
+    if not isinstance(spacing, Tensor):
+        spacing = torch.as_tensor(spacing)
+    n = len(src)
+    spatial = src.shape[1:]
+    src_lab_full = _as_label_tensor(src_label, n, device)
+    tgt_lab_full = _as_label_tensor(tgt_label, n, device)
+    nodes = bridge_scheduler.set_timesteps(num_steps, device=device)
+    if perturbed_step >= num_steps - 1:
+        raise ValueError(
+            f"perturbed_step ({perturbed_step}) must be < num_steps-1 ({num_steps-1}) to "
+            "avoid the §7 var-collapse terminal."
+        )
+    gen = torch.Generator(device=device).manual_seed(seed)
+    generator.eval()
+    winners, losers = [], []
+    for start in range(0, n, batch_size):
+        b = min(batch_size, n - start)
+        src_b = src[start : start + b].to(device)
+        tgt_b = tgt[start : start + b].to(device)
+        spacing_b = (
+            spacing[start : start + b] if isinstance(spacing, Tensor) and spacing.dim() == 2 else spacing
+        )
+        src_lab = src_lab_full[start : start + b] if isinstance(src_lab_full, Tensor) else src_lab_full
+        tgt_lab = tgt_lab_full[start : start + b] if isinstance(tgt_lab_full, Tensor) else tgt_lab_full
+        # Anchor to the perturbed step (the deployed-Heun path from x_src).
+        anchor_z = _heun_rollout_paired(
+            generator, bridge_scheduler, src_b, src_b, nodes, spacing_b, src_lab, tgt_lab, 0, perturbed_step
+        )
+        z_k = anchor_z[perturbed_step]
+        t_k = float(nodes[perturbed_step])
+        t_next = float(nodes[perturbed_step + 1])
+        x0 = _paired_unet_call(generator, z_k, src_b, t_k, spacing_b, src_lab, tgt_lab)
+        mean_old, std_old = bridge_scheduler.sde_step_mean(x0, z_k, t_k, t_next)
+        xi = torch.randn(b, G, *spatial, generator=gen, device=device, dtype=src_b.dtype)
+        z_kplus1 = mean_old.unsqueeze(1) + float(std_old) * xi  # (b, G, *spatial)
+        # Suffix to z_K (G-expanded conditioning).
+        src_lab_bg = src_lab.repeat_interleave(G) if isinstance(src_lab, Tensor) else src_lab
+        tgt_lab_bg = tgt_lab.repeat_interleave(G) if isinstance(tgt_lab, Tensor) else tgt_lab
+        spacing_bg = spacing_b.repeat_interleave(G, dim=0) if spacing_b.dim() == 2 else spacing_b
+        x_src_bg = src_b.repeat_interleave(G, dim=0)
+        z_g = z_kplus1.reshape(b * G, *spatial)
+        suffix = _heun_rollout_paired(
+            generator, bridge_scheduler, z_g, x_src_bg, nodes, spacing_bg, src_lab_bg, tgt_lab_bg,
+            perturbed_step + 1, num_steps,
+        )
+        z_K = suffix[-1]  # (b·G, *spatial)
+        # Winner: real cat([x_src, x_tgt]); Loser: bridge-noised cat([x_src, z_K]).
+        winners.append(torch.cat([x_src_bg, tgt_b.repeat_interleave(G, dim=0)], dim=1).detach().cpu())
+        losers.append(torch.cat([x_src_bg, z_K], dim=1).detach().cpu())
+    _log.info(
+        "build_paired_bridge_noised_fakes: %d bridge-noised pairs (G=%d, step=%d, num_steps=%d).",
+        n * G, G, perturbed_step, num_steps,
+    )
+    return RewardPairDataset(torch.cat(winners), torch.cat(losers))
+
+
 __all__ = [
+    "build_paired_bridge_noised_fakes",
     "build_paired_reward_pairs",
     "build_paired_reward_inputs",
     "build_paired_reward_probe",

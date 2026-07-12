@@ -1357,3 +1357,241 @@ def test_full_v1_budget_with_eta_ramp_is_finite(tmp_path):
         eta_min=0.1, eta_ramp_fraction=0.3,
     )
     assert torch.isfinite(trainer.callback_metrics["val/mean_reward"])
+
+
+# -- Slice 4 (#106): the launch gate -------------------------------------------
+#
+# The bridge-noise reward-ranking probe (the HARD gate, ADR-0024 R1): on the init UNet
+# at eta_max, generate G bridge-branch siblings per source, check the reward ranking
+# agrees with a PSNR-to-x_tgt surrogate. acc >= threshold passes; acc ~ random =>
+# the reward can't rank bridge-noised fakes => G2RPO would silently random-walk =>
+# refuse the launch (escalation: retrain the reward with bridge-noised fakes).
+
+
+class _SoftPairedPolicy(nn.Module):
+    """An input-dependent fake Paired JiT UNet (x0 = 0.5*z) for the probe tests.
+
+    The real ``paired_unet`` fixture (random weights) outputs all-zeros, so bridge
+    siblings collapse to identical z_K (acc=1.0 ties, not a real ranking). This soft
+    policy returns 0.5 * the z half of cat([z, x_src]) - input-dependent + non-zero - so
+    the suffix preserves the bridge-noise sibling difference and the probe can rank."""
+
+    def __init__(self):
+        super().__init__()
+        self.dummy = nn.Parameter(torch.ones(3))
+
+    def forward(self, sample, timestep, spacing, class_labels_src=None,
+                class_labels_tgt=None, **kw):
+        return 0.5 * sample[:, :_LAT[0]]  # the z half -> C_latent-channel x0
+
+
+class _QualityCorrelatedReward(nn.Module):
+    """A reward whose score IS -MSE(z_K, x_tgt_fixed) - perfectly correlates with PSNR.
+
+    Stores ONE shared target (all probe sources share it) so the reward is
+    batch-compatible: forward sees cat([x_src, z_K]) (N rows) and compares the z_K
+    half to the shared target per row. reward = -||z_K - tgt||^2 is monotonic in PSNR,
+    so the ranking agrees exactly (acc ~ 1.0) - the gate-pass case."""
+
+    def __init__(self, x_tgt_fixed):
+        super().__init__()
+        self.x_tgt = x_tgt_fixed  # (C, ...) - shared target
+
+    def forward(self, cat_input):
+        C = self.x_tgt.shape[0]
+        z_K = cat_input[:, C:]
+        return -((z_K - self.x_tgt.to(z_K.device)).pow(2).mean(dim=tuple(range(1, z_K.dim()))))
+
+
+class _AntiCorrelatedReward(nn.Module):
+    """A reward that ranks BACKWARDS (+MSE) - the gate-fail case (acc ~ 0).
+
+    reward = +||z_K - tgt||^2 ranks opposite to PSNR -> the reward's top-1 never matches
+    PSNR's top-1 -> acc ~ 0 < threshold. G2RPO would optimize the wrong direction."""
+
+    def __init__(self, x_tgt_fixed):
+        super().__init__()
+        self.x_tgt = x_tgt_fixed
+
+    def forward(self, cat_input):
+        C = self.x_tgt.shape[0]
+        z_K = cat_input[:, C:]
+        return (z_K - self.x_tgt.to(z_K.device)).pow(2).mean(dim=tuple(range(1, z_K.dim())))
+
+
+def _probe_src_tgt(n=4):
+    """Varied src; a SHARED tgt (so the reward can be batch-compatible + perfectly correlated)."""
+    torch.manual_seed(0)
+    x_src = torch.randn(n, *_LAT)
+    shared_tgt = torch.randn(*_LAT)  # one target all sources share
+    x_tgt = shared_tgt.unsqueeze(0).repeat(n, *([1] * len(_LAT)))
+    return x_src, x_tgt, shared_tgt
+
+
+class _FixedProbeValDS(torch.utils.data.Dataset):
+    """A val DS emitting (src_i, shared_tgt) so the probe's x_tgt matches the reward's."""
+
+    def __init__(self, x_src, shared_tgt):
+        self.src = x_src
+        self.tgt = shared_tgt
+
+    def __len__(self):
+        return self.src.shape[0]
+
+    def __getitem__(self, i):
+        return {
+            "src_latent": self.src[i],
+            "tgt_latent": self.tgt,
+            "src_label": torch.tensor(1, dtype=torch.long),
+            "tgt_label": torch.tensor(2, dtype=torch.long),
+            "spacing": torch.tensor([1.0, 1.0, 1.0]),
+        }
+
+
+def test_bridge_noise_probe_correlated_reward_high_acc():
+    """A reward that ranks by quality (PSNR-to-x_tgt) => high acc (passes the gate)."""
+    from manifold.training.paired_grpo_cli import bridge_noise_reward_ranking_probe
+
+    x_src, x_tgt, shared_tgt = _probe_src_tgt(n=4)
+    sched = FlowMatchBridgeGRPOScheduler(eta=0.7)
+    reward = _QualityCorrelatedReward(shared_tgt).eval()
+    res = bridge_noise_reward_ranking_probe(
+        _SoftPairedPolicy(), sched, reward, x_src, x_tgt, [1.0, 1.0, 1.0], 1, 2,
+        G=2, perturbed_step=1, num_steps=4, batch_size=4,
+    )
+    # reward == -MSE (monotonic in PSNR) -> ranking agrees exactly -> acc ~ 1.0.
+    assert res["acc"] > 0.9, f"correlated reward should pass (acc>0.6), got {res['acc']}"
+    assert res["n"] == 4
+    assert res["G"] == 2
+
+
+def test_bridge_noise_probe_anticorrelated_reward_fails_gate():
+    """A reward that ranks backwards (+MSE) => acc ~ 0 < threshold (gate fails)."""
+    from manifold.training.paired_grpo_cli import bridge_noise_reward_ranking_probe
+
+    x_src, x_tgt, shared_tgt = _probe_src_tgt(n=4)
+    sched = FlowMatchBridgeGRPOScheduler(eta=0.7)
+    reward = _AntiCorrelatedReward(shared_tgt).eval()
+    res = bridge_noise_reward_ranking_probe(
+        _SoftPairedPolicy(), sched, reward, x_src, x_tgt, [1.0, 1.0, 1.0], 1, 2,
+        G=2, perturbed_step=1, num_steps=4, batch_size=4,
+    )
+    assert res["acc"] < 0.6, f"anti-correlated reward must fail the gate (acc<0.6), got {res['acc']}"
+
+
+def test_bridge_noise_probe_rejects_terminal_step():
+    """perturbed_step >= num_steps-1 (the var-collapse terminal) is rejected."""
+    from manifold.training.paired_grpo_cli import bridge_noise_reward_ranking_probe
+
+    x_src, x_tgt, _ = _probe_src_tgt(n=2)
+    with pytest.raises(ValueError, match="var-collapse terminal"):
+        bridge_noise_reward_ranking_probe(
+            _SoftPairedPolicy(), FlowMatchBridgeGRPOScheduler(eta=0.7), _AntiCorrelatedReward(torch.randn(*_LAT)),
+            x_src, x_tgt, [1.0, 1.0, 1.0], 1, 2,
+            G=2, perturbed_step=3, num_steps=4, batch_size=2,  # 3 == num_steps-1
+        )
+
+
+def test_build_paired_bridge_noised_fakes(paired_unet):
+    """The escalation builder: bridge-noised fakes as the loser (condition-aware [2*C])."""
+    from manifold.data.paired_reward_pairs import build_paired_bridge_noised_fakes
+
+    torch.manual_seed(0)
+    n = 3
+    x_src = torch.randn(n, *_LAT)
+    x_tgt = torch.randn(n, *_LAT)
+    sched = FlowMatchBridgeGRPOScheduler(eta=0.7)
+    pairs = build_paired_bridge_noised_fakes(
+        x_src, x_tgt, paired_unet, sched,
+        src_label=1, tgt_label=2, spacing=[1.0, 1.0, 1.0],
+        num_steps=4, perturbed_step=1, G=2, batch_size=2, seed=0,
+    )
+    C = _LAT[0]
+    assert pairs.winners.shape == (n * 2, 2 * C, *_LAT[1:])
+    assert pairs.losers.shape == pairs.winners.shape
+    assert len(pairs) == n * 2
+    # Deterministic given the seed.
+    pairs2 = build_paired_bridge_noised_fakes(
+        x_src, x_tgt, paired_unet, sched,
+        src_label=1, tgt_label=2, spacing=[1.0, 1.0, 1.0],
+        num_steps=4, perturbed_step=1, G=2, batch_size=2, seed=0,
+    )
+    assert torch.equal(pairs.losers, pairs2.losers), "bridge-noised fakes must be seed-reproducible"
+
+
+def test_build_paired_bridge_noised_fakes_requires_bridge_scheduler(paired_unet):
+    """The escalation builder rejects a non-bridge scheduler (needs sde_step_mean)."""
+    from manifold.data.paired_reward_pairs import build_paired_bridge_noised_fakes
+
+    x_src = torch.randn(2, *_LAT)
+    x_tgt = torch.randn(2, *_LAT)
+    with pytest.raises(TypeError, match="FlowMatchBridgeGRPOScheduler"):
+        build_paired_bridge_noised_fakes(
+            x_src, x_tgt, paired_unet, FlowMatchHeunDiscreteScheduler(),
+            src_label=1, tgt_label=2, spacing=[1.0, 1.0, 1.0], num_steps=4,
+        )
+
+
+def test_main_probe_flag_passes_on_correlated_reward(tmp_path):
+    """--probe returns rc=0 when the reward ranks bridge-noised fakes (acc >= threshold)."""
+    from manifold import UNet3DConditionModel
+    from manifold.training.paired_grpo_cli import PairedGRPOInputs, main as pg_main
+
+    policy = _SoftPairedPolicy()
+    x_src, x_tgt, shared_tgt = _probe_src_tgt(n=4)
+
+    def provider(cfg, device):
+        return PairedGRPOInputs(
+            policy=policy, reward_model=_QualityCorrelatedReward(shared_tgt).eval(),
+            scheduler=FlowMatchBridgeGRPOScheduler(eta=0.7),
+            train_ds=_ToyPairedDS(), val_ds=_FixedProbeValDS(x_src, shared_tgt),
+        )
+
+    env, train, net = _write_tiny_configs(tmp_path)
+    rc = pg_main(["-e", env, "-c", train, "-t", net, "-g", "1", "--probe",
+                 "paired_grpo_train.num_steps=4"], data_provider=provider)
+    assert rc == 0, "correlated reward => probe should PASS (rc=0)"
+
+
+def test_main_probe_flag_fails_on_anticorrelated_reward(tmp_path):
+    """--probe returns rc=1 when the reward ranks backwards (acc < threshold)."""
+    from manifold import UNet3DConditionModel
+    from manifold.training.paired_grpo_cli import PairedGRPOInputs, main as pg_main
+
+    policy = _SoftPairedPolicy()
+    x_src, x_tgt, shared_tgt = _probe_src_tgt(n=4)
+
+    def provider(cfg, device):
+        return PairedGRPOInputs(
+            policy=policy, reward_model=_AntiCorrelatedReward(shared_tgt).eval(),
+            scheduler=FlowMatchBridgeGRPOScheduler(eta=0.7),
+            train_ds=_ToyPairedDS(), val_ds=_FixedProbeValDS(x_src, shared_tgt),
+        )
+
+    env, train, net = _write_tiny_configs(tmp_path)
+    rc = pg_main(["-e", env, "-c", train, "-t", net, "-g", "1", "--probe",
+                 "paired_grpo_train.num_steps=4"], data_provider=provider)
+    assert rc == 1, "anti-correlated reward => probe should FAIL (rc=1)"
+
+
+def test_adr0015_semantics_val_mean_reward_in_tanh_range(tmp_path, vae):
+    """ADR-0015 semantics: with reward_bound=tanh, val/mean_reward is in (-1, 1) (no blowup).
+
+    The v1 raw-logit reward blew up to 3370 (reward hacking); the tanh bound caps it into
+    (-1, 1) so val/mean_reward stays in the bounded range - the ADR-0015 semantics the
+    launch gate checks (#106 acceptance)."""
+    from manifold.modules import PairedGRPOModule
+    from manifold.training.paired_grpo_cli import run_paired_grpo_training
+
+    inputs = _inputs_with_vae(vae)
+    module = PairedGRPOModule(
+        inputs.policy, inputs.reward_model, inputs.scheduler,
+        G=2, eta_step_list=(0,), num_steps=3, lr=1e-3,
+        reward_bound="tanh", reward_temp=8.0,
+    )
+    trainer, _ = run_paired_grpo_training(
+        module=module, inputs=inputs, model_dir=str(tmp_path),
+        max_epochs=1, devices=1, accelerator="cpu", batch_size=2,
+    )
+    mr = float(trainer.callback_metrics["val/mean_reward"])
+    assert -1.0 < mr < 1.0, f"val/mean_reward must be in the tanh range (-1, 1), got {mr}"
