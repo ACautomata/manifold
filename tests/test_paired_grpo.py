@@ -879,6 +879,26 @@ def test_run_paired_grpo_measurement_forwards_limit_train_batches(tmp_path, monk
     )
 
 
+def test_paired_grpo_default_recipe_resolves_inference_dims():
+    """The default G2RPO recipe exposes diffusion_unet_inference.dim.
+
+    The real-data --native-dir path (_real_inputs) dereferences cfg.diffusion_unet_inference
+    to compute target_dim; without the block the default launcher (``manifold-train-paired-grpo
+    -e env -t network``) raises ConfigAttributeError before building datasets (codex #107).
+    dim is the VOLUME spatial target (pre-VAE), distinct from paired_grpo_train.latent_shape.
+    """
+    from manifold.config import load_config, merge_overrides
+
+    cfg = load_config(
+        "configs/env/environment.yaml",
+        "configs/train/config_paired_grpo.yaml",
+        "configs/network/config_network.yaml",
+    )
+    cfg = merge_overrides(cfg, {"num_gpus": 1}, ["model_dir=/tmp/_g2rpo_"])
+    target_dim = tuple(int(d) for d in cfg.diffusion_unet_inference.dim)
+    assert len(target_dim) == 3 and all(d > 0 for d in target_dim), target_dim
+
+
 _TINY_NETWORK_YAML = "spatial_dims: 3\nlatent_channels: 4\n"
 
 

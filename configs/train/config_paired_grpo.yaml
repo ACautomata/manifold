@@ -68,3 +68,22 @@ paired_grpo:
 # rank-local val/mean_reward monitor is dropped (val/psnr is a global cross-rank mean).
 checkpoint:
   save_top_k: 1
+
+# Inference block read by the real-data --native-dir path (_real_inputs): target_dim
+# MUST match the paired_train cache the generator trained on (cache reuse,
+# ADR-0021/0022 - sample_ids derive from the volume + target_dim, so a mismatch breaks
+# disk hits). Mirrors config_paired_jit.yaml / config_paired_reward.yaml verbatim. Note
+# dim is the VOLUME spatial target (pre-VAE-encode), NOT paired_grpo_train.latent_shape
+# (the post-VAE latent, 4x smaller per spatial axis) (codex #107).
+diffusion_unet_inference:
+  dim: [256, 256, 128]          # volume spatial target [D, H, W] (latent is this / VAE-downsample)
+  spacing: [1.7, 1.7, 2]
+  top_region_index: [0, 1, 0, 0]
+  bottom_region_index: [0, 0, 1, 0]
+  random_seed: 0
+  num_inference_steps: 8
+  modality: 1
+  autoencoder_sliding_window_infer_size: [80, 80, 80]
+  autoencoder_sliding_window_infer_overlap: 0.4
+  autoencoder_encode_sliding_window_infer_size: [320, 320, 160]
+  autoencoder_encode_sliding_window_infer_overlap: 0.4
