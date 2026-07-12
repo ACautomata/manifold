@@ -2099,3 +2099,119 @@ def test_bridge_noise_probe_rejects_non_finite_reward_groups():
             G=2, perturbed_step=1, num_steps=4, batch_size=4,
             reward_bound="none",
         )
+
+
+# -- codex #110 round-5: probe rc, autocast, re-export, n_samples (3 P2 + 1 P3) ---
+
+
+def test_main_probe_returns_rc1_on_degenerate_reward(tmp_path):
+    """A degenerate probe (all groups tied -> ValueError) returns rc=1 (gate fail +
+    escalation), not an uncaught crash. main() catches the ranking-signal failure and
+    takes the same low-acc retrain-escalation path (codex #110 P2)."""
+    from manifold.training.paired_grpo_cli import PairedGRPOInputs, main as pg_main
+
+    x_src = torch.randn(4, *_LAT)
+    shared_tgt = torch.randn(*_LAT)
+
+    def provider(cfg, device):
+        return PairedGRPOInputs(
+            policy=_SoftPairedPolicy(),
+            reward_model=_ConstantReward().eval(),  # zero-spread reward -> all groups tied
+            scheduler=FlowMatchBridgeGRPOScheduler(eta=0.7),
+            train_ds=_ToyPairedDS(),
+            val_ds=_FixedProbeValDS(x_src, shared_tgt),
+        )
+
+    env, train, net = _write_tiny_configs(tmp_path)
+    rc = pg_main(["-e", env, "-c", train, "-t", net, "-g", "1", "--probe",
+                 "paired_grpo_train.num_steps=4"], data_provider=provider)
+    assert rc == 1, (
+        "a degenerate probe (all groups tied) must return rc=1 (gate fail), not crash"
+    )
+
+
+def test_bridge_noise_probe_rollout_runs_under_cuda_autocast():
+    """The probe rollout is wrapped in torch.autocast(enabled=cuda): on the real path the
+    fp32 policy's 3D rollout would otherwise allocate fp32 activations (training runs
+    16-mixed) and OOM before the gate reports. CPU-only observable, locked via the
+    autocast context being entered (codex #110 P2)."""
+    import manifold.training.paired_grpo_cli as cli
+    from manifold.training.paired_grpo_cli import bridge_noise_reward_ranking_probe
+
+    entered = []
+    real_autocast = torch.autocast
+
+    class _SpyAutocast:
+        def __init__(self, device_type, enabled=True, **kw):
+            self.enabled = enabled
+        def __enter__(self):
+            entered.append(self.enabled)
+            return real_autocast.__new__(real_autocast)
+        def __exit__(self, *a):
+            return False
+
+    monkey_autocast = _SpyAutocast
+    real = cli.torch.autocast
+    cli.torch.autocast = monkey_autocast
+    try:
+        x_src, x_tgt, shared_tgt = _probe_src_tgt(n=4)
+        bridge_noise_reward_ranking_probe(
+            _SoftPairedPolicy(), FlowMatchBridgeGRPOScheduler(eta=0.7),
+            _QualityCorrelatedReward(shared_tgt).eval(), x_src, x_tgt, [1.0, 1.0, 1.0], 1, 2,
+            G=2, perturbed_step=1, num_steps=4, batch_size=4,
+        )
+    finally:
+        cli.torch.autocast = real
+    # The rollout's autocast was entered (on CPU, enabled=False, but the context IS used).
+    assert entered, "the probe rollout must be wrapped in torch.autocast"
+    # On CPU the autocast is disabled (enabled=device.type=='cuda' is False), but it's entered.
+    assert all(e is False for e in entered)  # CPU -> disabled, but entered
+
+
+def test_build_paired_bridge_noised_fakes_reexported_from_manifold_data():
+    """build_paired_bridge_noised_fakes is re-exported from manifold.data (like its sibling
+    builders), so the documented retrain-on-fail escalation is consumable via the package
+    API (codex #110 P3)."""
+    import manifold.data as md
+    assert hasattr(md, "build_paired_bridge_noised_fakes"), (
+        "build_paired_bridge_noised_fakes must be re-exported from manifold.data"
+    )
+    assert "build_paired_bridge_noised_fakes" in md.__all__
+
+
+def test_main_probe_n_samples_cli_override(tmp_path):
+    """--probe-n-samples overrides the probe's sample count (the hard-gate knob): with
+    G=2 + threshold=0.6, the default is 64 (n=16 lets a random reward pass ~23% of the
+    time) (codex #110 P2). The CLI value flows into _run_probe."""
+    import manifold.training.paired_grpo_cli as cli
+    from manifold.training.paired_grpo_cli import PairedGRPOInputs, main as pg_main
+
+    captured = {}
+    real_probe = cli._run_probe
+
+    def spy(module, inputs, cfg, *, n_probe=64):
+        captured["n_probe"] = n_probe
+        return 0.9  # pass the gate; we only assert the knob flows through
+
+    cli._run_probe = spy
+    try:
+        x_src = torch.randn(4, *_LAT)
+        shared_tgt = torch.randn(*_LAT)
+
+        def provider(cfg, device):
+            return PairedGRPOInputs(
+                policy=_SoftPairedPolicy(),
+                reward_model=_QualityCorrelatedReward(shared_tgt).eval(),
+                scheduler=FlowMatchBridgeGRPOScheduler(eta=0.7),
+                train_ds=_ToyPairedDS(), val_ds=_FixedProbeValDS(x_src, shared_tgt),
+            )
+
+        env, train, net = _write_tiny_configs(tmp_path)
+        pg_main(["-e", env, "-c", train, "-t", net, "-g", "1", "--probe",
+                 "--probe-n-samples", "32",
+                 "paired_grpo_train.num_steps=4"], data_provider=provider)
+    finally:
+        cli._run_probe = real_probe
+    assert captured.get("n_probe") == 32, (
+        f"--probe-n-samples 32 must flow into _run_probe, got {captured.get('n_probe')}"
+    )

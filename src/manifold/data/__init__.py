@@ -34,6 +34,7 @@ from .paired_latent_dataset import (
     estimate_paired_scale_factor,
 )
 from .paired_reward_pairs import (
+    build_paired_bridge_noised_fakes,
     build_paired_reward_pairs,
     build_paired_reward_probe,
     load_frozen_paired_generator,
@@ -69,6 +70,7 @@ __all__ = [
     "build_brats_pair_manifest",
     "build_datamodule",
     "build_encode_pipeline",
+    "build_paired_bridge_noised_fakes",
     "build_paired_reward_pairs",
     "build_paired_reward_probe",
     "build_volume_dataset",

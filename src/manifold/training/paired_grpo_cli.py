@@ -327,87 +327,93 @@ def bridge_noise_reward_ranking_probe(
     agree = 0
     probed = 0  # every attempted source (tied groups count as failures: acc = agree/probed)
     scored = 0  # sources with a real ranking signal (for the all-degenerate guard below)
-    for s in range(0, n, batch_size):
-        b = min(batch_size, n - s)
-        probed += b  # count every attempted source (tied groups lower acc via the denominator)
-        src_b = src[s : s + b].to(device=device, dtype=dtype)
-        tgt_b = tgt[s : s + b].to(device=device, dtype=dtype)
-        # Per-source (dim-2) spacing: SLICE to the current batch's sources, then expand
-        # by G below. repeat_interleave(b) here would instead repeat ALL n rows b times
-        # (n*b rows vs b sources) and mis-condition the paired UNet's spacing input
-        # (codex #110 P1).
-        spacing_b = spacing_t[s : s + b] if spacing_t.dim() == 2 else spacing_t
-        src_lab = src_labels_full[s : s + b] if isinstance(src_labels_full, torch.Tensor) else src_labels_full
-        tgt_lab = tgt_labels_full[s : s + b] if isinstance(tgt_labels_full, torch.Tensor) else tgt_labels_full
-        # Anchor rollout to the perturbed step (the deployed-Heun path from x_src).
-        anchor_z = _heun_rollout_paired(
-            unet, scheduler, src_b, src_b, nodes, spacing_b, src_lab, tgt_lab, 0, perturbed_step
-        )
-        z_k = anchor_z[perturbed_step]
-        t_k = float(nodes[perturbed_step])
-        t_next = float(nodes[perturbed_step + 1])
-        # G bridge siblings off z_k at eta_max (the bridge SDE draw).
-        x0 = _paired_unet_call(unet, z_k, src_b, t_k, spacing_b, src_lab, tgt_lab)
-        mean_old, std_old = scheduler.sde_step_mean(x0, z_k, t_k, t_next)
-        xi = torch.randn(b, G, *spatial, device=device, dtype=dtype)
-        z_kplus1 = mean_old.unsqueeze(1) + float(std_old) * xi  # (b, G, *spatial)
-        # Deterministic Heun suffix to the terminal z_K (thread x_src_bg).
-        src_labels_bg = src_lab.repeat_interleave(G) if isinstance(src_lab, torch.Tensor) else src_lab
-        tgt_labels_bg = tgt_lab.repeat_interleave(G) if isinstance(tgt_lab, torch.Tensor) else tgt_lab
-        spacing_bg = spacing_b.repeat_interleave(G, dim=0) if spacing_b.dim() == 2 else spacing_b
-        x_src_bg = src_b.repeat_interleave(G, dim=0)
-        z_g = z_kplus1.reshape(b * G, *spatial)
-        suffix = _heun_rollout_paired(
-            unet, scheduler, z_g, x_src_bg, nodes, spacing_bg, src_labels_bg, tgt_labels_bg,
-            perturbed_step + 1, num_steps,
-        )
-        z_K = suffix[-1]  # (b·G, *spatial)
-        # Reward + PSNR-to-x_tgt per sibling, then per-source top-1 agreement.
-        reward_input = torch.cat([x_src_bg, z_K], dim=1)
-        # Cast the reward input to the reward model's dtype: the rollout runs in the
-        # POLICY dtype (an fp16/bfloat16 launch policy to fit 3D), but the frozen
-        # RewardModel is fp32, so feeding the policy-dtype cat straight in is an
-        # input/weight dtype mismatch (singular_branch_rollout_paired wraps its whole
-        # rollout in cuda autocast; the probe does not, so cast explicitly) (codex #110 P2).
-        # Fall back to fp32 when the model has no parameters (test stubs) - a real
-        # PatchGAN always has parameters, so this is the safe default, not a silent path.
-        _params = list(reward_model.parameters())
-        reward_dtype = _params[0].dtype if _params else torch.float32
-        rewards = reward_model(reward_input.to(dtype=reward_dtype)).float().reshape(b, G)
-        # Apply the SAME reward transform training uses to build advantages: with the tanh
-        # bound, training consumes tanh(r / reward_temp); ranking RAW logits can pass the
-        # gate on OOD-large logits that tanh saturates to identical values (zero training
-        # signal). Mirror PairedGRPOModule._bound_reward (codex #110 P2).
-        if reward_bound == "tanh":
-            rewards = torch.tanh(rewards / float(reward_temp))
-        elif reward_bound != "none":
-            raise ValueError(
-                f"unknown reward_bound {reward_bound!r} (expected 'none' or 'tanh')."
+    # Wrap the rollout in CUDA autocast (mirrors singular_branch_rollout_paired + the
+    # training fit, which runs 16-mixed): on the real path the policy is fp32 but the fit
+    # runs under autocast, so an autocast-less probe allocates fp32 activations and can OOM
+    # before the gate reports (codex #110 P2). The explicit reward-input cast below still
+    # holds (belt-and-braces - autocast would also coerce it).
+    with torch.autocast(device_type=device.type, enabled=device.type == "cuda"):
+        for s in range(0, n, batch_size):
+            b = min(batch_size, n - s)
+            probed += b  # count every attempted source (tied groups lower acc via the denominator)
+            src_b = src[s : s + b].to(device=device, dtype=dtype)
+            tgt_b = tgt[s : s + b].to(device=device, dtype=dtype)
+            # Per-source (dim-2) spacing: SLICE to the current batch's sources, then expand
+            # by G below. repeat_interleave(b) here would instead repeat ALL n rows b times
+            # (n*b rows vs b sources) and mis-condition the paired UNet's spacing input
+            # (codex #110 P1).
+            spacing_b = spacing_t[s : s + b] if spacing_t.dim() == 2 else spacing_t
+            src_lab = src_labels_full[s : s + b] if isinstance(src_labels_full, torch.Tensor) else src_labels_full
+            tgt_lab = tgt_labels_full[s : s + b] if isinstance(tgt_labels_full, torch.Tensor) else tgt_labels_full
+            # Anchor rollout to the perturbed step (the deployed-Heun path from x_src).
+            anchor_z = _heun_rollout_paired(
+                unet, scheduler, src_b, src_b, nodes, spacing_b, src_lab, tgt_lab, 0, perturbed_step
             )
-        tgt_bg = tgt_b.repeat_interleave(G, dim=0)
-        psnr = _latent_psnr(z_K, tgt_bg).reshape(b, G)
-        # Exclude degenerate groups: a constant target (all-inf PSNR), a fully-tied reward
-        # OR PSNR (zero spread), OR a TIED MAXIMUM (e.g. tanh-saturated rewards like
-        # [1, 1, 0.8] - spread>0 but the top value is shared, so argmax breaks the tie by
-        # sibling order, making "agreement" an artifact of indexing, not ranking signal).
-        # Require the top reward AND top PSNR to be unique (codex #110 P2 round-3).
-        # Also reject non-finite rewards: with reward_bound='none' an OOD bridge-noised
-        # sibling can overflow to inf, and a group like [inf, 0] would otherwise pass as a
-        # valid unique ranking (training's group_advantage would NaN on inf) (codex #110 P2).
-        valid = torch.isfinite(psnr).all(dim=1) & torch.isfinite(rewards).all(dim=1)
-        reward_max = rewards.max(dim=1, keepdim=True).values
-        psnr_max = psnr.max(dim=1, keepdim=True).values
-        reward_top_unique = (rewards == reward_max).sum(dim=1) == 1
-        psnr_top_unique = (psnr == psnr_max).sum(dim=1) == 1
-        reward_spread = reward_max.squeeze(1) - rewards.min(dim=1).values
-        psnr_spread = psnr_max.squeeze(1) - psnr.min(dim=1).values
-        valid = valid & (reward_spread > 0) & (psnr_spread > 0) & reward_top_unique & psnr_top_unique
-        if not valid.any():
-            continue
-        reward_top = rewards[valid].argmax(dim=1)
-        psnr_top = psnr[valid].argmax(dim=1)
-        agree += int((reward_top == psnr_top).sum())
-        scored += int(valid.sum())
+            z_k = anchor_z[perturbed_step]
+            t_k = float(nodes[perturbed_step])
+            t_next = float(nodes[perturbed_step + 1])
+            # G bridge siblings off z_k at eta_max (the bridge SDE draw).
+            x0 = _paired_unet_call(unet, z_k, src_b, t_k, spacing_b, src_lab, tgt_lab)
+            mean_old, std_old = scheduler.sde_step_mean(x0, z_k, t_k, t_next)
+            xi = torch.randn(b, G, *spatial, device=device, dtype=dtype)
+            z_kplus1 = mean_old.unsqueeze(1) + float(std_old) * xi  # (b, G, *spatial)
+            # Deterministic Heun suffix to the terminal z_K (thread x_src_bg).
+            src_labels_bg = src_lab.repeat_interleave(G) if isinstance(src_lab, torch.Tensor) else src_lab
+            tgt_labels_bg = tgt_lab.repeat_interleave(G) if isinstance(tgt_lab, torch.Tensor) else tgt_lab
+            spacing_bg = spacing_b.repeat_interleave(G, dim=0) if spacing_b.dim() == 2 else spacing_b
+            x_src_bg = src_b.repeat_interleave(G, dim=0)
+            z_g = z_kplus1.reshape(b * G, *spatial)
+            suffix = _heun_rollout_paired(
+                unet, scheduler, z_g, x_src_bg, nodes, spacing_bg, src_labels_bg, tgt_labels_bg,
+                perturbed_step + 1, num_steps,
+            )
+            z_K = suffix[-1]  # (b·G, *spatial)
+            # Reward + PSNR-to-x_tgt per sibling, then per-source top-1 agreement.
+            reward_input = torch.cat([x_src_bg, z_K], dim=1)
+            # Cast the reward input to the reward model's dtype: the rollout runs in the
+            # POLICY dtype (an fp16/bfloat16 launch policy to fit 3D), but the frozen
+            # RewardModel is fp32, so feeding the policy-dtype cat straight in is an
+            # input/weight dtype mismatch (singular_branch_rollout_paired wraps its whole
+            # rollout in cuda autocast; the probe does not, so cast explicitly) (codex #110 P2).
+            # Fall back to fp32 when the model has no parameters (test stubs) - a real
+            # PatchGAN always has parameters, so this is the safe default, not a silent path.
+            _params = list(reward_model.parameters())
+            reward_dtype = _params[0].dtype if _params else torch.float32
+            rewards = reward_model(reward_input.to(dtype=reward_dtype)).float().reshape(b, G)
+            # Apply the SAME reward transform training uses to build advantages: with the tanh
+            # bound, training consumes tanh(r / reward_temp); ranking RAW logits can pass the
+            # gate on OOD-large logits that tanh saturates to identical values (zero training
+            # signal). Mirror PairedGRPOModule._bound_reward (codex #110 P2).
+            if reward_bound == "tanh":
+                rewards = torch.tanh(rewards / float(reward_temp))
+            elif reward_bound != "none":
+                raise ValueError(
+                    f"unknown reward_bound {reward_bound!r} (expected 'none' or 'tanh')."
+                )
+            tgt_bg = tgt_b.repeat_interleave(G, dim=0)
+            psnr = _latent_psnr(z_K, tgt_bg).reshape(b, G)
+            # Exclude degenerate groups: a constant target (all-inf PSNR), a fully-tied reward
+            # OR PSNR (zero spread), OR a TIED MAXIMUM (e.g. tanh-saturated rewards like
+            # [1, 1, 0.8] - spread>0 but the top value is shared, so argmax breaks the tie by
+            # sibling order, making "agreement" an artifact of indexing, not ranking signal).
+            # Require the top reward AND top PSNR to be unique (codex #110 P2 round-3).
+            # Also reject non-finite rewards: with reward_bound='none' an OOD bridge-noised
+            # sibling can overflow to inf, and a group like [inf, 0] would otherwise pass as a
+            # valid unique ranking (training's group_advantage would NaN on inf) (codex #110 P2).
+            valid = torch.isfinite(psnr).all(dim=1) & torch.isfinite(rewards).all(dim=1)
+            reward_max = rewards.max(dim=1, keepdim=True).values
+            psnr_max = psnr.max(dim=1, keepdim=True).values
+            reward_top_unique = (rewards == reward_max).sum(dim=1) == 1
+            psnr_top_unique = (psnr == psnr_max).sum(dim=1) == 1
+            reward_spread = reward_max.squeeze(1) - rewards.min(dim=1).values
+            psnr_spread = psnr_max.squeeze(1) - psnr.min(dim=1).values
+            valid = valid & (reward_spread > 0) & (psnr_spread > 0) & reward_top_unique & psnr_top_unique
+            if not valid.any():
+                continue
+            reward_top = rewards[valid].argmax(dim=1)
+            psnr_top = psnr[valid].argmax(dim=1)
+            agree += int((reward_top == psnr_top).sum())
+            scored += int(valid.sum())
     if scored == 0:
         raise ValueError(
             "bridge-noise reward-ranking probe scored 0 sources with a ranking signal "
@@ -420,13 +426,18 @@ def bridge_noise_reward_ranking_probe(
             "perturbed_step": int(perturbed_step), "eta": float(scheduler.eta)}
 
 
-def _run_probe(module, inputs, cfg, *, n_probe: int = 16) -> float:
+def _run_probe(module, inputs, cfg, *, n_probe: int = 64) -> float:
     """Pull real val (src, tgt) pairs + run the bridge-noise reward-ranking probe.
 
     The probe gate runs on the INIT policy (before any G2RPO update) at eta_max - the
     worst case for the reward's bridge-noised-fake ranking (the policy is the smooth
     slow-EMA arm; its bridge siblings are the fakes G2RPO would score). Returns the acc
     (fraction of sources whose reward's top-1 sibling matches PSNR's top-1).
+
+    ``n_probe`` defaults to 64 (the hard-gate minimum): with G=2 + threshold=0.6, n=16
+    lets a random (acc~0.5) reward pass ~23% of the time (>=10 agreements), so the
+    launch gate needs more samples (codex #110 P2). The CLI ``--probe-n-samples`` knob
+    overrides it.
     """
     gcfg = cfg.paired_grpo_train
     num_steps = int(opt(gcfg, "num_steps", 8))
@@ -682,6 +693,14 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         help="bridge-noise reward-ranking acc threshold to pass --probe (default 0.6).",
     )
     parser.add_argument(
+        "--probe-n-samples", type=int, default=64,
+        help="number of val sources the bridge-noise probe ranks (default 64). The hard "
+        "launch gate needs enough samples that a random (acc~1/G) reward can't pass by "
+        "chance: with G=2 + threshold=0.6, n=16 lets a random reward pass ~23% of the time "
+        "(>=10 agreements), so the default is larger; raise for a stricter gate, lower for "
+        "a faster smoke (codex #110 P2).",
+    )
+    parser.add_argument(
         "--resume", default=None, help="resume a Lightning .ckpt (trainer.fit(ckpt_path=...))."
     )
     parser.add_argument(
@@ -767,7 +786,20 @@ def main(argv: list[str] | None = None, *, data_provider=None) -> int:
     if args.probe:
         # The bridge-noise reward-ranking launch gate (ADR-0024 R1): refuse the launch
         # if the reward can't rank bridge-noised fakes (G2RPO would silently random-walk).
-        acc = _run_probe(module, inputs, cfg)
+        try:
+            acc = _run_probe(module, inputs, cfg, n_probe=int(args.probe_n_samples))
+        except ValueError as exc:
+            # A degenerate probe (all groups tied / constant reward / non-finite) can't
+            # produce an acc; that's a GATE FAILURE (the reward can't rank bridge-noised
+            # fakes), not a crash. Return 1 + the escalation path, mirroring the low-acc
+            # branch below (codex #110 P2).
+            _log.error(
+                "G2RPO launch gate FAILED: the probe produced no ranking signal (%s). "
+                "G2RPO would silently random-walk (R1). Retrain the paired reward with "
+                "bridge-noised fakes (build_paired_bridge_noised_fakes) before retrying.",
+                exc,
+            )
+            return 1
         threshold = float(args.probe_threshold)
         passed = acc >= threshold
         print(
