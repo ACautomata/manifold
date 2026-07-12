@@ -171,6 +171,11 @@ def singular_branch_rollout_paired(
 
     nodes = scheduler.set_timesteps(num_steps, device=device)  # (num_steps+1,)
     eta_steps = sorted(int(k) for k in eta_step_list)
+    if any(k < 0 for k in eta_steps):
+        raise ValueError(
+            f"eta_step_list {list(eta_step_list)} contains a negative index; all entries "
+            "must be in [0, num_steps)."
+        )
     if eta_steps[-1] >= num_steps:
         raise ValueError(
             f"eta_step_list max ({eta_steps[-1]}) must be < num_steps ({num_steps}) — "

@@ -97,8 +97,8 @@ class GuardedModelCheckpoint(ModelCheckpoint):
             return False
         if self.guardrail_metric is not None and self.guardrail_min is not None:
             gr = trainer.callback_metrics.get(self.guardrail_metric)
-            if gr is None or float(gr) < float(self.guardrail_min):
-                # Below the guardrail -> never eligible for "best" (save_last still
+            if gr is None or not torch.isfinite(gr) or float(gr) < float(self.guardrail_min):
+                # Reject non-finite (NaN/Inf) + below guardrail (codex #108) -> never eligible for "best" (save_last still
                 # keeps the latest). The PSNR callback's val/ssim is the observable.
                 return False
         return super().check_monitor_top_k(trainer, current)
@@ -136,7 +136,7 @@ def _build_checkpoint(
         # val/mean_reward is rank-0-only (validation_step gate); drop the monitor
         # under DDP (save_last + save_top_k=1 keep the latest). val/psnr is a global
         # cross-rank mean (the PSNR callback all_gathers) -> monitor stays on (#105).
-        return ModelCheckpoint(filename="paired-grpo-{epoch:03d}", **common)
+        return ModelCheckpoint(filename="paired-grpo-{epoch:03d}", **{**common, "save_top_k": 1})  # force save_top_k=1 w/ no monitor (codex #108)
     ckwt = dict(
         filename=f"paired-grpo-{{epoch:03d}}-{{{monitor_metric}:.3f}}",
         monitor=monitor_metric,
