@@ -236,7 +236,7 @@ def partial_paired_rollout(
     return z
 
 
-def _as_label_tensor(labels: int | Tensor, batch_size: int, device: torch.device) -> Tensor:
+def _as_label_tensor(labels: int | Tensor | Sequence[int], batch_size: int, device: torch.device) -> Tensor:
     """Coerce ``labels`` to a ``[batch_size]`` long tensor on ``device``.
 
     A scalar — a Python ``int`` or a 0-d tensor like ``torch.tensor(0)`` — is
@@ -258,4 +258,18 @@ def _as_label_tensor(labels: int | Tensor, batch_size: int, device: torch.device
                 f"[B] tensor of per-sample labels."
             )
         return labels.to(device=device, dtype=torch.long)
-    return torch.full((batch_size,), int(labels), dtype=torch.long, device=device)
+    if isinstance(labels, int):
+        return torch.full((batch_size,), labels, dtype=torch.long, device=device)
+    # A sequence (list/tuple) of per-sample labels -> [B] long tensor (mirrors the
+    # sibling builders' _as_per_sample sequence path; codex #110 P2). int() on a sequence
+    # would raise TypeError before this fix.
+    t = torch.as_tensor(labels, dtype=torch.long, device=device)
+    if t.ndim == 0:  # a 0-d sequence (e.g. a 1-element list) -> broadcast
+        return torch.full((batch_size,), int(t.item()), dtype=torch.long, device=device)
+    if t.shape != (batch_size,):
+        raise ValueError(
+            f"per-sample label sequence length {tuple(t.shape)} != batch_size "
+            f"{batch_size}; pass a scalar int to broadcast one direction, or a "
+            f"[B] sequence of per-sample labels."
+        )
+    return t

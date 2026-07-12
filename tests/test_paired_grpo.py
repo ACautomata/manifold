@@ -1357,3 +1357,896 @@ def test_full_v1_budget_with_eta_ramp_is_finite(tmp_path):
         eta_min=0.1, eta_ramp_fraction=0.3,
     )
     assert torch.isfinite(trainer.callback_metrics["val/mean_reward"])
+
+
+# -- Slice 4 (#106): the launch gate -------------------------------------------
+#
+# The bridge-noise reward-ranking probe (the HARD gate, ADR-0024 R1): on the init UNet
+# at eta_max, generate G bridge-branch siblings per source, check the reward ranking
+# agrees with a PSNR-to-x_tgt surrogate. acc >= threshold passes; acc ~ random =>
+# the reward can't rank bridge-noised fakes => G2RPO would silently random-walk =>
+# refuse the launch (escalation: retrain the reward with bridge-noised fakes).
+
+
+class _SoftPairedPolicy(nn.Module):
+    """An input-dependent fake Paired JiT UNet (x0 = 0.5*z) for the probe tests.
+
+    The real ``paired_unet`` fixture (random weights) outputs all-zeros, so bridge
+    siblings collapse to identical z_K (acc=1.0 ties, not a real ranking). This soft
+    policy returns 0.5 * the z half of cat([z, x_src]) - input-dependent + non-zero - so
+    the suffix preserves the bridge-noise sibling difference and the probe can rank."""
+
+    def __init__(self):
+        super().__init__()
+        self.dummy = nn.Parameter(torch.ones(3))
+
+    def forward(self, sample, timestep, spacing, class_labels_src=None,
+                class_labels_tgt=None, **kw):
+        return 0.5 * sample[:, :_LAT[0]]  # the z half -> C_latent-channel x0
+
+
+class _QualityCorrelatedReward(nn.Module):
+    """A reward whose score IS -MSE(z_K, x_tgt_fixed) - perfectly correlates with PSNR.
+
+    Stores ONE shared target (all probe sources share it) so the reward is
+    batch-compatible: forward sees cat([x_src, z_K]) (N rows) and compares the z_K
+    half to the shared target per row. reward = -||z_K - tgt||^2 is monotonic in PSNR,
+    so the ranking agrees exactly (acc ~ 1.0) - the gate-pass case."""
+
+    def __init__(self, x_tgt_fixed):
+        super().__init__()
+        self.x_tgt = x_tgt_fixed  # (C, ...) - shared target
+
+    def forward(self, cat_input):
+        C = self.x_tgt.shape[0]
+        z_K = cat_input[:, C:]
+        return -((z_K - self.x_tgt.to(z_K.device)).pow(2).mean(dim=tuple(range(1, z_K.dim()))))
+
+
+class _AntiCorrelatedReward(nn.Module):
+    """A reward that ranks BACKWARDS (+MSE) - the gate-fail case (acc ~ 0).
+
+    reward = +||z_K - tgt||^2 ranks opposite to PSNR -> the reward's top-1 never matches
+    PSNR's top-1 -> acc ~ 0 < threshold. G2RPO would optimize the wrong direction."""
+
+    def __init__(self, x_tgt_fixed):
+        super().__init__()
+        self.x_tgt = x_tgt_fixed
+
+    def forward(self, cat_input):
+        C = self.x_tgt.shape[0]
+        z_K = cat_input[:, C:]
+        return (z_K - self.x_tgt.to(z_K.device)).pow(2).mean(dim=tuple(range(1, z_K.dim())))
+
+
+def _probe_src_tgt(n=4):
+    """Varied src; a SHARED tgt (so the reward can be batch-compatible + perfectly correlated)."""
+    torch.manual_seed(0)
+    x_src = torch.randn(n, *_LAT)
+    shared_tgt = torch.randn(*_LAT)  # one target all sources share
+    x_tgt = shared_tgt.unsqueeze(0).repeat(n, *([1] * len(_LAT)))
+    return x_src, x_tgt, shared_tgt
+
+
+class _FixedProbeValDS(torch.utils.data.Dataset):
+    """A val DS emitting (src_i, shared_tgt) so the probe's x_tgt matches the reward's."""
+
+    def __init__(self, x_src, shared_tgt):
+        self.src = x_src
+        self.tgt = shared_tgt
+
+    def __len__(self):
+        return self.src.shape[0]
+
+    def __getitem__(self, i):
+        return {
+            "src_latent": self.src[i],
+            "tgt_latent": self.tgt,
+            "src_label": torch.tensor(1, dtype=torch.long),
+            "tgt_label": torch.tensor(2, dtype=torch.long),
+            "spacing": torch.tensor([1.0, 1.0, 1.0]),
+        }
+
+
+def test_bridge_noise_probe_correlated_reward_high_acc():
+    """A reward that ranks by quality (PSNR-to-x_tgt) => high acc (passes the gate)."""
+    from manifold.training.paired_grpo_cli import bridge_noise_reward_ranking_probe
+
+    x_src, x_tgt, shared_tgt = _probe_src_tgt(n=4)
+    sched = FlowMatchBridgeGRPOScheduler(eta=0.7)
+    reward = _QualityCorrelatedReward(shared_tgt).eval()
+    res = bridge_noise_reward_ranking_probe(
+        _SoftPairedPolicy(), sched, reward, x_src, x_tgt, [1.0, 1.0, 1.0], 1, 2,
+        G=2, perturbed_step=1, num_steps=4, batch_size=4,
+    )
+    # reward == -MSE (monotonic in PSNR) -> ranking agrees exactly -> acc ~ 1.0.
+    assert res["acc"] > 0.9, f"correlated reward should pass (acc>0.6), got {res['acc']}"
+    assert res["n"] == 4
+    assert res["G"] == 2
+
+
+def test_bridge_noise_probe_anticorrelated_reward_fails_gate():
+    """A reward that ranks backwards (+MSE) => acc ~ 0 < threshold (gate fails)."""
+    from manifold.training.paired_grpo_cli import bridge_noise_reward_ranking_probe
+
+    x_src, x_tgt, shared_tgt = _probe_src_tgt(n=4)
+    sched = FlowMatchBridgeGRPOScheduler(eta=0.7)
+    reward = _AntiCorrelatedReward(shared_tgt).eval()
+    res = bridge_noise_reward_ranking_probe(
+        _SoftPairedPolicy(), sched, reward, x_src, x_tgt, [1.0, 1.0, 1.0], 1, 2,
+        G=2, perturbed_step=1, num_steps=4, batch_size=4,
+    )
+    assert res["acc"] < 0.6, f"anti-correlated reward must fail the gate (acc<0.6), got {res['acc']}"
+
+
+def test_bridge_noise_probe_rejects_terminal_step():
+    """perturbed_step >= num_steps-1 (the var-collapse terminal) is rejected."""
+    from manifold.training.paired_grpo_cli import bridge_noise_reward_ranking_probe
+
+    x_src, x_tgt, _ = _probe_src_tgt(n=2)
+    with pytest.raises(ValueError, match="var-collapse terminal"):
+        bridge_noise_reward_ranking_probe(
+            _SoftPairedPolicy(), FlowMatchBridgeGRPOScheduler(eta=0.7), _AntiCorrelatedReward(torch.randn(*_LAT)),
+            x_src, x_tgt, [1.0, 1.0, 1.0], 1, 2,
+            G=2, perturbed_step=3, num_steps=4, batch_size=2,  # 3 == num_steps-1
+        )
+
+
+def test_build_paired_bridge_noised_fakes(paired_unet):
+    """The escalation builder: bridge-noised fakes as the loser (condition-aware [2*C])."""
+    from manifold.data.paired_reward_pairs import build_paired_bridge_noised_fakes
+
+    torch.manual_seed(0)
+    n = 3
+    x_src = torch.randn(n, *_LAT)
+    x_tgt = torch.randn(n, *_LAT)
+    sched = FlowMatchBridgeGRPOScheduler(eta=0.7)
+    pairs = build_paired_bridge_noised_fakes(
+        x_src, x_tgt, paired_unet, sched,
+        src_label=1, tgt_label=2, spacing=[1.0, 1.0, 1.0],
+        num_steps=4, perturbed_step=1, G=2, batch_size=2, seed=0,
+    )
+    C = _LAT[0]
+    assert pairs.winners.shape == (n * 2, 2 * C, *_LAT[1:])
+    assert pairs.losers.shape == pairs.winners.shape
+    assert len(pairs) == n * 2
+    # Deterministic given the seed.
+    pairs2 = build_paired_bridge_noised_fakes(
+        x_src, x_tgt, paired_unet, sched,
+        src_label=1, tgt_label=2, spacing=[1.0, 1.0, 1.0],
+        num_steps=4, perturbed_step=1, G=2, batch_size=2, seed=0,
+    )
+    assert torch.equal(pairs.losers, pairs2.losers), "bridge-noised fakes must be seed-reproducible"
+
+
+def test_build_paired_bridge_noised_fakes_requires_bridge_scheduler(paired_unet):
+    """The escalation builder rejects a non-bridge scheduler (needs sde_step_mean)."""
+    from manifold.data.paired_reward_pairs import build_paired_bridge_noised_fakes
+
+    x_src = torch.randn(2, *_LAT)
+    x_tgt = torch.randn(2, *_LAT)
+    with pytest.raises(TypeError, match="FlowMatchBridgeGRPOScheduler"):
+        build_paired_bridge_noised_fakes(
+            x_src, x_tgt, paired_unet, FlowMatchHeunDiscreteScheduler(),
+            src_label=1, tgt_label=2, spacing=[1.0, 1.0, 1.0], num_steps=4,
+        )
+
+
+def test_main_probe_flag_passes_on_correlated_reward(tmp_path):
+    """--probe returns rc=0 when the reward ranks bridge-noised fakes (acc >= threshold)."""
+    from manifold.training.paired_grpo_cli import PairedGRPOInputs, main as pg_main
+
+    policy = _SoftPairedPolicy()
+    x_src, x_tgt, shared_tgt = _probe_src_tgt(n=4)
+
+    def provider(cfg, device):
+        return PairedGRPOInputs(
+            policy=policy, reward_model=_QualityCorrelatedReward(shared_tgt).eval(),
+            scheduler=FlowMatchBridgeGRPOScheduler(eta=0.7),
+            train_ds=_ToyPairedDS(), val_ds=_FixedProbeValDS(x_src, shared_tgt),
+        )
+
+    env, train, net = _write_tiny_configs(tmp_path)
+    rc = pg_main(["-e", env, "-c", train, "-t", net, "-g", "1", "--probe",
+                 "paired_grpo_train.num_steps=4"], data_provider=provider)
+    assert rc == 0, "correlated reward => probe should PASS (rc=0)"
+
+
+def test_main_probe_flag_fails_on_anticorrelated_reward(tmp_path):
+    """--probe returns rc=1 when the reward ranks backwards (acc < threshold)."""
+    from manifold.training.paired_grpo_cli import PairedGRPOInputs, main as pg_main
+
+    policy = _SoftPairedPolicy()
+    x_src, x_tgt, shared_tgt = _probe_src_tgt(n=4)
+
+    def provider(cfg, device):
+        return PairedGRPOInputs(
+            policy=policy, reward_model=_AntiCorrelatedReward(shared_tgt).eval(),
+            scheduler=FlowMatchBridgeGRPOScheduler(eta=0.7),
+            train_ds=_ToyPairedDS(), val_ds=_FixedProbeValDS(x_src, shared_tgt),
+        )
+
+    env, train, net = _write_tiny_configs(tmp_path)
+    rc = pg_main(["-e", env, "-c", train, "-t", net, "-g", "1", "--probe",
+                 "paired_grpo_train.num_steps=4"], data_provider=provider)
+    assert rc == 1, "anti-correlated reward => probe should FAIL (rc=1)"
+
+
+def test_adr0015_semantics_val_mean_reward_in_tanh_range(tmp_path, vae):
+    """ADR-0015 semantics: with reward_bound=tanh, val/mean_reward is in (-1, 1) (no blowup).
+
+    The v1 raw-logit reward blew up to 3370 (reward hacking); the tanh bound caps it into
+    (-1, 1) so val/mean_reward stays in the bounded range - the ADR-0015 semantics the
+    launch gate checks (#106 acceptance)."""
+    from manifold.modules import PairedGRPOModule
+    from manifold.training.paired_grpo_cli import run_paired_grpo_training
+
+    inputs = _inputs_with_vae(vae)
+    module = PairedGRPOModule(
+        inputs.policy, inputs.reward_model, inputs.scheduler,
+        G=2, eta_step_list=(0,), num_steps=3, lr=1e-3,
+        reward_bound="tanh", reward_temp=8.0,
+    )
+    trainer, _ = run_paired_grpo_training(
+        module=module, inputs=inputs, model_dir=str(tmp_path),
+        max_epochs=1, devices=1, accelerator="cpu", batch_size=2,
+    )
+    mr = float(trainer.callback_metrics["val/mean_reward"])
+    assert -1.0 < mr < 1.0, f"val/mean_reward must be in the tanh range (-1, 1), got {mr}"
+
+
+# -- codex #110 P1/P2 launch-gate fixes ----------------------------------------
+
+
+class _SpacingBatchCheckerPolicy(nn.Module):
+    """Asserts spacing batch == input batch - catches the probe's repeat-vs-slice bug.
+
+    The real ``paired_unet`` projects spacing with a batch-aligned linear; a mismatch
+    (n*b rows into a b-source call) crashes it. This policy ignores spacing for x0 but
+    asserts the batch contract so the regression is observable on CPU (codex #110 P1)."""
+
+    def __init__(self):
+        super().__init__()
+        self.dummy = nn.Parameter(torch.ones(3))
+
+    def forward(self, sample, timestep, spacing, class_labels_src=None,
+                class_labels_tgt=None, **kw):
+        assert spacing.shape[0] == sample.shape[0], (
+            f"spacing batch {spacing.shape[0]} != sample batch {sample.shape[0]} "
+            "(probe must slice per-source spacing to the current batch, not repeat all rows)"
+        )
+        return 0.5 * sample[:, :_LAT[0]]
+
+
+class _ConstantReward(nn.Module):
+    """A reward returning a constant (zero spread) - the tied-group / zero-std case."""
+
+    def __init__(self):
+        super().__init__()
+        self.dummy = nn.Parameter(torch.ones(1))
+
+    def forward(self, x):
+        return torch.zeros(x.shape[0])
+
+
+class _SaturatingLogitReward(nn.Module):
+    """Large positive logits with a clear RAW ranking but tanh-saturating to identical."""
+
+    def __init__(self):
+        super().__init__()
+        self.dummy = nn.Parameter(torch.ones(1))
+
+    def forward(self, cat_input):
+        n = cat_input.shape[0]
+        # 500, 501, 502, ... -> raw ranking is clear (spread ~n); tanh((500+)/8) = 1.0 for
+        # all -> zero spread under the tanh bound.
+        return 500.0 + torch.arange(n, dtype=torch.float32)
+
+
+def test_eta_ramp_callback_uses_fit_wide_batch_counter():
+    """on_train_batch_start uses a FIT-WIDE batch counter, not epoch-local batch_idx.
+
+    batch_idx resets to 0 each epoch while estimated_stepping_batches spans the whole fit,
+    so the old code restarted the ramp at eta_min every epoch and never held eta_max in a
+    multi-epoch run (codex #110 P1)."""
+    from types import SimpleNamespace
+
+    from manifold.training.paired_grpo_cli import EtaRampCallback
+
+    sched = FlowMatchBridgeGRPOScheduler(eta=0.7)
+    cb = EtaRampCallback(sched, eta_min=0.1, eta_max=0.7, ramp_fraction=0.3)
+    # 2 epochs x 10 batches/epoch = 20 fit-wide; ramp done at 30% = fit_step 6.
+    trainer = SimpleNamespace(
+        estimated_stepping_batches=20, num_training_batches=10, current_epoch=0,
+    )
+    # End of epoch 0 (batch_idx=9): fit_step = 0*10+9 = 9 -> past ramp -> eta_max.
+    trainer.current_epoch = 0
+    cb.on_train_batch_start(trainer, None, None, batch_idx=9)
+    assert sched.eta == pytest.approx(0.7)
+    # Start of epoch 1 (batch_idx=0): fit_step = 1*10+0 = 10 -> still past ramp -> eta_max.
+    # The OLD epoch-local code fed batch_idx=0 -> eta reset back to eta_min (0.1).
+    trainer.current_epoch = 1
+    cb.on_train_batch_start(trainer, None, None, batch_idx=0)
+    assert sched.eta == pytest.approx(0.7), (
+        "eta must not reset to eta_min at the start of epoch 1 (fit-wide counter; codex #110 P1)"
+    )
+
+
+def test_bridge_noise_probe_slices_per_source_spacing_to_batch():
+    """Per-source (dim-2) spacing is SLICED to the current batch, not repeat-interleaved
+    (which would feed n*b spacing rows into a b-source UNet call). codex #110 P1."""
+    from manifold.training.paired_grpo_cli import bridge_noise_reward_ranking_probe
+
+    n, batch_size = 4, 2  # 2 batches -> exercises the s:s+b slice
+    x_src, x_tgt, shared_tgt = _probe_src_tgt(n=n)
+    spacing = torch.tensor([[1.0, 1.0, 1.0]] * n)  # [n, 3] per-source
+    res = bridge_noise_reward_ranking_probe(
+        _SpacingBatchCheckerPolicy(), FlowMatchBridgeGRPOScheduler(eta=0.7),
+        _QualityCorrelatedReward(shared_tgt).eval(), x_src, x_tgt, spacing, 1, 2,
+        G=2, perturbed_step=1, num_steps=4, batch_size=batch_size,
+    )
+    assert res["n"] == n  # all 4 sources scored (none dropped as tied)
+
+
+def test_latent_psnr_output_stays_on_input_device():
+    """_latent_psnr allocates its output on pred.device + reports finite/inf correctly.
+
+    z_K / rewards live on the policy device (CUDA at launch); a CPU out -> cross-device
+    argmax crashes the GPU gate right after a successful rollout (codex #110 P2). The
+    device mismatch is CUDA-only, but the output-device contract is locked here."""
+    from manifold.training.paired_grpo_cli import _latent_psnr
+
+    pred = torch.randn(3, *_LAT)
+    target = torch.randn(3, *_LAT)
+    out = _latent_psnr(pred, target)
+    assert out.shape == (3,)
+    assert out.device == pred.device
+    assert torch.isfinite(out).all()  # varied target -> finite PSNR
+    # Constant target -> PSNR undefined -> +inf (excluded by the caller).
+    const_target = torch.full((1, *_LAT), 0.5)
+    out_c = _latent_psnr(pred[:1], const_target)
+    assert out_c.device == pred.device
+    assert not torch.isfinite(out_c[0])
+
+
+def test_build_paired_bridge_noised_fakes_moves_spacing_to_device(paired_unet, monkeypatch):
+    """spacing is moved to the rollout device before _heun_rollout_paired (which does NOT
+    move it); a CPU spacing into a CUDA generator crashes the UNet. Mirrors
+    singular_branch_rollout_paired (codex #110 P2). CUDA-only observable, locked here."""
+    import manifold.modules.paired_grpo as pgmod
+    from manifold.data.paired_reward_pairs import build_paired_bridge_noised_fakes
+
+    captured = []
+    real = pgmod._heun_rollout_paired
+
+    def spy(*a, **kw):
+        captured.append(a[5])  # spacing_t is the 6th positional arg of _heun_rollout_paired
+        return real(*a, **kw)
+
+    # Patch the SOURCE: the builder imports _heun_rollout_paired function-locally, so it
+    # re-reads this attribute at call time.
+    monkeypatch.setattr(pgmod, "_heun_rollout_paired", spy)
+    x_src = torch.randn(2, *_LAT)
+    x_tgt = torch.randn(2, *_LAT)
+    build_paired_bridge_noised_fakes(
+        x_src, x_tgt, paired_unet, FlowMatchBridgeGRPOScheduler(eta=0.7),
+        src_label=1, tgt_label=2, spacing=[1.0, 1.0, 1.0], num_steps=4,
+        perturbed_step=1, G=2, batch_size=2, seed=0,
+    )
+    assert captured, "_heun_rollout_paired was called"
+    device = next(paired_unet.parameters()).device
+    assert all(s.device == device for s in captured), (
+        "spacing must be moved to the rollout device before the rollout (codex #110 P2)"
+    )
+
+
+def test_bridge_noise_probe_rejects_g_less_than_2():
+    """G=1 trivially agrees (argmax of one element = 0 for both) -> acc=1.0 with no ranking
+    signal; reject before scoring (codex #110 P2)."""
+    from manifold.training.paired_grpo_cli import bridge_noise_reward_ranking_probe
+
+    x_src, x_tgt, shared_tgt = _probe_src_tgt(n=2)
+    with pytest.raises(ValueError, match="G>=2"):
+        bridge_noise_reward_ranking_probe(
+            _SoftPairedPolicy(), FlowMatchBridgeGRPOScheduler(eta=0.7),
+            _QualityCorrelatedReward(shared_tgt).eval(), x_src, x_tgt, [1.0, 1.0, 1.0], 1, 2,
+            G=1, perturbed_step=1, num_steps=4, batch_size=2,
+        )
+
+
+def test_bridge_noise_probe_rejects_tied_reward_groups():
+    """A constant (zero-spread) reward makes argmax an arbitrary index 0 for every group
+    -> falsely counted as agreement. Tied groups are excluded as having no ranking signal,
+    so an all-tied probe scores 0 (codex #110 P2)."""
+    from manifold.training.paired_grpo_cli import bridge_noise_reward_ranking_probe
+
+    x_src, x_tgt, _ = _probe_src_tgt(n=4)
+    with pytest.raises(ValueError, match="scored 0 sources"):
+        bridge_noise_reward_ranking_probe(
+            _SoftPairedPolicy(), FlowMatchBridgeGRPOScheduler(eta=0.7),
+            _ConstantReward().eval(), x_src, x_tgt, [1.0, 1.0, 1.0], 1, 2,
+            G=2, perturbed_step=1, num_steps=4, batch_size=4,
+        )
+
+
+def test_bridge_noise_probe_rejects_negative_perturbed_step():
+    """A negative probe_step slips past an upper-bound-only check (nodes[-1]=1.0, nodes[0]
+    =0.0) -> a backwards bridge SDE dividing by (1-1)=0; reject it (codex #110 P2)."""
+    from manifold.training.paired_grpo_cli import bridge_noise_reward_ranking_probe
+
+    x_src, x_tgt, shared_tgt = _probe_src_tgt(n=2)
+    with pytest.raises(ValueError, match="perturbed_step"):
+        bridge_noise_reward_ranking_probe(
+            _SoftPairedPolicy(), FlowMatchBridgeGRPOScheduler(eta=0.7),
+            _QualityCorrelatedReward(shared_tgt).eval(), x_src, x_tgt, [1.0, 1.0, 1.0], 1, 2,
+            G=2, perturbed_step=-1, num_steps=4, batch_size=2,
+        )
+
+
+def test_bridge_noise_probe_applies_tanh_reward_bound():
+    """reward_bound='tanh' applies tanh(r/temp) in the probe (mirrors training's
+    _bound_reward): OOD-large logits that saturate to identical tanh values tie out and
+    score 0, instead of passing the gate on the raw-logit ranking (codex #110 P2)."""
+    from manifold.training.paired_grpo_cli import bridge_noise_reward_ranking_probe
+
+    x_src, x_tgt, _ = _probe_src_tgt(n=4)
+    with pytest.raises(ValueError, match="scored 0 sources"):
+        bridge_noise_reward_ranking_probe(
+            _SoftPairedPolicy(), FlowMatchBridgeGRPOScheduler(eta=0.7),
+            _SaturatingLogitReward().eval(), x_src, x_tgt, [1.0, 1.0, 1.0], 1, 2,
+            G=2, perturbed_step=1, num_steps=4, batch_size=4,
+            reward_bound="tanh", reward_temp=8.0,
+        )
+
+
+def test_calibrate_reward_temp_rejects_zero_std():
+    """Constant reward scores => std=0 => reject (stored as reward_temp it would divide by
+    0 in the tanh bound, yielding NaN advantages with no signal). codex #110 P2."""
+    from manifold.training.paired_grpo_cli import calibrate_reward_temp
+
+    rm = _ConstantReward().eval()
+    with pytest.raises(ValueError, match="non-positive/non-finite"):
+        calibrate_reward_temp(rm, torch.randn(8, 2 * _LAT[0], *_LAT[1:]))
+
+
+# -- codex #110 round-2: builder hardening + probe denominator (P1) ------------
+
+
+def test_build_paired_bridge_noised_fakes_rejects_negative_step(paired_unet):
+    """A negative perturbed_step in the builder slips past the upper-bound-only check
+    (nodes[-1]=1.0, nodes[0]=0.0) -> a backwards bridge SDE dividing by (1-1)=0; reject
+    it (codex #110 P2). The probe already rejects this; the builder must too."""
+    from manifold.data.paired_reward_pairs import build_paired_bridge_noised_fakes
+
+    x_src = torch.randn(2, *_LAT)
+    x_tgt = torch.randn(2, *_LAT)
+    with pytest.raises(ValueError, match="perturbed_step"):
+        build_paired_bridge_noised_fakes(
+            x_src, x_tgt, paired_unet, FlowMatchBridgeGRPOScheduler(eta=0.7),
+            src_label=1, tgt_label=2, spacing=[1.0, 1.0, 1.0], num_steps=4,
+            perturbed_step=-1, G=2, batch_size=2, seed=0,
+        )
+
+
+def test_bridge_noise_probe_tied_groups_count_as_failures():
+    """A probe where 1 of 4 sources is degenerate (constant target -> tied/undefined PSNR)
+    computes acc over ALL 4 probed sources (acc=3/4=0.75), not just the 3 valid (acc=1.0).
+    Otherwise a few valid sources pass the gate despite most having no ranking signal
+    (codex #110 P1)."""
+    from manifold.training.paired_grpo_cli import bridge_noise_reward_ranking_probe
+
+    torch.manual_seed(0)
+    x_src = torch.randn(4, *_LAT)
+    shared_tgt = torch.randn(*_LAT)
+    x_tgt = shared_tgt.unsqueeze(0).repeat(4, *([1] * len(_LAT)))
+    x_tgt[3] = 0.5  # constant target -> all-inf PSNR (degenerate) for source 3
+    res = bridge_noise_reward_ranking_probe(
+        _SoftPairedPolicy(), FlowMatchBridgeGRPOScheduler(eta=0.7),
+        _QualityCorrelatedReward(shared_tgt).eval(), x_src, x_tgt, [1.0, 1.0, 1.0], 1, 2,
+        G=2, perturbed_step=1, num_steps=4, batch_size=4,
+    )
+    assert res["n"] == 4, f"n must be ALL probed sources (4), not just valid (3): {res['n']}"
+    assert res["acc"] == pytest.approx(0.75), (
+        f"acc must be 3/4=0.75 (degenerate source 3 counts as a failure), got {res['acc']}"
+    )
+
+
+def test_build_paired_bridge_noised_fakes_casts_to_generator_dtype():
+    """src_b/tgt_b are cast to the generator's dtype: a half-precision generator would
+    otherwise get fp32 inputs and crash the first UNet call with an input/weight dtype
+    mismatch (codex #110 P2). Mirrors the probe + sample_paired_latent_flow."""
+    from manifold.data.paired_reward_pairs import build_paired_bridge_noised_fakes
+
+    half_policy = _SoftPairedPolicy().half()  # fp16 stub generator
+    assert next(half_policy.parameters()).dtype == torch.float16
+    x_src = torch.randn(2, *_LAT)  # fp32 inputs (the mismatch case)
+    x_tgt = torch.randn(2, *_LAT)
+    pairs = build_paired_bridge_noised_fakes(
+        x_src, x_tgt, half_policy, FlowMatchBridgeGRPOScheduler(eta=0.7),
+        src_label=1, tgt_label=2, spacing=[1.0, 1.0, 1.0], num_steps=4,
+        perturbed_step=1, G=2, batch_size=2, seed=0,
+    )
+    # Inputs were cast to fp16 before the rollout -> outputs are fp16. Before the fix,
+    # src_b stayed fp32 -> outputs were fp32 (the dtype mismatch the real UNet would crash on).
+    assert pairs.losers.dtype == torch.float16
+    assert pairs.winners.dtype == torch.float16
+
+
+def test_build_paired_bridge_noised_fakes_runs_under_no_grad(monkeypatch):
+    """The builder runs under @torch.no_grad: the rollout has grad disabled at every UNet
+    call, so a requires_grad generator (e.g. a UNet taken straight from a pipeline) can't
+    retain UNet graphs and OOM. Mirrors the probe (codex #110 P2)."""
+    import manifold.modules.paired_grpo as pgmod
+    from manifold.data.paired_reward_pairs import build_paired_bridge_noised_fakes
+
+    grad_states = []
+    real = pgmod._paired_unet_call
+
+    def spy(*a, **kw):
+        grad_states.append(torch.is_grad_enabled())
+        return real(*a, **kw)
+
+    monkeypatch.setattr(pgmod, "_paired_unet_call", spy)
+    gen = _SoftPairedPolicy()
+    for p in gen.parameters():
+        p.requires_grad_(True)
+    x_src = torch.randn(2, *_LAT)
+    x_tgt = torch.randn(2, *_LAT)
+    with torch.enable_grad():  # even with grad enabled outside, the builder must disable it
+        build_paired_bridge_noised_fakes(
+            x_src, x_tgt, gen, FlowMatchBridgeGRPOScheduler(eta=0.7),
+            src_label=1, tgt_label=2, spacing=[1.0, 1.0, 1.0], num_steps=4,
+            perturbed_step=1, G=2, batch_size=2, seed=0,
+        )
+    assert grad_states, "_paired_unet_call was called"
+    assert all(not g for g in grad_states), (
+        "the builder must run under no_grad (grad disabled at every UNet call); "
+        f"observed grad states: {grad_states}"
+    )
+
+
+# -- codex #110 round-6: builder autocast (1 P2) -------------------------------
+
+
+def test_build_paired_bridge_noised_fakes_rollout_runs_under_cuda_autocast(monkeypatch):
+    """The builder's rollout is wrapped in torch.autocast(enabled=cuda): the full 3D fake-
+    cache job allocates fp32 UNet activations (b anchor + b*G suffix rollouts) and can OOM
+    even though training/probing fit under 16-mixed. Mirrors sample_paired_latent_flow +
+    singular_branch_rollout_paired + the probe (codex #110 P2)."""
+    from manifold.data.paired_reward_pairs import build_paired_bridge_noised_fakes
+
+    entered = []
+    real_autocast = torch.autocast
+
+    class _SpyAutocast:
+        def __init__(self, device_type, enabled=True, **kw):
+            self.enabled = enabled
+        def __enter__(self):
+            entered.append(self.enabled)
+            return real_autocast.__new__(real_autocast)
+        def __exit__(self, *a):
+            return False
+
+    monkeypatch.setattr(torch, "autocast", _SpyAutocast)
+    x_src = torch.randn(2, *_LAT)
+    x_tgt = torch.randn(2, *_LAT)
+    build_paired_bridge_noised_fakes(
+        x_src, x_tgt, _SoftPairedPolicy(), FlowMatchBridgeGRPOScheduler(eta=0.7),
+        src_label=1, tgt_label=2, spacing=[1.0, 1.0, 1.0], num_steps=4,
+        perturbed_step=1, G=2, batch_size=2, seed=0,
+    )
+    assert entered, "the builder rollout must be wrapped in torch.autocast"
+    # On CPU the autocast is disabled (enabled=device.type=='cuda' is False), but entered.
+    assert all(e is False for e in entered)
+
+
+# -- codex #110 round-3: tied maxima + label sequences (2 P2) ------------------
+
+
+class _TiedMaxReward(nn.Module):
+    """A reward whose top value is TIED across siblings (spread>0 but argmax is a tie).
+
+    reward = [1.0, 1.0, 0.8]-style per group: two siblings share the max -> argmax picks
+    index 0 (sibling order), not ranking signal. The probe must drop these groups."""
+
+    def __init__(self):
+        super().__init__()
+        self.dummy = nn.Parameter(torch.ones(1))
+
+    def forward(self, cat_input):
+        n = cat_input.shape[0]
+        # Per the G=3 layout: siblings 0,1 tie at the max (1.0), sibling 2 lower (0.8).
+        # n is a multiple of G=3; build the per-row reward from its sibling index.
+        G = 3
+        idx = torch.arange(n) % G
+        r = torch.where(idx < 2, 1.0, 0.8)
+        return r
+
+
+def test_bridge_noise_probe_rejects_tied_reward_maxima():
+    """Groups whose top reward is tied (spread>0 but max shared, e.g. tanh-saturated
+    [1,1,0.8]) are dropped: argmax would break the tie by sibling order, making
+    "agreement" an indexing artifact, not ranking signal (codex #110 P2 round-3)."""
+    from manifold.training.paired_grpo_cli import bridge_noise_reward_ranking_probe
+
+    torch.manual_seed(0)
+    n = 3  # one group of G=3
+    x_src, x_tgt, shared_tgt = _probe_src_tgt(n=n)
+    # _TiedMaxReward ties the reward max across siblings -> the group is degenerate.
+    with pytest.raises(ValueError, match="scored 0 sources with a ranking signal"):
+        bridge_noise_reward_ranking_probe(
+            _SoftPairedPolicy(), FlowMatchBridgeGRPOScheduler(eta=0.7),
+            _TiedMaxReward().eval(), x_src, x_tgt, [1.0, 1.0, 1.0], 1, 2,
+            G=3, perturbed_step=1, num_steps=4, batch_size=3,
+        )
+
+
+def test_build_paired_bridge_noised_fakes_accepts_per_sample_label_sequence(paired_unet):
+    """Per-sample labels as a Python list/tuple are normalized to a [B] long tensor
+    (mirrors the sibling builders' _as_per_sample sequence path); before the fix,
+    _as_label_tensor called int() on the sequence and crashed (codex #110 P2 round-3)."""
+    from manifold.data.paired_reward_pairs import build_paired_bridge_noised_fakes
+
+    torch.manual_seed(0)
+    n = 3
+    x_src = torch.randn(n, *_LAT)
+    x_tgt = torch.randn(n, *_LAT)
+    sched = FlowMatchBridgeGRPOScheduler(eta=0.7)
+    # Per-sample labels as a Python list (the form the sibling builders accept).
+    pairs = build_paired_bridge_noised_fakes(
+        x_src, x_tgt, paired_unet, sched,
+        src_label=[0, 1, 2], tgt_label=[1, 2, 3], spacing=[[1.0, 1.0, 1.0]] * n,
+        num_steps=4, perturbed_step=1, G=2, batch_size=2, seed=0,
+    )
+    assert len(pairs) == n * 2
+
+
+def test_as_label_tensor_normalizes_sequences():
+    """_as_label_tensor turns a list/tuple into a [B] long tensor; a scalar int broadcasts;
+    a [B] tensor passes through; a wrong-length sequence fails fast (codex #110 P2 round-3)."""
+    from manifold.modules.paired_sampler import _as_label_tensor
+
+    dev = torch.device("cpu")
+    assert torch.equal(
+        _as_label_tensor([0, 1, 2], 3, dev), torch.tensor([0, 1, 2], dtype=torch.long)
+    )
+    assert torch.equal(
+        _as_label_tensor((1, 1, 1), 3, dev), torch.tensor([1, 1, 1], dtype=torch.long)
+    )
+    assert torch.equal(_as_label_tensor(5, 3, dev), torch.tensor([5, 5, 5], dtype=torch.long))
+    assert torch.equal(
+        _as_label_tensor(torch.tensor([2, 1, 0]), 3, dev),
+        torch.tensor([2, 1, 0], dtype=torch.long),
+    )
+    with pytest.raises(ValueError, match="per-sample label sequence length"):
+        _as_label_tensor([0, 1], 3, dev)
+
+
+# -- codex #110 round-4: autocast dtype, probe batch_size, non-finite rewards ----
+
+
+class _InfReward(nn.Module):
+    """A reward that returns inf for the FIRST sibling of each group (the OOD overflow
+    case with reward_bound='none'): [inf, 0, 0, ...] -> a group training's
+    group_advantage would NaN on, but the probe's PSNR-only finiteness check let through."""
+
+    def __init__(self):
+        super().__init__()
+        self.dummy = nn.Parameter(torch.ones(1))
+
+    def forward(self, cat_input):
+        n = cat_input.shape[0]
+        r = torch.zeros(n)
+        r[0::2] = float("inf")  # every other sibling overflows (G=2: sibling 0 = inf)
+        return r
+
+
+def test_bridge_noise_probe_casts_reward_input_to_reward_dtype():
+    """The probe casts cat([x_src_bg, z_K]) to the reward model's dtype before scoring:
+    an fp16 launch policy + fp32 frozen RewardModel would otherwise hit an input/weight
+    dtype mismatch (singular_branch_rollout_paired wraps its rollout in cuda autocast; the
+    probe does not, so cast explicitly) (codex #110 P2)."""
+    from manifold.training.paired_grpo_cli import bridge_noise_reward_ranking_probe
+
+    class _DtypeRecordingReward(nn.Module):
+        """Records the dtype it was called with (the cast contract) + ranks by -MSE."""
+
+        def __init__(self, x_tgt_fixed):
+            super().__init__()
+            self.x_tgt = x_tgt_fixed
+            self.seen_dtypes = set()
+            self.dummy = nn.Parameter(torch.ones(1))  # so next(.parameters()) yields a dtype
+
+        def forward(self, cat_input):
+            self.seen_dtypes.add(cat_input.dtype)
+            C = self.x_tgt.shape[0]
+            z_K = cat_input[:, C:]
+            tgt = self.x_tgt.to(device=z_K.device, dtype=z_K.dtype)
+            return -((z_K - tgt).pow(2).mean(dim=tuple(range(1, z_K.dim()))))
+
+    # An fp16 policy (the launch case) + an fp32 reward model (the frozen case).
+    half_policy = _SoftPairedPolicy().half()
+    x_src, x_tgt, shared_tgt = _probe_src_tgt(n=4)
+    reward = _DtypeRecordingReward(shared_tgt).eval().float()  # fp32 params
+    res = bridge_noise_reward_ranking_probe(
+        half_policy, FlowMatchBridgeGRPOScheduler(eta=0.7), reward,
+        x_src, x_tgt, [1.0, 1.0, 1.0], 1, 2,
+        G=2, perturbed_step=1, num_steps=4, batch_size=4,
+    )
+    # The reward model was called with fp32 input (the cast): before the fix, the fp16
+    # policy-dtype cat was fed straight into the fp32 PatchGAN -> dtype mismatch crash.
+    assert torch.float32 in reward.seen_dtypes, (
+        f"reward input must be cast to the fp32 reward model dtype, saw: {reward.seen_dtypes}"
+    )
+    assert res["n"] == 4
+
+
+def test_run_probe_passes_configured_batch_size(tmp_path):
+    """_run_probe passes paired_grpo_train.batch_size into the probe (not the fn default
+    of 4): the committed recipe sets batch_size=2, so the default would 2x over-allocate
+    +G siblings on memory-limited 3D runs and OOM before the gate reports (codex #110 P2)."""
+    from manifold.modules import PairedGRPOModule
+    from manifold.training.paired_grpo_cli import _run_probe
+
+    captured = {}
+    import manifold.training.paired_grpo_cli as cli
+    real_probe = cli.bridge_noise_reward_ranking_probe
+
+    def spy(*a, **kw):
+        captured["batch_size"] = kw.get("batch_size", 4)
+        return {"acc": 0.5, "n": 4, "G": kw.get("G", 2),
+                "perturbed_step": kw.get("perturbed_step", 1), "eta": 0.7}
+
+    cli.bridge_noise_reward_ranking_probe = spy
+    try:
+        torch.manual_seed(0)
+        inputs = _inputs()
+        # _run_probe needs val pairs WITH tgt_latent (the PSNR surrogate); _ToyPairedValDS
+        # carries it (the default _ToyPairedDS val_ds does not).
+        import dataclasses
+        inputs = dataclasses.replace(inputs, val_ds=_ToyPairedValDS(n=4))
+        module = PairedGRPOModule(
+            inputs.policy, inputs.reward_model, inputs.scheduler,
+            G=2, eta_step_list=(0,), num_steps=3, lr=1e-3,
+        )
+        # A toy config with batch_size=2 (the committed recipe value).
+        from omegaconf import OmegaConf
+        cfg = OmegaConf.create({"paired_grpo_train": {"num_steps": 4, "batch_size": 2}})
+        _run_probe(module, inputs, cfg, n_probe=4)
+        assert captured.get("batch_size") == 2, (
+            f"_run_probe must pass the configured batch_size=2, got {captured.get('batch_size')}"
+        )
+    finally:
+        cli.bridge_noise_reward_ranking_probe = real_probe
+
+
+def test_bridge_noise_probe_rejects_non_finite_reward_groups():
+    """A group whose reward overflows to inf (reward_bound='none', OOD bridge-noised
+    sibling) is rejected: training's group_advantage would NaN on inf, so the gate must not
+    treat [inf, 0] as a valid unique ranking (codex #110 P2)."""
+    from manifold.training.paired_grpo_cli import bridge_noise_reward_ranking_probe
+
+    x_src, x_tgt, _ = _probe_src_tgt(n=4)
+    with pytest.raises(ValueError, match="scored 0 sources with a ranking signal"):
+        bridge_noise_reward_ranking_probe(
+            _SoftPairedPolicy(), FlowMatchBridgeGRPOScheduler(eta=0.7),
+            _InfReward().eval(), x_src, x_tgt, [1.0, 1.0, 1.0], 1, 2,
+            G=2, perturbed_step=1, num_steps=4, batch_size=4,
+            reward_bound="none",
+        )
+
+
+# -- codex #110 round-5: probe rc, autocast, re-export, n_samples (3 P2 + 1 P3) ---
+
+
+def test_main_probe_returns_rc1_on_degenerate_reward(tmp_path):
+    """A degenerate probe (all groups tied -> ValueError) returns rc=1 (gate fail +
+    escalation), not an uncaught crash. main() catches the ranking-signal failure and
+    takes the same low-acc retrain-escalation path (codex #110 P2)."""
+    from manifold.training.paired_grpo_cli import PairedGRPOInputs, main as pg_main
+
+    x_src = torch.randn(4, *_LAT)
+    shared_tgt = torch.randn(*_LAT)
+
+    def provider(cfg, device):
+        return PairedGRPOInputs(
+            policy=_SoftPairedPolicy(),
+            reward_model=_ConstantReward().eval(),  # zero-spread reward -> all groups tied
+            scheduler=FlowMatchBridgeGRPOScheduler(eta=0.7),
+            train_ds=_ToyPairedDS(),
+            val_ds=_FixedProbeValDS(x_src, shared_tgt),
+        )
+
+    env, train, net = _write_tiny_configs(tmp_path)
+    rc = pg_main(["-e", env, "-c", train, "-t", net, "-g", "1", "--probe",
+                 "paired_grpo_train.num_steps=4"], data_provider=provider)
+    assert rc == 1, (
+        "a degenerate probe (all groups tied) must return rc=1 (gate fail), not crash"
+    )
+
+
+def test_bridge_noise_probe_rollout_runs_under_cuda_autocast():
+    """The probe rollout is wrapped in torch.autocast(enabled=cuda): on the real path the
+    fp32 policy's 3D rollout would otherwise allocate fp32 activations (training runs
+    16-mixed) and OOM before the gate reports. CPU-only observable, locked via the
+    autocast context being entered (codex #110 P2)."""
+    import manifold.training.paired_grpo_cli as cli
+    from manifold.training.paired_grpo_cli import bridge_noise_reward_ranking_probe
+
+    entered = []
+    real_autocast = torch.autocast
+
+    class _SpyAutocast:
+        def __init__(self, device_type, enabled=True, **kw):
+            self.enabled = enabled
+        def __enter__(self):
+            entered.append(self.enabled)
+            return real_autocast.__new__(real_autocast)
+        def __exit__(self, *a):
+            return False
+
+    monkey_autocast = _SpyAutocast
+    real = cli.torch.autocast
+    cli.torch.autocast = monkey_autocast
+    try:
+        x_src, x_tgt, shared_tgt = _probe_src_tgt(n=4)
+        bridge_noise_reward_ranking_probe(
+            _SoftPairedPolicy(), FlowMatchBridgeGRPOScheduler(eta=0.7),
+            _QualityCorrelatedReward(shared_tgt).eval(), x_src, x_tgt, [1.0, 1.0, 1.0], 1, 2,
+            G=2, perturbed_step=1, num_steps=4, batch_size=4,
+        )
+    finally:
+        cli.torch.autocast = real
+    # The rollout's autocast was entered (on CPU, enabled=False, but the context IS used).
+    assert entered, "the probe rollout must be wrapped in torch.autocast"
+    # On CPU the autocast is disabled (enabled=device.type=='cuda' is False), but it's entered.
+    assert all(e is False for e in entered)  # CPU -> disabled, but entered
+
+
+def test_build_paired_bridge_noised_fakes_reexported_from_manifold_data():
+    """build_paired_bridge_noised_fakes is re-exported from manifold.data (like its sibling
+    builders), so the documented retrain-on-fail escalation is consumable via the package
+    API (codex #110 P3)."""
+    import manifold.data as md
+    assert hasattr(md, "build_paired_bridge_noised_fakes"), (
+        "build_paired_bridge_noised_fakes must be re-exported from manifold.data"
+    )
+    assert "build_paired_bridge_noised_fakes" in md.__all__
+
+
+def test_main_probe_n_samples_cli_override(tmp_path):
+    """--probe-n-samples overrides the probe's sample count (the hard-gate knob): with
+    G=2 + threshold=0.6, the default is 64 (n=16 lets a random reward pass ~23% of the
+    time) (codex #110 P2). The CLI value flows into _run_probe."""
+    import manifold.training.paired_grpo_cli as cli
+    from manifold.training.paired_grpo_cli import PairedGRPOInputs, main as pg_main
+
+    captured = {}
+    real_probe = cli._run_probe
+
+    def spy(module, inputs, cfg, *, n_probe=64):
+        captured["n_probe"] = n_probe
+        return 0.9  # pass the gate; we only assert the knob flows through
+
+    cli._run_probe = spy
+    try:
+        x_src = torch.randn(4, *_LAT)
+        shared_tgt = torch.randn(*_LAT)
+
+        def provider(cfg, device):
+            return PairedGRPOInputs(
+                policy=_SoftPairedPolicy(),
+                reward_model=_QualityCorrelatedReward(shared_tgt).eval(),
+                scheduler=FlowMatchBridgeGRPOScheduler(eta=0.7),
+                train_ds=_ToyPairedDS(), val_ds=_FixedProbeValDS(x_src, shared_tgt),
+            )
+
+        env, train, net = _write_tiny_configs(tmp_path)
+        pg_main(["-e", env, "-c", train, "-t", net, "-g", "1", "--probe",
+                 "--probe-n-samples", "32",
+                 "paired_grpo_train.num_steps=4"], data_provider=provider)
+    finally:
+        cli._run_probe = real_probe
+    assert captured.get("n_probe") == 32, (
+        f"--probe-n-samples 32 must flow into _run_probe, got {captured.get('n_probe')}"
+    )

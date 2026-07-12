@@ -172,6 +172,10 @@ def singular_branch_rollout_paired(
     nodes = scheduler.set_timesteps(num_steps, device=device)  # (num_steps+1,)
     eta_steps = sorted(int(k) for k in eta_step_list)
     if any(k < 0 for k in eta_steps):
+        # A negative index (e.g. from a config typo) slips past the max-only
+        # check below (-1 >= num_steps is False) and then indexes nodes[-1] (=1.0,
+        # the terminal) with t_next = nodes[0] (=0.0) -> a backwards step that divides
+        # by (1-1)=0 (ZeroDivisionError in sde_step_mean). Reject it (codex #107).
         raise ValueError(
             f"eta_step_list {list(eta_step_list)} contains a negative index; all entries "
             "must be in [0, num_steps)."
