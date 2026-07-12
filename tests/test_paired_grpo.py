@@ -965,3 +965,191 @@ def test_full_v1_budget_runs_end_to_end(tmp_path):
     ckpts = list(Path(str(tmp_path)).glob("*.ckpt"))
     assert any(p.name == "last.ckpt" for p in ckpts)
     assert ckpt.best_model_path and Path(ckpt.best_model_path).is_file()
+
+
+# -- Slice 3 (#105): validation + checkpoint selection (no FID) ------------------
+#
+# Wires the existing PairedPSNRSSIMCallback (deterministic-Heun src->tgt rollout +
+# VAE decode) over a val set that carries tgt_latent, selects on val/psnr (max) gated
+# by a val/ssim >= 0.9 guardrail (GuardedModelCheckpoint), and logs val/mean_reward on
+# the side. No FID (paired has ground truth). val/psnr is reproducible (deterministic
+# given x_src - no re-seed, unlike the noise->data FIDCallback).
+
+
+class _ToyPairedValDS(Dataset):
+    """A tiny val dataset emitting src + tgt latents (the PSNR callback needs tgt).
+
+    G2RPO train is pure-RL (no tgt), but the val set carries the ground-truth target
+    latent so PairedPSNRSSIMCallback can decode + compare. Fixed seed for reproducibility.
+    """
+
+    def __init__(self, n: int = 4, seed: int = 0):
+        g = torch.Generator().manual_seed(seed)
+        self.src = torch.randn(n, *_LAT, generator=g)
+        self.tgt = torch.randn(n, *_LAT, generator=g)
+
+    def __len__(self):
+        return self.src.shape[0]
+
+    def __getitem__(self, i):
+        return {
+            "src_latent": self.src[i],
+            "tgt_latent": self.tgt[i],
+            "src_label": torch.tensor(1, dtype=torch.long),
+            "tgt_label": torch.tensor(2, dtype=torch.long),
+            "spacing": torch.tensor([1.0, 1.0, 1.0]),
+        }
+
+
+def _inputs_with_vae(vae):
+    """The injection-seam bundle WITH a VAE + a tgt-carrying val set (PSNR active)."""
+    import copy as _copy
+
+    from manifold import UNet3DConditionModel
+    from manifold.training.paired_grpo_cli import PairedGRPOInputs
+
+    torch.manual_seed(0)
+    policy = UNet3DConditionModel(
+        in_channels=8, out_channels=4, num_class_embeds=4, include_spacing_input=True
+    )
+    return PairedGRPOInputs(
+        policy=policy, reward_model=_reward_model(),
+        scheduler=FlowMatchBridgeGRPOScheduler(eta=0.5),
+        train_ds=_ToyPairedDS(), val_ds=_ToyPairedValDS(),
+        reference_policy=_copy.deepcopy(policy),
+        vae=vae,
+    )
+
+
+def test_psnr_callback_attaches_and_logs_val_psnr_ssim(tmp_path, vae):
+    """With a VAE, PairedPSNRSSIMCallback logs val/psnr + val/ssim; val/mean_reward stays.
+
+    The deterministic-Heun src->tgt rollout + VAE decode (the deployed sampler, NOT the
+    bridge SDE) reports reproducible pixel fidelity; the PatchGAN val/mean_reward stays
+    as the RL progress signal. The checkpoint monitors val/psnr (max) gated by val/ssim
+    (#105 acceptance)."""
+    from manifold.modules import PairedGRPOModule
+    from manifold.training.paired_grpo_cli import GuardedModelCheckpoint, run_paired_grpo_training
+
+    inputs = _inputs_with_vae(vae)
+    module = PairedGRPOModule(
+        inputs.policy, inputs.reward_model, inputs.scheduler,
+        G=2, eta_step_list=(0,), num_steps=3, lr=1e-3,
+        reference_policy=inputs.reference_policy, kl_coef=0.1,
+    )
+    trainer, ckpt = run_paired_grpo_training(
+        module=module, inputs=inputs, model_dir=str(tmp_path),
+        max_epochs=1, devices=1, accelerator="cpu", batch_size=2,
+    )
+    metrics = trainer.callback_metrics
+    assert "val/psnr" in metrics, "PairedPSNRSSIMCallback must log val/psnr"
+    assert torch.isfinite(metrics["val/psnr"])
+    assert "val/ssim" in metrics, "PairedPSNRSSIMCallback must log val/ssim"
+    assert torch.isfinite(metrics["val/ssim"])
+    assert "val/mean_reward" in metrics, "the RL progress signal stays logged"
+    assert torch.isfinite(metrics["val/mean_reward"])
+    # Selection flips to val/psnr (max) + the guardrail checkpoint.
+    assert ckpt.monitor == "val/psnr"
+    assert ckpt.mode == "max"
+    assert isinstance(ckpt, GuardedModelCheckpoint)
+    assert ckpt.guardrail_metric == "val/ssim"
+    assert ckpt.guardrail_min == 0.9
+
+
+def test_no_fid_callback_attached(tmp_path, vae):
+    """G2RPO attaches NO FIDCallback (paired has ground truth; PSNR is the goal metric).
+
+    The noise->data GRPO uses val/fid (no GT); G2RPO uses val/psnr. No FID triple."""
+    from manifold.metrics import FIDCallback
+    from manifold.modules import PairedGRPOModule
+    from manifold.training.paired_grpo_cli import run_paired_grpo_training
+
+    inputs = _inputs_with_vae(vae)
+    module = PairedGRPOModule(
+        inputs.policy, inputs.reward_model, inputs.scheduler,
+        G=2, eta_step_list=(0,), num_steps=3, lr=1e-3,
+    )
+    trainer, _ = run_paired_grpo_training(
+        module=module, inputs=inputs, model_dir=str(tmp_path),
+        max_epochs=1, devices=1, accelerator="cpu", batch_size=2,
+    )
+    assert not any(isinstance(c, FIDCallback) for c in trainer.callbacks), (
+        "G2RPO must NOT attach FIDCallback - paired has ground truth (val/psnr, no FID)."
+    )
+
+
+def test_guardrail_rejects_sub_guardrail_checkpoint():
+    """GuardedModelCheckpoint.check_monitor_top_k returns False below the guardrail.
+
+    A high-val/psnr-but-low-val/ssim checkpoint is rejected from "best" selection (the
+    anti-artifact guardrail). With val/ssim below 0.9 the monitor never selects it,
+    even if val/psnr would otherwise be the top-k; above the guardrail it defers to the
+    stock top-k. ``current is None`` and the no-guardrail case are also handled."""
+    import torch
+    from lightning.pytorch import Trainer
+    from manifold.training.paired_grpo_cli import GuardedModelCheckpoint
+
+    ckpt = GuardedModelCheckpoint(
+        dirpath="/tmp/_unused_", monitor="val/psnr", mode="max", save_top_k=1,
+        guardrail_metric="val/ssim", guardrail_min=0.9,
+    )
+    # A bare Trainer (no fit) + callback_metrics injection - check_monitor_top_k reads
+    # trainer.callback_metrics for the guardrail.
+    trainer = Trainer(accelerator="cpu", devices=1, logger=False, enable_checkpointing=False)
+    # current is None -> False.
+    assert ckpt.check_monitor_top_k(trainer, None) is False
+    # val/ssim below 0.9 -> rejected (even with a high val/psnr current).
+    trainer.callback_metrics["val/ssim"] = torch.tensor(0.5)
+    assert ckpt.check_monitor_top_k(trainer, torch.tensor(50.0)) is False
+    # val/ssim >= 0.9 -> defers to stock top-k (save_top_k=1, empty best_k -> True).
+    trainer.callback_metrics["val/ssim"] = torch.tensor(0.95)
+    assert ckpt.check_monitor_top_k(trainer, torch.tensor(20.0)) is True
+
+
+def test_val_psnr_reproducible_across_seeded_runs(tmp_path, vae):
+    """val/psnr is reproducible across re-runs (deterministic given x_src - no re-seed).
+
+    Unlike the noise->data FIDCallback (which re-seeds its generation noise every epoch),
+    the PairedPSNRSSIMCallback's src->tgt rollout is structurally deterministic (the
+    transport starts from data x_src, no stochastic input), so two seeded runs produce
+    bit-identical val/psnr at the same weights - directly comparable to the supervised
+    ceiling (#105 acceptance)."""
+    from manifold.modules import PairedGRPOModule
+    from manifold.training.paired_grpo_cli import run_paired_grpo_training
+
+    def _run_once(d):
+        torch.manual_seed(0)
+        inputs = _inputs_with_vae(vae)
+        module = PairedGRPOModule(
+            inputs.policy, inputs.reward_model, inputs.scheduler,
+            G=2, eta_step_list=(0,), num_steps=3, lr=1e-3,
+        )
+        trainer, _ = run_paired_grpo_training(
+            module=module, inputs=inputs, model_dir=str(d),
+            max_epochs=1, devices=1, accelerator="cpu", batch_size=2, seed=0,
+        )
+        return float(trainer.callback_metrics["val/psnr"])
+
+    p1 = tmp_path / "run1"
+    p2 = tmp_path / "run2"
+    v1 = _run_once(p1)
+    v2 = _run_once(p2)
+    assert abs(v1 - v2) < 1e-4, f"val/psnr must be reproducible (got {v1} vs {v2})"
+
+
+def test_ssim_guardrail_none_disables_guardrail(tmp_path, vae):
+    """ssim_guardrail=None => a stock ModelCheckpoint (no guardrail) monitors val/psnr."""
+    from manifold.modules import PairedGRPOModule
+    from manifold.training.paired_grpo_cli import GuardedModelCheckpoint, run_paired_grpo_training
+
+    inputs = _inputs_with_vae(vae)
+    module = PairedGRPOModule(
+        inputs.policy, inputs.reward_model, inputs.scheduler,
+        G=2, eta_step_list=(0,), num_steps=3, lr=1e-3,
+    )
+    _, ckpt = run_paired_grpo_training(
+        module=module, inputs=inputs, model_dir=str(tmp_path),
+        max_epochs=1, devices=1, accelerator="cpu", batch_size=2, ssim_guardrail=None,
+    )
+    assert ckpt.monitor == "val/psnr"
+    assert not isinstance(ckpt, GuardedModelCheckpoint), "None guardrail => stock ModelCheckpoint"

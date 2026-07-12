@@ -22,7 +22,7 @@ from __future__ import annotations
 import argparse
 import logging
 from dataclasses import dataclass
-from typing import Any, Sequence
+from typing import Any
 
 import torch
 
@@ -35,7 +35,9 @@ from lightning.pytorch.callbacks import ModelCheckpoint
 
 from ..config import opt
 from ..data.datamodule import build_datamodule
+from ..metrics import PairedPSNRSSIMCallback
 from ..modules.paired_grpo import PairedGRPOModule
+from ..pipelines.paired_latent_flow import PairedLatentFlowPipeline
 from ..schedulers.scheduling_flow_match_bridge_grpo import FlowMatchBridgeGRPOScheduler
 from .trainer import build_trainer, is_multi_gpu
 
@@ -60,6 +62,46 @@ class PairedGRPOInputs:
     train_ds: Any
     val_ds: Any
     reference_policy: Any = None  # the frozen KL anchor (ADR-0015); None ⇒ no KL (v1)
+    vae: Any = None  # the frozen VAE for the PSNR/SSIM decode (#105); None ⇒ val/mean_reward only
+
+
+class GuardedModelCheckpoint(ModelCheckpoint):
+    """``ModelCheckpoint`` that gates best-checkpoint selection on a guardrail metric.
+
+    G2RPO selects on ``val/psnr`` (max) - the reproducible deterministic-Heun goal
+    metric - BUT only among checkpoints whose ``val/ssim >= guardrail_min`` (the
+    anti-artifact guardrail, ADR-0024). A high-``val/psnr``-but-low-``val/ssim``
+    checkpoint (e.g. a reward-hacked or structurally-artifacted generation) is rejected
+    from "best" selection: :meth:`check_monitor_top_k` returns False while the
+    guardrail is unmet, so ``_save_monitor_checkpoint`` skips it (``save_last`` still
+    keeps the latest weights for resume). When the guardrail is ``None`` the selection
+    is the stock top-k (the #103 ``val/mean_reward`` path).
+
+    The guardrail metric is read live from ``trainer.callback_metrics`` at the
+    save-decision point (the PSNR callback logs ``val/ssim`` in the same validation
+    epoch), so no metric plumbing is needed beyond attaching the PSNR callback.
+    """
+
+    def __init__(
+        self, *args,
+        guardrail_metric: str | None = None,
+        guardrail_min: float | None = None,
+        **kwargs,
+    ):
+        super().__init__(*args, **kwargs)
+        self.guardrail_metric = guardrail_metric
+        self.guardrail_min = guardrail_min
+
+    def check_monitor_top_k(self, trainer, current=None) -> bool:
+        if current is None:
+            return False
+        if self.guardrail_metric is not None and self.guardrail_min is not None:
+            gr = trainer.callback_metrics.get(self.guardrail_metric)
+            if gr is None or float(gr) < float(self.guardrail_min):
+                # Below the guardrail -> never eligible for "best" (save_last still
+                # keeps the latest). The PSNR callback's val/ssim is the observable.
+                return False
+        return super().check_monitor_top_k(trainer, current)
 
 
 def _build_checkpoint(
@@ -69,6 +111,8 @@ def _build_checkpoint(
     mode: str = "max",
     save_top_k: int = 1,
     multi_gpu: bool = False,
+    guardrail_metric: str | None = None,
+    guardrail_min: float | None = None,
 ) -> ModelCheckpoint:
     """Stock Lightning ``ModelCheckpoint`` monitoring the G2RPO progress signal.
 
@@ -80,30 +124,30 @@ def _build_checkpoint(
     ``val/psnr`` is the global cross-rank selection metric, kept) — mirroring the
     noise→data GRPO checkpoint DDP fallback.
     """
-    if multi_gpu and monitor_metric == "val/mean_reward":
-        # val/mean_reward is rank-0-only (validation_step gate); drop the monitor
-        # under DDP (save_last + save_top_k=1 keep the latest). val/psnr is a global
-        # cross-rank mean (the PSNR callback all_gathers) → monitor stays on (#105).
-        return ModelCheckpoint(
-            dirpath=model_dir,
-            filename="paired-grpo-{epoch:03d}",
-            save_last=True,
-            save_top_k=1,
-            save_on_train_epoch_end=True,
-            auto_insert_metric_name=False,
-            save_weights_only=False,
-        )
-    return ModelCheckpoint(
+    common = dict(
         dirpath=model_dir,
-        filename=f"paired-grpo-{{epoch:03d}}-{{{monitor_metric}:.3f}}",
-        monitor=monitor_metric,
-        mode=mode,
         save_top_k=save_top_k,
         save_last=True,
         save_on_train_epoch_end=True,
         auto_insert_metric_name=False,
         save_weights_only=False,
     )
+    if multi_gpu and monitor_metric == "val/mean_reward":
+        # val/mean_reward is rank-0-only (validation_step gate); drop the monitor
+        # under DDP (save_last + save_top_k=1 keep the latest). val/psnr is a global
+        # cross-rank mean (the PSNR callback all_gathers) -> monitor stays on (#105).
+        return ModelCheckpoint(filename="paired-grpo-{epoch:03d}", **common)
+    ckwt = dict(
+        filename=f"paired-grpo-{{epoch:03d}}-{{{monitor_metric}:.3f}}",
+        monitor=monitor_metric,
+        mode=mode,
+        **common,
+    )
+    if guardrail_metric is not None and guardrail_min is not None:
+        return GuardedModelCheckpoint(
+            guardrail_metric=guardrail_metric, guardrail_min=guardrail_min, **ckwt,
+        )
+    return ModelCheckpoint(**ckwt)
 
 
 def run_paired_grpo_training(
@@ -123,40 +167,56 @@ def run_paired_grpo_training(
     limit_train_batches: int | float | None = None,
     seed: int = 0,
     ckpt_path: str | None = None,
-    extra_callbacks: Sequence[pl.Callback] | None = None,
+    ssim_guardrail: float | None = 0.9,
+    psnr_num_inference_steps: int | None = None,
 ) -> tuple[pl.Trainer, ModelCheckpoint]:
     """Assemble callbacks + ``Trainer`` and ``fit`` the G2RPO module (the core seam).
 
-    Builds a stock ``ModelCheckpoint`` (monitoring ``val/psnr`` when the PSNR callback
-    is attached in #105, else ``val/mean_reward``) + the caller's extra callbacks
-    (the PSNR callback, #105), then runs ``Trainer.fit`` on the source-latent
-    datamodule + the val set. Returns ``(trainer, ckpt)`` so callers can find the
-    written ``.ckpt``.
+    When ``inputs.vae`` is set (#105), attaches
+    :class:`~manifold.metrics.PairedPSNRSSIMCallback` (the deterministic-Heun
+    src->tgt rollout + VAE decode, no EMA - G2RPO evaluates the raw policy) over the
+    ``val_ds`` (which must then emit ``tgt_latent``), and selects the checkpoint on
+    ``val/psnr`` (max) gated by ``val/ssim >= ssim_guardrail`` (a
+    :class:`GuardedModelCheckpoint`). Otherwise monitors ``val/mean_reward`` (max),
+    the #103 tracer default. ``val/mean_reward`` stays logged either way (the RL
+    progress signal, rank-0-only).
 
     Args:
         inputs: the train/val source-latent datasets + the policy/reward/scheduler
-            (+ the optional KL reference).
+            (+ the optional KL reference + the optional VAE for PSNR).
         monitor_metric / mode: ``None`` (the default) auto-selects ``val/psnr`` (max)
-            when extra_callbacks carries a PSNR callback, else ``val/mean_reward``
-            (max). Pass explicitly to override.
-        extra_callbacks: the PSNR callback (#105) and any other non-checkpoint
-            callbacks; the checkpoint is always appended here.
+            when ``inputs.vae`` is set, else ``val/mean_reward`` (max). Override
+            explicitly to force one.
+        ssim_guardrail: the minimum ``val/ssim`` for a checkpoint to be eligible for
+            "best" selection (ADR-0024); ``None`` disables the guardrail (stock
+            top-k). Default 0.9.
+        psnr_num_inference_steps: Heun steps for the PSNR rollout (defaults to
+            ``module.num_steps`` - the deployed resolution).
         ckpt_path: optional warm-start / resume checkpoint passed to ``fit``.
     """
     pl.seed_everything(seed, workers=True)
     multi_gpu = is_multi_gpu(devices)
-    psnr_active = extra_callbacks is not None and any(
-        type(c).__name__ == "PairedPSNRSSIMCallback" for c in extra_callbacks
-    )
+    psnr_active = inputs.vae is not None
     if monitor_metric is None:
         monitor_metric = "val/psnr" if psnr_active else "val/mean_reward"
     if mode is None:
         mode = "max"  # both val/psnr and val/mean_reward are mode=max
+    guardrail = "val/ssim" if (psnr_active and ssim_guardrail is not None) else None
     ckpt = _build_checkpoint(
-        model_dir, monitor_metric=monitor_metric, mode=mode, save_top_k=save_top_k, multi_gpu=multi_gpu
+        model_dir, monitor_metric=monitor_metric, mode=mode, save_top_k=save_top_k,
+        multi_gpu=multi_gpu, guardrail_metric=guardrail, guardrail_min=ssim_guardrail,
     )
-    callbacks: list[pl.Callback] = list(extra_callbacks) if extra_callbacks else []
-    callbacks.append(ckpt)
+    callbacks: list[pl.Callback] = [ckpt]
+    if psnr_active:
+        pipeline = PairedLatentFlowPipeline(module.unet, inputs.vae, module.scheduler)
+        psnr_steps = int(psnr_num_inference_steps) if psnr_num_inference_steps is not None else module.num_steps
+        callbacks.append(
+            PairedPSNRSSIMCallback(
+                pipeline=pipeline,
+                num_inference_steps=psnr_steps,
+                ema_callback=None,  # G2RPO evaluates the raw policy (no EMA, ADR-0012)
+            )
+        )
     datamodule = build_datamodule(
         inputs.train_ds, batch_size=batch_size, val_dataset=inputs.val_ds, num_workers=num_workers
     )
