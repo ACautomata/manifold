@@ -828,6 +828,7 @@ def main(argv: list[str] | None = None, *, data_provider=None) -> int:
             seed=seed,
             eta_min=(float(opt(gcfg, "eta_min", 0.1)) if bool(opt(gcfg, "eta_ramp", True)) else None),
             eta_ramp_fraction=float(opt(gcfg, "eta_ramp_fraction", 0.3)),
+            limit_train_batches=args.limit_train_batches,
         )
         print(
             f"[manifold-train-paired-grpo] measure: {it_per_s:.3f} it/s | "
@@ -864,6 +865,7 @@ def run_paired_grpo_measurement(
     seed: int = 0,
     eta_min: float | None = None,
     eta_ramp_fraction: float = 0.3,
+    limit_train_batches: int | None = None,
 ) -> tuple[float, int, float]:
     """Time a 1-epoch G2RPO fit + report it/s + peak GPU memory (the #106 launch gate).
 
@@ -891,6 +893,7 @@ def run_paired_grpo_measurement(
         seed=seed,
         eta_min=eta_min,
         eta_ramp_fraction=eta_ramp_fraction,
+        limit_train_batches=limit_train_batches,
     )
     elapsed = time.perf_counter() - start
     it_per_s = float(trainer.global_step) / elapsed if elapsed > 0 else float("nan")

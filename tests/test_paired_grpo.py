@@ -843,6 +843,42 @@ def test_run_paired_grpo_measurement_reports_it_per_s(tmp_path):
     assert peak == 0  # off-CUDA: torch.cuda.max_memory_allocated() is 0
 
 
+def test_run_paired_grpo_measurement_forwards_limit_train_batches(tmp_path, monkeypatch):
+    """--measure honors --limit-train-batches: the cap is forwarded to the timing fit.
+
+    The CLI help advertises ``--limit-train-batches`` as "a debug knob for the fast
+    re-measure"; the measurement fit must forward it so ``--measure --limit-train-batches 1``
+    is a 1-batch timing probe, not a full epoch (codex #107 P2).
+    """
+    from manifold.modules import PairedGRPOModule
+    from manifold.training import paired_grpo_cli
+    from manifold.training.paired_grpo_cli import run_paired_grpo_measurement
+
+    captured: dict = {}
+
+    class _StubTrainer:
+        global_step = 1
+
+    def _capture(**kwargs):
+        captured.update(kwargs)
+        return _StubTrainer(), None
+
+    monkeypatch.setattr(paired_grpo_cli, "run_paired_grpo_training", _capture)
+
+    inputs = _inputs()
+    module = PairedGRPOModule(
+        inputs.policy, inputs.reward_model, inputs.scheduler,
+        G=2, eta_step_list=(0,), num_steps=3, lr=1e-3,
+    )
+    run_paired_grpo_measurement(
+        module=module, inputs=inputs, model_dir=str(tmp_path),
+        devices=1, accelerator="cpu", batch_size=2, limit_train_batches=1,
+    )
+    assert captured.get("limit_train_batches") == 1, (
+        "run_paired_grpo_measurement must forward limit_train_batches to the timing fit."
+    )
+
+
 _TINY_NETWORK_YAML = "spatial_dims: 3\nlatent_channels: 4\n"
 
 
