@@ -1153,3 +1153,207 @@ def test_ssim_guardrail_none_disables_guardrail(tmp_path, vae):
     )
     assert ckpt.monitor == "val/psnr"
     assert not isinstance(ckpt, GuardedModelCheckpoint), "None guardrail => stock ModelCheckpoint"
+
+
+# -- Slice 2 (#104): real budget + committed recipe + numerics ------------------
+#
+# The eta-ramp (ADR-0024 Q7), reward_temp calibration (ADR-0015), and the raw-arm
+# export (base Heun scheduler config - the bridge is training-only, NOT in the inference
+# checkpoint). The real _real_inputs path is cluster-only (no real artifacts on the dev
+# machine); these cover the testable pieces + the export parity.
+
+
+def test_eta_ramp_schedule_ramps_then_holds():
+    """EtaRampCallback.eta_at: eta_min -> eta_max over ramp_fraction, then holds."""
+    from manifold.training.paired_grpo_cli import EtaRampCallback
+
+    sched = FlowMatchBridgeGRPOScheduler(eta=0.7)  # eta_max
+    cb = EtaRampCallback(sched, eta_min=0.1, eta_max=0.7, ramp_fraction=0.3)
+    total = 100
+    assert cb.eta_at(0, total) == pytest.approx(0.1)  # start
+    assert cb.eta_at(30, total) == pytest.approx(0.7)  # ramp done at 30% (ramp_fraction=0.3)
+    assert cb.eta_at(50, total) == pytest.approx(0.7)  # hold
+    assert cb.eta_at(1000, total) == pytest.approx(0.7)  # clamps past the end
+    # Midway through the ramp is linear.
+    assert cb.eta_at(15, total) == pytest.approx(0.4)  # halfway: 0.1 + 0.5*(0.7-0.1)
+
+
+def test_run_paired_grpo_training_attaches_eta_ramp(tmp_path):
+    """eta_min set => EtaRampCallback is attached; None (the smoke) => not attached."""
+    from manifold.modules import PairedGRPOModule
+    from manifold.training.paired_grpo_cli import EtaRampCallback, run_paired_grpo_training
+
+    inputs = _inputs()
+    module = PairedGRPOModule(
+        inputs.policy, inputs.reward_model, inputs.scheduler,
+        G=2, eta_step_list=(0,), num_steps=3, lr=1e-3,
+    )
+    trainer, _ = run_paired_grpo_training(
+        module=module, inputs=inputs, model_dir=str(tmp_path),
+        max_epochs=1, devices=1, accelerator="cpu", batch_size=2,
+        eta_min=0.1, eta_ramp_fraction=0.3,
+    )
+    assert any(isinstance(c, EtaRampCallback) for c in trainer.callbacks), (
+        "eta_min set => EtaRampCallback must attach (ADR-0024 Q7)"
+    )
+    # The callback's eta_max matches the scheduler's eta (eta_max).
+    cb = next(c for c in trainer.callbacks if isinstance(c, EtaRampCallback))
+    assert cb.eta_max == pytest.approx(0.5)  # inputs.scheduler.eta = 0.5
+
+
+def test_run_paired_grpo_training_no_eta_ramp_by_default(tmp_path):
+    """The #103 smoke default (eta_min=None) attaches no EtaRampCallback."""
+    from manifold.modules import PairedGRPOModule
+    from manifold.training.paired_grpo_cli import EtaRampCallback, run_paired_grpo_training
+
+    inputs = _inputs()
+    module = PairedGRPOModule(
+        inputs.policy, inputs.reward_model, inputs.scheduler,
+        G=2, eta_step_list=(0,), num_steps=3, lr=1e-3,
+    )
+    trainer, _ = run_paired_grpo_training(
+        module=module, inputs=inputs, model_dir=str(tmp_path),
+        max_epochs=1, devices=1, accelerator="cpu", batch_size=2,
+    )
+    assert not any(isinstance(c, EtaRampCallback) for c in trainer.callbacks)
+
+
+def test_calibrate_reward_temp_returns_reward_std():
+    """calibrate_reward_temp scores real cat([x_src, x_tgt]) pairs; returns their std."""
+    from manifold.training.paired_grpo_cli import calibrate_reward_temp
+
+    rm = _reward_model().eval()  # eval: BatchNorm running stats (calibrate_reward_temp evals too)
+    # Build N condition-aware [2·C] "real" pairs (the layout the paired reward scores).
+    torch.manual_seed(0)
+    samples = torch.randn(8, 2 * _LAT[0], *_LAT[1:])
+    # The measured reward_temp = std of the reward scores over the sample.
+    with torch.no_grad():
+        expected = float(rm(samples).std())
+    got = calibrate_reward_temp(rm, samples, batch_size=4)
+    assert got == pytest.approx(expected, rel=1e-5)
+    assert got > 0
+
+
+def test_calibrate_reward_temp_rejects_too_few_samples():
+    """<2 samples => can't compute a std; fail fast (no silent degenerate temp)."""
+    from manifold.training.paired_grpo_cli import calibrate_reward_temp
+
+    rm = _reward_model()
+    with pytest.raises(ValueError, match="need >=2 real reward samples"):
+        calibrate_reward_temp(rm, torch.randn(1, 2 * _LAT[0], *_LAT[1:]))
+
+
+def test_calibrate_reward_temp_from_val_mutates_module(vae):
+    """_calibrate_reward_temp_from_val sets module.reward_temp from real val pairs."""
+    from manifold import UNet3DConditionModel
+    from manifold.modules import PairedGRPOModule
+    from manifold.training.paired_grpo_cli import _calibrate_reward_temp_from_val
+
+    torch.manual_seed(0)
+    policy = UNet3DConditionModel(
+        in_channels=8, out_channels=4, num_class_embeds=4, include_spacing_input=True
+    )
+    mod = PairedGRPOModule(
+        policy, _reward_model(), FlowMatchBridgeGRPOScheduler(eta=0.5),
+        G=2, eta_step_list=(0,), num_steps=3, lr=1e-3,
+        reward_bound="tanh", reward_temp=8.0,
+    )
+    val_ds = _ToyPairedValDS(n=6)
+    before = mod.reward_temp
+    _calibrate_reward_temp_from_val(mod, val_ds, n=6)
+    assert mod.reward_temp != before  # mutated to the measured std
+    assert mod.reward_temp > 0
+    # reward_bound != tanh => no-op.
+    mod.reward_bound = "none"
+    saved = mod.reward_temp
+    _calibrate_reward_temp_from_val(mod, val_ds, n=6)
+    assert mod.reward_temp == saved
+
+
+def test_export_g2rpo_raw_arm_loads_with_base_heun(tmp_path, vae):
+    """The exported native checkpoint carries the BASE Heun scheduler config (not the bridge).
+
+    The bridge scheduler is training-only; inference reuses the existing
+    PairedLatentFlowPipeline + the deterministic Heun (ADR-0024 Q4). export_to_native
+    bakes the raw UNet arm (prefer_ema=False - G2RPO trains no EMA) with a fresh BASE
+    FlowMatchHeunDiscreteScheduler; PairedLatentFlowPipeline.from_pretrained then loads a
+    base Heun (NOT FlowMatchBridgeGRPOScheduler), and the pipeline generates."""
+    import copy as _copy
+
+    from manifold import UNet3DConditionModel
+    from manifold.modules import PairedGRPOModule
+    from manifold.pipelines import PairedLatentFlowPipeline
+    from manifold.training import export_to_native
+    from manifold.training.paired_grpo_cli import run_paired_grpo_training
+
+    torch.manual_seed(0)
+    policy = UNet3DConditionModel(
+        in_channels=8, out_channels=4, num_class_embeds=4, include_spacing_input=True
+    )
+    inputs = _inputs_with_vae(vae)
+    module = PairedGRPOModule(
+        inputs.policy, inputs.reward_model, inputs.scheduler,
+        G=2, eta_step_list=(0,), num_steps=3, lr=1e-3,
+    )
+    trainer, ckpt = run_paired_grpo_training(
+        module=module, inputs=inputs, model_dir=str(tmp_path / "train"),
+        max_epochs=1, devices=1, accelerator="cpu", batch_size=2, ssim_guardrail=None,
+    )
+    last_ckpt = str(tmp_path / "train" / "last.ckpt")
+    assert Path(last_ckpt).is_file()
+
+    # Export the RAW arm with a fresh BASE Heun scheduler (NOT the bridge) + the paired
+    # pipeline. prefer_ema=False (G2RPO has no EMA - ADR-0012).
+    fresh_unet = UNet3DConditionModel(
+        in_channels=8, out_channels=4, num_class_embeds=4, include_spacing_input=True
+    )
+    base_sched = FlowMatchHeunDiscreteScheduler()
+    out_dir = str(tmp_path / "native")
+    source = export_to_native(
+        last_ckpt, out_dir, unet=fresh_unet, vae=vae, scheduler=base_sched,
+        prefer_ema=False, pipeline_cls=PairedLatentFlowPipeline,
+    )
+    assert source == "unet_state_dict"  # raw arm (no EMA baked)
+
+    # Reload: the scheduler MUST be the base Heun (the bridge is NOT in the inference ckpt).
+    pipe = PairedLatentFlowPipeline.from_pretrained(out_dir)
+    assert isinstance(pipe.scheduler, FlowMatchHeunDiscreteScheduler)
+    assert not isinstance(pipe.scheduler, FlowMatchBridgeGRPOScheduler), (
+        "the bridge scheduler must NOT persist to the inference checkpoint (training-only)"
+    )
+    assert "eta" not in pipe.scheduler.config, (
+        "the base Heun config carries no eta (the bridge knob); the export must not leak it"
+    )
+    # The pipeline generates via the deterministic Heun (the deployed sampler).
+    torch.manual_seed(0)
+    x_src = torch.randn(1, *_LAT)
+    out = pipe.sample_latent(x_src, [1.0, 1.0, 1.0], 1, 2, num_inference_steps=3)
+    assert out.shape == x_src.shape
+    assert torch.isfinite(out).all()
+
+
+def test_full_v1_budget_with_eta_ramp_is_finite(tmp_path):
+    """The committed v1 budget (G=8, [0..3], num_steps=8) + eta-ramp completes a fit (#104)."""
+    from manifold import UNet3DConditionModel
+    from manifold.modules import PairedGRPOModule
+    from manifold.training.paired_grpo_cli import PairedGRPOInputs, run_paired_grpo_training
+
+    torch.manual_seed(0)
+    policy = UNet3DConditionModel(
+        in_channels=8, out_channels=4, num_class_embeds=4, include_spacing_input=True
+    )
+    inputs = PairedGRPOInputs(
+        policy=policy, reward_model=_reward_model(),
+        scheduler=FlowMatchBridgeGRPOScheduler(eta=0.7),
+        train_ds=_ToyPairedDS(), val_ds=_ToyPairedDS(),
+    )
+    module = PairedGRPOModule(
+        inputs.policy, inputs.reward_model, inputs.scheduler,
+        G=8, eta_step_list=(0, 1, 2, 3), num_steps=8, lr=1e-3,
+    )
+    trainer, _ = run_paired_grpo_training(
+        module=module, inputs=inputs, model_dir=str(tmp_path),
+        max_epochs=1, devices=1, accelerator="cpu", batch_size=2,
+        eta_min=0.1, eta_ramp_fraction=0.3,
+    )
+    assert torch.isfinite(trainer.callback_metrics["val/mean_reward"])

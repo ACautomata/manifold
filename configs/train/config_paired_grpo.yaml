@@ -24,11 +24,16 @@ paired_grpo_train:
   # the anchor at each, then a deterministic Heun suffix to the terminal latent. The
   # first half stays away from the §7 var-collapse terminal (σ² → 0 as t_next → 1).
   eta_step_list: [0, 1, 2, 3]
-  # The bridge diffusion scale η (σ² = η·Δt·(1−t_next)/(1−t)) — the single exploration
-  # knob. The η-ramp (#104) warms this from η_min → η_max over the first ~0.3 epochs
-  # (the paired UNet was trained on a zero-noise deterministic transport, so a static
-  # high η shocks it); the value below is η_max.
-  eta: 0.7
+  # The bridge diffusion scale eta (sigma^2 = eta*dt*(1-t_next)/(1-t)) - the single
+  # exploration knob (eta_max, held after the ramp). The eta-ramp (ADR-0024 Q7)
+  # warms eta from eta_min -> eta_max over the first eta_ramp_fraction of total
+  # steps (the paired UNet was trained on a zero-noise deterministic transport, so
+  # a static-high eta shocks it); ramp-and-hold, not a permanent cut. Set
+  # eta_ramp: false to disable (static eta_max).
+  eta: 0.7  # eta_max
+  eta_ramp: true
+  eta_min: 0.1
+  eta_ramp_fraction: 0.3
   # The PPO clipped-surrogate ε — tight, so each update is microscopic and stable.
   clip_range: 1.0e-4
   # The advantage-magnitude clip (a single spoofed-reward outlier cannot dominate a step).
