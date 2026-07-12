@@ -77,6 +77,21 @@ def _as_per_sample(value, n: int, device: torch.device) -> Tensor | int:
     return t.to(device=device, dtype=torch.long)
 
 
+def _canonical_device(device: torch.device) -> torch.device:
+    """Normalize an unspecified CUDA device (``cuda``) to the current device index.
+
+    ``torch.device("cuda") != torch.device("cuda:0")`` by Python equality even though
+    they name the same GPU, so a naive compare false-positives on the standard
+    ``device="cuda"`` CLI path (the generator lands on ``cuda:0`` after ``.to``).
+    The CLI builds ``device = torch.device("cuda")``; canonicalize it to
+    ``cuda:<current_device>`` so it compares equal to the generator's ``cuda:0``
+    (codex #100 P1).
+    """
+    if device.type == "cuda" and device.index is None and torch.cuda.is_available():
+        return torch.device("cuda", torch.cuda.current_device())
+    return device
+
+
 def _resolve_rollout_device(generator, device) -> torch.device:
     """Resolve the rollout device, failing fast on a generator/device mismatch.
 
@@ -85,11 +100,12 @@ def _resolve_rollout_device(generator, device) -> torch.device:
     caller-passed ``device`` that differs from the generator's leaves the concat
     ``[src_b (→device), gen_tgt (→gen_device)]`` mixing devices (codex #96 P2).
     Auto-detect when ``device is None``; otherwise require the generator to already
-    be on ``device`` (the CLI's ``_real_inputs`` moves it before calling).
+    be on ``device`` (the CLI's ``_real_inputs`` moves it before calling). CUDA device
+    indices are canonicalized first (codex #100 P1).
     """
     gen_device = next(generator.parameters()).device
     resolved = torch.device(device) if device is not None else gen_device
-    if resolved != gen_device:
+    if _canonical_device(resolved) != _canonical_device(gen_device):
         raise ValueError(
             f"Generator is on {gen_device} but the builder was called with "
             f"device={resolved}. Move the generator onto {resolved} before calling "

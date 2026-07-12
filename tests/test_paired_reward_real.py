@@ -708,3 +708,91 @@ def test_real_inputs_rejects_stale_cache_shape(tmp_path, monkeypatch):
         paired_reward_cli._real_inputs(
             cfg, str(tmp_path / "native"), str(tmp_path / "cache"), torch.device("cpu")
         )
+
+
+# -- codex #100 round-2 regression guards --------------------------------------
+
+
+def test_canonical_device_treats_unspecified_cuda_as_current():
+    """``torch.device("cuda")`` canonicalizes to ``cuda:<current>`` (#100 P1 #A).
+
+    The device guard would otherwise false-positive on the standard ``device="cuda"``
+    CLI path: the generator lands on ``cuda:0`` after ``.to``, but
+    ``torch.device("cuda") != torch.device("cuda:0")`` by equality. Canonicalize before
+    comparing (mocked CUDA - no GPU required).
+    """
+    from unittest.mock import patch
+
+    from manifold.data.paired_reward_pairs import _canonical_device
+
+    with (
+        patch("torch.cuda.is_available", return_value=True),
+        patch("torch.cuda.current_device", return_value=0),
+    ):
+        assert _canonical_device(torch.device("cuda")) == torch.device("cuda", 0)
+        assert _canonical_device(torch.device("cuda", 0)) == torch.device("cuda", 0)
+        # A specific other index is preserved (cuda:1 != cuda:0).
+        assert _canonical_device(torch.device("cuda", 1)) == torch.device("cuda", 1)
+    # cpu passes through unchanged regardless of CUDA availability.
+    assert _canonical_device(torch.device("cpu")) == torch.device("cpu")
+
+
+def test_real_inputs_mirrors_val_fraction_for_non_directory_val_dir(tmp_path, monkeypatch):
+    """_real_inputs mirrors paired_reward.val_fraction when val_data_base_dir is a
+    NON-DIRECTORY (e.g. the BraTS2023 profile's brats_all_val.json) (#100 P1 #C).
+
+    _train_val_manifests rejects a non-directory val_data_base_dir and falls back to the
+    root val_fraction subject split, so the mirror must fire here too - not only when
+    val_data_base_dir is unset.
+    """
+    import omegaconf
+    import pytest
+
+    from manifold import AutoencoderKL, PairedLatentFlowPipeline, UNet3DConditionModel
+    from manifold.data import paired_brats as pb
+    from manifold.training import paired_cli as pcli
+    from manifold.training import paired_reward_cli
+
+    torch.manual_seed(0)
+    unet = UNet3DConditionModel(
+        in_channels=2 * C_LATENT,
+        out_channels=C_LATENT,
+        num_class_embeds=4,
+        include_spacing_input=True,
+    )
+    PairedLatentFlowPipeline(
+        unet, AutoencoderKL(scaling_factor=0.5), FlowMatchHeunDiscreteScheduler()
+    ).save_pretrained(str(tmp_path / "native"))
+
+    train_manifest = [
+        {"src": f"/t/s{i}-t1n.nii.gz", "tgt": f"/t/s{i}-t1c.nii.gz", "src_label": 0, "tgt_label": 1}
+        for i in range(4)
+    ]
+    monkeypatch.setattr(pb, "build_brats_pair_manifest", lambda *a, **k: train_manifest)
+
+    seen = {}
+
+    def fake_split(cfg, manifest):
+        seen["val_fraction"] = float(omegaconf.OmegaConf.select(cfg, "val_fraction", default=-1.0))
+        return manifest, []  # empty val -> short-circuit (we only assert the mirror)
+
+    monkeypatch.setattr(pcli, "_train_val_manifests", fake_split)
+
+    # A NON-DIRECTORY val_data_base_dir (a JSON manifest path, as the BraTS2023 profile
+    # sets). _train_val_manifests falls back to val_fraction -> the mirror must fire.
+    cfg = omegaconf.OmegaConf.create(
+        {
+            "data_base_dir": "/tmp/_unused_",
+            "val_data_base_dir": "/tmp/_does_not_exist_as_dir_/brats_all_val.json",
+            "diffusion_unet_inference": {"dim": [8, 8, 8]},
+            "autoencoder": {"num_channels": [8, 8]},
+            "paired_reward": {"num_steps": 2, "val_fraction": 0.25},
+        }
+    )
+    with pytest.raises(ValueError, match="val split"):
+        paired_reward_cli._real_inputs(
+            cfg, str(tmp_path / "native"), str(tmp_path / "cache"), torch.device("cpu")
+        )
+    assert seen["val_fraction"] == 0.25, (
+        "paired_reward.val_fraction must mirror to root even for a non-directory val_data_base_dir"
+    )

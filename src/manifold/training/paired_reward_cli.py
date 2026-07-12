@@ -302,9 +302,13 @@ def _real_inputs(
         )
     # _train_val_manifests reads ROOT cfg.val_fraction, but the paired-reward recipe
     # defines the held-out fraction under paired_reward.val_fraction. Mirror it to the
-    # root when the native-split (val_data_base_dir) path is not in use, else the val
-    # split resolves to 0 -> empty val -> the guard below raises (codex #99 P1).
-    if opt(cfg, "val_data_base_dir", None) is None:
+    # root whenever the native-split DIRECTORY path is not taken - i.e. when
+    # val_data_base_dir is unset OR a non-directory (e.g. the BraTS2023 profile's
+    # brats_all_val.json, which _train_val_manifests rejects and falls back to the
+    # fraction) - else the val split resolves to 0 -> empty val -> the guard below
+    # raises (codex #99 P1 / #100 P1).
+    val_dir = opt(cfg, "val_data_base_dir", None)
+    if not (val_dir and os.path.isdir(str(val_dir))):
         from omegaconf import OmegaConf
 
         pr_val_fraction = float(opt(cfg, "paired_reward.val_fraction", 0.0))
@@ -345,18 +349,21 @@ def _real_inputs(
     # so a target_dim mismatch silently reuses stale wrong-shape latents (the cache was
     # built at the paired training's target_dim). When the dataset exposes the real
     # cache interface, validate a hit's spatial shape against the reward config's
-    # target_dim / divisor and fail fast (codex #99 P2). Test fakes (no source/raw_latent)
-    # bypass this - they don't model the encode downsample.
+    # target_dim / divisor and fail fast (codex #99 P2). Use CEIL division:
+    # PairedNiftiVolumeDataset zero-pads each spatial dim up to a multiple of the
+    # divisor before encoding, so the latent spatial is ceil(target_dim / divisor)
+    # (floor would false-positive on non-divisible target_dim, codex #100 P2).
+    # Test fakes (no source/raw_latent) bypass this - they don't model the encode.
     if hasattr(train_ds, "raw_latent") and hasattr(train_ds, "source"):
-        expected_spatial = tuple(d // divisor for d in target_dim)
+        expected_spatial = tuple(-(-d // divisor) for d in target_dim)  # ceil(d / divisor)
         first_sid = train_ds.source.unique_sample_ids()[0]
         cached_spatial = tuple(train_ds.raw_latent(first_sid).shape[1:])
         if cached_spatial != expected_spatial:
             raise ValueError(
                 f"Cached paired latent spatial shape {cached_spatial} does not match the "
-                f"reward config's target_dim={target_dim} // divisor={divisor} = "
-                f"{expected_spatial}. The paired_train cache was built with a different "
-                f"target_dim; point --latents-dir at a matching cache or re-warm it."
+                f"reward config's target_dim={target_dim} / divisor={divisor} = "
+                f"{expected_spatial} (ceil). The paired_train cache was built with a "
+                f"different target_dim; point --latents-dir at a matching cache or re-warm it."
             )
 
     num_steps = int(opt(cfg, "paired_reward.num_steps", 8))

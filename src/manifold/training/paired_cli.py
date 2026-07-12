@@ -513,12 +513,22 @@ def _warm_data(cfg, device) -> tuple[_DataBundle, int]:
         # value, and the paired module holds no VAE (so the scale is otherwise lost
         # with the process). scripts/export_checkpoint.py reads it (via
         # torch.load(..., weights_only=True)) for --pipeline paired (codex #98 P1).
-        os.makedirs(str(cfg.model_dir), exist_ok=True)
-        scale_path = os.path.join(str(cfg.model_dir), "paired_scaling_factor.pt")
-        torch.save(torch.tensor(float(autoencoder.scaling_factor)), scale_path)
-        logger.info(
-            f"Persisted paired scaling_factor={float(autoencoder.scaling_factor):.6f} -> {scale_path}"
-        )
+        # Rank-0 only: warm_fn runs on every DDP rank, and unlike the latent-cache
+        # writes (one-per-file, sharded) this is a single shared path -> concurrent
+        # writes would corrupt it (codex #100 P2).
+        import torch.distributed as dist
+
+        is_main = (not dist.is_initialized()) or dist.get_rank() == 0
+        if is_main:
+            os.makedirs(str(cfg.model_dir), exist_ok=True)
+            scale_path = os.path.join(str(cfg.model_dir), "paired_scaling_factor.pt")
+            torch.save(torch.tensor(float(autoencoder.scaling_factor)), scale_path)
+            logger.info(
+                f"Persisted paired scaling_factor={float(autoencoder.scaling_factor):.6f}"
+                f" -> {scale_path}"
+            )
+        if dist.is_initialized():
+            dist.barrier()
         return latent_ds, val_latent_ds, autoencoder
 
     return _DataBundle(vae=autoencoder, warm_fn=warm_fn, has_val=has_val), len(vol_ds)
