@@ -1807,3 +1807,99 @@ def test_calibrate_reward_temp_rejects_zero_std():
     rm = _ConstantReward().eval()
     with pytest.raises(ValueError, match="non-positive/non-finite"):
         calibrate_reward_temp(rm, torch.randn(8, 2 * _LAT[0], *_LAT[1:]))
+
+
+# -- codex #110 round-2: builder hardening + probe denominator (P1) ------------
+
+
+def test_build_paired_bridge_noised_fakes_rejects_negative_step(paired_unet):
+    """A negative perturbed_step in the builder slips past the upper-bound-only check
+    (nodes[-1]=1.0, nodes[0]=0.0) -> a backwards bridge SDE dividing by (1-1)=0; reject
+    it (codex #110 P2). The probe already rejects this; the builder must too."""
+    from manifold.data.paired_reward_pairs import build_paired_bridge_noised_fakes
+
+    x_src = torch.randn(2, *_LAT)
+    x_tgt = torch.randn(2, *_LAT)
+    with pytest.raises(ValueError, match="perturbed_step"):
+        build_paired_bridge_noised_fakes(
+            x_src, x_tgt, paired_unet, FlowMatchBridgeGRPOScheduler(eta=0.7),
+            src_label=1, tgt_label=2, spacing=[1.0, 1.0, 1.0], num_steps=4,
+            perturbed_step=-1, G=2, batch_size=2, seed=0,
+        )
+
+
+def test_bridge_noise_probe_tied_groups_count_as_failures():
+    """A probe where 1 of 4 sources is degenerate (constant target -> tied/undefined PSNR)
+    computes acc over ALL 4 probed sources (acc=3/4=0.75), not just the 3 valid (acc=1.0).
+    Otherwise a few valid sources pass the gate despite most having no ranking signal
+    (codex #110 P1)."""
+    from manifold.training.paired_grpo_cli import bridge_noise_reward_ranking_probe
+
+    torch.manual_seed(0)
+    x_src = torch.randn(4, *_LAT)
+    shared_tgt = torch.randn(*_LAT)
+    x_tgt = shared_tgt.unsqueeze(0).repeat(4, *([1] * len(_LAT)))
+    x_tgt[3] = 0.5  # constant target -> all-inf PSNR (degenerate) for source 3
+    res = bridge_noise_reward_ranking_probe(
+        _SoftPairedPolicy(), FlowMatchBridgeGRPOScheduler(eta=0.7),
+        _QualityCorrelatedReward(shared_tgt).eval(), x_src, x_tgt, [1.0, 1.0, 1.0], 1, 2,
+        G=2, perturbed_step=1, num_steps=4, batch_size=4,
+    )
+    assert res["n"] == 4, f"n must be ALL probed sources (4), not just valid (3): {res['n']}"
+    assert res["acc"] == pytest.approx(0.75), (
+        f"acc must be 3/4=0.75 (degenerate source 3 counts as a failure), got {res['acc']}"
+    )
+
+
+def test_build_paired_bridge_noised_fakes_casts_to_generator_dtype():
+    """src_b/tgt_b are cast to the generator's dtype: a half-precision generator would
+    otherwise get fp32 inputs and crash the first UNet call with an input/weight dtype
+    mismatch (codex #110 P2). Mirrors the probe + sample_paired_latent_flow."""
+    from manifold.data.paired_reward_pairs import build_paired_bridge_noised_fakes
+
+    half_policy = _SoftPairedPolicy().half()  # fp16 stub generator
+    assert next(half_policy.parameters()).dtype == torch.float16
+    x_src = torch.randn(2, *_LAT)  # fp32 inputs (the mismatch case)
+    x_tgt = torch.randn(2, *_LAT)
+    pairs = build_paired_bridge_noised_fakes(
+        x_src, x_tgt, half_policy, FlowMatchBridgeGRPOScheduler(eta=0.7),
+        src_label=1, tgt_label=2, spacing=[1.0, 1.0, 1.0], num_steps=4,
+        perturbed_step=1, G=2, batch_size=2, seed=0,
+    )
+    # Inputs were cast to fp16 before the rollout -> outputs are fp16. Before the fix,
+    # src_b stayed fp32 -> outputs were fp32 (the dtype mismatch the real UNet would crash on).
+    assert pairs.losers.dtype == torch.float16
+    assert pairs.winners.dtype == torch.float16
+
+
+def test_build_paired_bridge_noised_fakes_runs_under_no_grad(monkeypatch):
+    """The builder runs under @torch.no_grad: the rollout has grad disabled at every UNet
+    call, so a requires_grad generator (e.g. a UNet taken straight from a pipeline) can't
+    retain UNet graphs and OOM. Mirrors the probe (codex #110 P2)."""
+    import manifold.modules.paired_grpo as pgmod
+    from manifold.data.paired_reward_pairs import build_paired_bridge_noised_fakes
+
+    grad_states = []
+    real = pgmod._paired_unet_call
+
+    def spy(*a, **kw):
+        grad_states.append(torch.is_grad_enabled())
+        return real(*a, **kw)
+
+    monkeypatch.setattr(pgmod, "_paired_unet_call", spy)
+    gen = _SoftPairedPolicy()
+    for p in gen.parameters():
+        p.requires_grad_(True)
+    x_src = torch.randn(2, *_LAT)
+    x_tgt = torch.randn(2, *_LAT)
+    with torch.enable_grad():  # even with grad enabled outside, the builder must disable it
+        build_paired_bridge_noised_fakes(
+            x_src, x_tgt, gen, FlowMatchBridgeGRPOScheduler(eta=0.7),
+            src_label=1, tgt_label=2, spacing=[1.0, 1.0, 1.0], num_steps=4,
+            perturbed_step=1, G=2, batch_size=2, seed=0,
+        )
+    assert grad_states, "_paired_unet_call was called"
+    assert all(not g for g in grad_states), (
+        "the builder must run under no_grad (grad disabled at every UNet call); "
+        f"observed grad states: {grad_states}"
+    )

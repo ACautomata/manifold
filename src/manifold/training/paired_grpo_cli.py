@@ -325,9 +325,11 @@ def bridge_noise_reward_ranking_probe(
     unet.eval()
     reward_model.eval()
     agree = 0
-    scored = 0
+    probed = 0  # every attempted source (tied groups count as failures: acc = agree/probed)
+    scored = 0  # sources with a real ranking signal (for the all-degenerate guard below)
     for s in range(0, n, batch_size):
         b = min(batch_size, n - s)
+        probed += b  # count every attempted source (tied groups lower acc via the denominator)
         src_b = src[s : s + b].to(device=device, dtype=dtype)
         tgt_b = tgt[s : s + b].to(device=device, dtype=dtype)
         # Per-source (dim-2) spacing: SLICE to the current batch's sources, then expand
@@ -389,10 +391,13 @@ def bridge_noise_reward_ranking_probe(
         scored += int(valid.sum())
     if scored == 0:
         raise ValueError(
-            "bridge-noise reward-ranking probe scored 0 sources (all val targets "
-            "degenerate - constant volumes); pass non-constant x_tgt."
+            "bridge-noise reward-ranking probe scored 0 sources with a ranking signal "
+            "(all groups degenerate - tied rewards or constant val targets); pass "
+            "non-constant x_tgt and a reward that distinguishes bridge-noised fakes."
         )
-    return {"acc": agree / scored, "n": scored, "G": G,
+    # acc over ALL probed sources: tied/degenerate groups count as non-agreement (failures),
+    # so a mostly-tied probe can't pass the gate on a few lucky non-tied sources (codex #110 P1).
+    return {"acc": agree / probed, "n": probed, "G": G,
             "perturbed_step": int(perturbed_step), "eta": float(scheduler.eta)}
 
 

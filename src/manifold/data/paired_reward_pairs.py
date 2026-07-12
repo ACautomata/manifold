@@ -449,6 +449,7 @@ def build_paired_reward_inputs(
     return PairedRewardInputs(train_pair_ds=train_pairs, val_pair_ds=val_pairs, val_probe=probe)
 
 
+@torch.no_grad()
 def build_paired_bridge_noised_fakes(
     x_src: Tensor | Sequence[Tensor],
     x_tgt: Tensor | Sequence[Tensor],
@@ -494,6 +495,11 @@ def build_paired_bridge_noised_fakes(
     if src.shape != tgt.shape:
         raise ValueError(f"x_src {tuple(src.shape)} and x_tgt {tuple(tgt.shape)} must match.")
     device = _resolve_rollout_device(generator, device)
+    # Coerce to the generator's dtype: if the paired generator is loaded/cast in
+    # half/bfloat16 to fit memory, fp32 inputs crash the first UNet call with an
+    # input/weight dtype mismatch. Mirrors the probe path + sample_paired_latent_flow
+    # (codex #110 P2).
+    dtype = next(generator.parameters()).dtype
     # Move spacing to the rollout device: this builder calls _heun_rollout_paired directly
     # (which does NOT move spacing), so a CPU spacing into a CUDA generator crashes the
     # paired UNet's spacing conditioning. Mirrors singular_branch_rollout_paired (codex
@@ -504,18 +510,20 @@ def build_paired_bridge_noised_fakes(
     src_lab_full = _as_label_tensor(src_label, n, device)
     tgt_lab_full = _as_label_tensor(tgt_label, n, device)
     nodes = bridge_scheduler.set_timesteps(num_steps, device=device)
-    if perturbed_step >= num_steps - 1:
+    if perturbed_step < 0 or perturbed_step >= num_steps - 1:
+        # A negative perturbed_step slips past an upper-bound-only check (nodes[-1]=1.0,
+        # nodes[0]=0.0) -> a backwards bridge step dividing by (1-1)=0 (codex #110 P2).
         raise ValueError(
-            f"perturbed_step ({perturbed_step}) must be < num_steps-1 ({num_steps-1}) to "
-            "avoid the §7 var-collapse terminal."
+            f"perturbed_step ({perturbed_step}) must be in [0, num_steps-1) "
+            f"(= [0, {num_steps - 1})) to avoid the §7 var-collapse terminal."
         )
     gen = torch.Generator(device=device).manual_seed(seed)
     generator.eval()
     winners, losers = [], []
     for start in range(0, n, batch_size):
         b = min(batch_size, n - start)
-        src_b = src[start : start + b].to(device)
-        tgt_b = tgt[start : start + b].to(device)
+        src_b = src[start : start + b].to(device=device, dtype=dtype)
+        tgt_b = tgt[start : start + b].to(device=device, dtype=dtype)
         spacing_b = (
             spacing[start : start + b] if isinstance(spacing, Tensor) and spacing.dim() == 2 else spacing
         )
