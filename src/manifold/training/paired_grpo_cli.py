@@ -97,11 +97,387 @@ class GuardedModelCheckpoint(ModelCheckpoint):
             return False
         if self.guardrail_metric is not None and self.guardrail_min is not None:
             gr = trainer.callback_metrics.get(self.guardrail_metric)
+            # Reject non-finite (NaN/Inf) guardrail values: a NaN val/ssim (from an
+            # unstable decode/SSIM) makes ``float(gr) < guardrail_min`` False, so a
+            # NaN-ssim checkpoint would slip past the guardrail and be selected as "best".
+            # Treat missing-or-non-finite as below the guardrail (codex #108).
             if gr is None or not torch.isfinite(gr) or float(gr) < float(self.guardrail_min):
-                # Reject non-finite (NaN/Inf) + below guardrail (codex #108) -> never eligible for "best" (save_last still
-                # keeps the latest). The PSNR callback's val/ssim is the observable.
                 return False
         return super().check_monitor_top_k(trainer, current)
+
+
+class EtaRampCallback(pl.Callback):
+    """Ramps the bridge scheduler's ``eta`` from ``eta_min`` -> ``eta_max`` over the
+    first ``ramp_fraction`` of total optimizer steps, then holds (ADR-0024 Q7).
+
+    The paired UNet was trained on a **zero-noise** deterministic transport (unlike the
+    JiT UNet, trained on noisy inputs), so a static-high ``eta`` shocks it (off-manifold
+    suffix inputs -> degraded ``x_hat_1`` -> contaminated reward, off the grad path).
+    The ramp bounds both the reward-spread OOD and the suffix-init OOD early; it is
+    ramp-and-hold, not a permanent cut (ADR-0015 rejected static ``eta`` reduction as
+    the *fix*; the ramp is a transient warm-up). The bridge rollout reads
+    ``scheduler.eta`` at each ``training_step``, so updating it at
+    ``on_train_batch_start`` (before the rollout) is the load-bearing point.
+    """
+
+    def __init__(
+        self, scheduler: FlowMatchBridgeGRPOScheduler,
+        eta_min: float, eta_max: float, ramp_fraction: float = 0.3,
+    ):
+        super().__init__()
+        self.scheduler = scheduler
+        self.eta_min = float(eta_min)
+        self.eta_max = float(eta_max)
+        self.ramp_fraction = float(ramp_fraction)
+
+    def eta_at(self, step: int, total_steps: int) -> float:
+        """The ramped ``eta`` at ``step`` of ``total_steps`` (pure, testable).
+
+        ``step`` / ``total_steps`` are BATCH counts (not optimizer steps): under manual
+        optimization ``trainer.global_step`` counts ``opt.step()`` calls (= ``len(eta_step_list)``
+        per batch), so driving the ramp off it would finish ``len(eta_step_list)``x too early.
+        The callback passes ``batch_idx`` + ``estimated_stepping_batches`` (both batch counts)."""
+        ramp_steps = max(1.0, self.ramp_fraction * float(total_steps))
+        frac = min(1.0, float(step) / ramp_steps)
+        return self.eta_min + (self.eta_max - self.eta_min) * frac
+
+    def on_train_batch_start(self, trainer, pl_module, batch, batch_idx) -> None:
+        # Fit-wide batch index (NOT epoch-local batch_idx): batch_idx resets to 0 each
+        # epoch while estimated_stepping_batches spans the WHOLE fit, so feeding batch_idx
+        # restarts the ramp at eta_min every epoch and never holds eta_max in multi-epoch
+        # runs (codex #110 P1). current_epoch * num_training_batches + batch_idx is the
+        # fit-wide batch counter that matches estimated_stepping_batches' denominator.
+        total = int(trainer.estimated_stepping_batches) or 1
+        per_epoch = int(trainer.num_training_batches) or 1
+        fit_step = int(trainer.current_epoch) * per_epoch + int(batch_idx)
+        self.scheduler.eta = self.eta_at(fit_step, total)
+
+
+def calibrate_reward_temp(reward_model, samples: torch.Tensor, *, batch_size: int = 8) -> float:
+    """Score real ``cat([x_src, x_tgt])`` pairs through the paired reward; return the std.
+
+    The tanh reward bound's ``reward_temp`` should be ``~`` the real-data reward std so
+    the in-distribution range spreads across the tanh's soft-clip (ADR-0015 / ADR-0024).
+    Calibration scores a sample of REAL condition-aware pairs (``[N, 2*C_latent, ...]``,
+    built offline) + returns ``rewards.std()`` (Bessel). The paired PatchGAN scored real
+    val/train latents at ``-9.7~-11.2 +- 8`` (range ``[-21, +26]``) in the noise->data
+    calibration; the paired reward's scale is measured the same way at G2RPO startup.
+
+    Runs under ``no_grad`` + ``eval`` (a forward-only measurement - the reward is frozen).
+    """
+    reward_model.eval()
+    rewards = []
+    with torch.no_grad():
+        for s in range(0, int(samples.shape[0]), int(batch_size)):
+            rewards.append(reward_model(samples[s : s + batch_size]).float())
+    r = torch.cat(rewards)
+    if r.numel() < 2:
+        raise ValueError(
+            f"need >=2 real reward samples to compute a std, got {r.numel()}; "
+            "pass more calibration samples."
+        )
+    std = r.std()
+    # Reject a zero / non-finite std (constant or NaN/Inf reward scores): stored as the
+    # tanh bound's reward_temp it would divide rewards by 0 -> NaN advantages with no
+    # ranking signal (codex #110 P2). Fail closed so a degenerate calibration can't
+    # silently poison the next tanh-bounded run.
+    if not bool(torch.isfinite(std)) or float(std) <= 0.0:
+        raise ValueError(
+            f"calibrated reward_temp is non-positive/non-finite (std={float(std)}; the "
+            "calibration rewards are constant or unstable). Can't set reward_temp=0 "
+            "(tanh bound divides by it); pass more/diverse calibration samples or set "
+            "reward_temp explicitly in the config."
+        )
+    return float(std)
+
+
+def _calibrate_reward_temp_from_val(module, val_ds, *, n: int = 16) -> None:
+    """Measure ``reward_temp`` from real ``cat([x_src, x_tgt])`` val pairs; mutate the module.
+
+    Pulls up to ``n`` real val pairs (each item's ``src_latent`` + ``tgt_latent`` are
+    already scaled - ADR-0021), concatenates them into the condition-aware
+    ``[N, 2*C_latent, ...]`` layout the paired reward scores, and sets
+    ``module.reward_temp`` to the rewards' std (ADR-0015 / ADR-0024). A no-op when the
+    val set has no tgt or the bound is not tanh - the config value stands.
+    """
+    if module.reward_bound != "tanh":
+        return
+    samples = []
+    for i in range(min(n, len(val_ds))):
+        it = val_ds[i]
+        src = it.get("src_latent")
+        tgt = it.get("tgt_latent")
+        if src is None or tgt is None:
+            break  # no tgt in this val set -> skip calibration (config value stands)
+        samples.append(torch.cat([src, tgt], dim=0))
+    if len(samples) < 2:
+        _log.warning(
+            "reward_temp calibration skipped (only %d val pairs with tgt); using the "
+            "config reward_temp=%s.", len(samples), module.reward_temp,
+        )
+        return
+    batch = torch.stack(samples).to(next(module.reward_model.parameters()).device)
+    module.reward_temp = calibrate_reward_temp(module.reward_model, batch)
+    _log.info("Calibrated reward_temp=%.4f from %d real val pairs (reward std).",
+              module.reward_temp, len(samples))
+
+
+# -- Slice 4 (#106): the launch gate ------------------------------------------
+#
+# A standalone bridge-noise reward-ranking probe (the HARD gate): the paired reward
+# was trained real-vs-DETERMINISTIC-fake (ADR-0020); G2RPO scores bridge-noised fakes.
+# If the reward can't rank them (acc ~ random), G2RPO silently random-walks (R1). The
+# probe generates G bridge-branch siblings per source at eta_max, scores reward +
+# PSNR-to-x_tgt, and checks the ranking agreement; acc > threshold passes, else the
+# launch refuses (escalation: retrain the reward with bridge-noised fakes).
+
+
+def _latent_psnr(pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+    """Per-sample latent-space PSNR (dB) - higher = closer to target.
+
+    A quality surrogate for the probe (the honest metric is image-space PSNR via the
+    PSNR callback, but the probe needs a cheap per-sibling score over many bridge draws).
+    ``data_range`` is the per-sample target ``[max - min]``; a degenerate (constant)
+    target returns +inf (the sibling ranking is undefined - excluded by the caller).
+    """
+    pred = pred.float()
+    target = target.float()
+    n = pred.shape[0]
+    # Allocate on pred.device: z_K / rewards live on the policy device (CUDA at launch),
+    # so a CPU out -> cross-device argmax/comparison crashes the GPU launch gate right
+    # after a successful rollout (codex #110 P2).
+    out = torch.full((n,), float("inf"), device=pred.device)
+    for i in range(n):
+        t = target[i : i + 1]
+        rng = float(t.max() - t.min())
+        if rng <= 0.0:
+            continue  # constant target - PSNR undefined
+        mse = float((pred[i : i + 1] - t).pow(2).mean())
+        if mse <= 0.0:
+            out[i] = 100.0  # bit-identical -> cap at 100 dB
+        else:
+            out[i] = 10.0 * torch.log10(torch.tensor(rng * rng / mse, device=pred.device))
+    return out
+
+
+@torch.no_grad()
+def bridge_noise_reward_ranking_probe(
+    unet, scheduler: FlowMatchBridgeGRPOScheduler, reward_model,
+    x_src: torch.Tensor, x_tgt: torch.Tensor, spacing, src_label, tgt_label,
+    *,
+    G: int = 2, perturbed_step: int = 1, num_steps: int = 8,
+    batch_size: int = 4,
+    reward_bound: str = "none", reward_temp: float = 8.0,
+) -> dict:
+    """The bridge-noise reward-ranking launch gate (ADR-0024 R1 / #106).
+
+    For each source: generate ``G`` bridge-branch siblings (one bridge SDE draw off the
+    anchor at ``perturbed_step`` at ``eta_max``, deterministic Heun suffix to ``z_K``),
+    score with the frozen paired reward, and compute a PSNR-to-``x_tgt`` quality
+    surrogate per sibling. The ranking agreement (top-1 acc: does the reward's
+    best-ranked sibling match the PSNR's best?) tells whether the reward can rank
+    bridge-noised fakes - the signal ``group_advantage`` consumes. ``acc > threshold``
+    (default 0.6) passes the gate; ``acc ~ 1/G`` (random) means G2RPO would silently
+    random-walk -> refuse the launch + retrain the reward with bridge-noised fakes.
+
+    Default ``G=2`` (pairwise preference, matching the paired reward's Bradley-Terry
+    training - random baseline 0.5; the design's ``acc ~ 0.5 => fail``).
+
+    ``reward_bound`` / ``reward_temp`` apply the SAME transform training uses to build
+    advantages (``tanh(r / reward_temp)``): ranking RAW logits can pass the gate on
+    OOD-large logits that tanh saturates to identical values (zero training signal) -
+    mirror ``PairedGRPOModule._bound_reward`` (codex #110 P2).
+
+    Returns:
+        ``{"acc", "n", "G", "perturbed_step", "eta"}`` - ``acc`` is the fraction of
+        sources whose reward's top-1 sibling matches the PSNR's top-1.
+    """
+    from ..modules.paired_grpo import _heun_rollout_paired, _paired_unet_call
+    from ..modules.paired_sampler import _as_label_tensor
+
+    device = next(unet.parameters()).device
+    dtype = next(unet.parameters()).dtype
+    src = x_src if isinstance(x_src, torch.Tensor) else torch.stack(list(x_src))
+    tgt = x_tgt if isinstance(x_tgt, torch.Tensor) else torch.stack(list(x_tgt))
+    if src.shape != tgt.shape:
+        raise ValueError(f"x_src {tuple(src.shape)} and x_tgt {tuple(tgt.shape)} must match.")
+    n = src.shape[0]
+    spatial = src.shape[1:]
+    spacing_t = torch.as_tensor(spacing, device=device)
+    src_labels_full = _as_label_tensor(src_label, n, device)
+    tgt_labels_full = _as_label_tensor(tgt_label, n, device)
+    nodes = scheduler.set_timesteps(num_steps, device=device)  # (num_steps+1,)
+    if perturbed_step < 0 or perturbed_step >= num_steps - 1:
+        # A negative perturbed_step slips past an upper-bound-only check (nodes[-1]=1.0,
+        # nodes[0]=0.0) -> a backwards bridge step dividing by (1-1)=0 (codex #110 P2).
+        raise ValueError(
+            f"perturbed_step ({perturbed_step}) must be in [0, num_steps-1) "
+            f"(= [0, {num_steps - 1})) to avoid the §7 var-collapse terminal the probe "
+            "branches at."
+        )
+    if G < 2:
+        # G=1 makes every group trivially agree (argmax of a single element = 0 for both
+        # reward and psnr) -> acc=1.0 with no ranking signal (codex #110 P2).
+        raise ValueError(
+            f"probe requires G>=2 for a ranking signal (got G={G}); G=1 trivially passes "
+            "the gate."
+        )
+    unet.eval()
+    reward_model.eval()
+    agree = 0
+    probed = 0  # every attempted source (tied groups count as failures: acc = agree/probed)
+    scored = 0  # sources with a real ranking signal (for the all-degenerate guard below)
+    # Wrap the rollout in CUDA autocast (mirrors singular_branch_rollout_paired + the
+    # training fit, which runs 16-mixed): on the real path the policy is fp32 but the fit
+    # runs under autocast, so an autocast-less probe allocates fp32 activations and can OOM
+    # before the gate reports (codex #110 P2). The explicit reward-input cast below still
+    # holds (belt-and-braces - autocast would also coerce it).
+    with torch.autocast(device_type=device.type, enabled=device.type == "cuda"):
+        for s in range(0, n, batch_size):
+            b = min(batch_size, n - s)
+            probed += b  # count every attempted source (tied groups lower acc via the denominator)
+            src_b = src[s : s + b].to(device=device, dtype=dtype)
+            tgt_b = tgt[s : s + b].to(device=device, dtype=dtype)
+            # Per-source (dim-2) spacing: SLICE to the current batch's sources, then expand
+            # by G below. repeat_interleave(b) here would instead repeat ALL n rows b times
+            # (n*b rows vs b sources) and mis-condition the paired UNet's spacing input
+            # (codex #110 P1).
+            spacing_b = spacing_t[s : s + b] if spacing_t.dim() == 2 else spacing_t
+            src_lab = src_labels_full[s : s + b] if isinstance(src_labels_full, torch.Tensor) else src_labels_full
+            tgt_lab = tgt_labels_full[s : s + b] if isinstance(tgt_labels_full, torch.Tensor) else tgt_labels_full
+            # Anchor rollout to the perturbed step (the deployed-Heun path from x_src).
+            anchor_z = _heun_rollout_paired(
+                unet, scheduler, src_b, src_b, nodes, spacing_b, src_lab, tgt_lab, 0, perturbed_step
+            )
+            z_k = anchor_z[perturbed_step]
+            t_k = float(nodes[perturbed_step])
+            t_next = float(nodes[perturbed_step + 1])
+            # G bridge siblings off z_k at eta_max (the bridge SDE draw).
+            x0 = _paired_unet_call(unet, z_k, src_b, t_k, spacing_b, src_lab, tgt_lab)
+            mean_old, std_old = scheduler.sde_step_mean(x0, z_k, t_k, t_next)
+            xi = torch.randn(b, G, *spatial, device=device, dtype=dtype)
+            z_kplus1 = mean_old.unsqueeze(1) + float(std_old) * xi  # (b, G, *spatial)
+            # Deterministic Heun suffix to the terminal z_K (thread x_src_bg).
+            src_labels_bg = src_lab.repeat_interleave(G) if isinstance(src_lab, torch.Tensor) else src_lab
+            tgt_labels_bg = tgt_lab.repeat_interleave(G) if isinstance(tgt_lab, torch.Tensor) else tgt_lab
+            spacing_bg = spacing_b.repeat_interleave(G, dim=0) if spacing_b.dim() == 2 else spacing_b
+            x_src_bg = src_b.repeat_interleave(G, dim=0)
+            z_g = z_kplus1.reshape(b * G, *spatial)
+            suffix = _heun_rollout_paired(
+                unet, scheduler, z_g, x_src_bg, nodes, spacing_bg, src_labels_bg, tgt_labels_bg,
+                perturbed_step + 1, num_steps,
+            )
+            z_K = suffix[-1]  # (b·G, *spatial)
+            # Reward + PSNR-to-x_tgt per sibling, then per-source top-1 agreement.
+            reward_input = torch.cat([x_src_bg, z_K], dim=1)
+            # Cast the reward input to the reward model's dtype: the rollout runs in the
+            # POLICY dtype (an fp16/bfloat16 launch policy to fit 3D), but the frozen
+            # RewardModel is fp32, so feeding the policy-dtype cat straight in is an
+            # input/weight dtype mismatch (singular_branch_rollout_paired wraps its whole
+            # rollout in cuda autocast; the probe does not, so cast explicitly) (codex #110 P2).
+            # Fall back to fp32 when the model has no parameters (test stubs) - a real
+            # PatchGAN always has parameters, so this is the safe default, not a silent path.
+            _params = list(reward_model.parameters())
+            reward_dtype = _params[0].dtype if _params else torch.float32
+            rewards = reward_model(reward_input.to(dtype=reward_dtype)).float().reshape(b, G)
+            # Apply the SAME reward transform training uses to build advantages: with the tanh
+            # bound, training consumes tanh(r / reward_temp); ranking RAW logits can pass the
+            # gate on OOD-large logits that tanh saturates to identical values (zero training
+            # signal). Mirror PairedGRPOModule._bound_reward (codex #110 P2).
+            if reward_bound == "tanh":
+                rewards = torch.tanh(rewards / float(reward_temp))
+            elif reward_bound != "none":
+                raise ValueError(
+                    f"unknown reward_bound {reward_bound!r} (expected 'none' or 'tanh')."
+                )
+            tgt_bg = tgt_b.repeat_interleave(G, dim=0)
+            psnr = _latent_psnr(z_K, tgt_bg).reshape(b, G)
+            # Exclude degenerate groups: a constant target (all-inf PSNR), a fully-tied reward
+            # OR PSNR (zero spread), OR a TIED MAXIMUM (e.g. tanh-saturated rewards like
+            # [1, 1, 0.8] - spread>0 but the top value is shared, so argmax breaks the tie by
+            # sibling order, making "agreement" an artifact of indexing, not ranking signal).
+            # Require the top reward AND top PSNR to be unique (codex #110 P2 round-3).
+            # Also reject non-finite rewards: with reward_bound='none' an OOD bridge-noised
+            # sibling can overflow to inf, and a group like [inf, 0] would otherwise pass as a
+            # valid unique ranking (training's group_advantage would NaN on inf) (codex #110 P2).
+            valid = torch.isfinite(psnr).all(dim=1) & torch.isfinite(rewards).all(dim=1)
+            reward_max = rewards.max(dim=1, keepdim=True).values
+            psnr_max = psnr.max(dim=1, keepdim=True).values
+            reward_top_unique = (rewards == reward_max).sum(dim=1) == 1
+            psnr_top_unique = (psnr == psnr_max).sum(dim=1) == 1
+            reward_spread = reward_max.squeeze(1) - rewards.min(dim=1).values
+            psnr_spread = psnr_max.squeeze(1) - psnr.min(dim=1).values
+            valid = valid & (reward_spread > 0) & (psnr_spread > 0) & reward_top_unique & psnr_top_unique
+            if not valid.any():
+                continue
+            reward_top = rewards[valid].argmax(dim=1)
+            psnr_top = psnr[valid].argmax(dim=1)
+            agree += int((reward_top == psnr_top).sum())
+            scored += int(valid.sum())
+    if scored == 0:
+        raise ValueError(
+            "bridge-noise reward-ranking probe scored 0 sources with a ranking signal "
+            "(all groups degenerate - tied rewards or constant val targets); pass "
+            "non-constant x_tgt and a reward that distinguishes bridge-noised fakes."
+        )
+    # acc over ALL probed sources: tied/degenerate groups count as non-agreement (failures),
+    # so a mostly-tied probe can't pass the gate on a few lucky non-tied sources (codex #110 P1).
+    return {"acc": agree / probed, "n": probed, "G": G,
+            "perturbed_step": int(perturbed_step), "eta": float(scheduler.eta)}
+
+
+def _run_probe(module, inputs, cfg, *, n_probe: int = 64) -> float:
+    """Pull real val (src, tgt) pairs + run the bridge-noise reward-ranking probe.
+
+    The probe gate runs on the INIT policy (before any G2RPO update) at eta_max - the
+    worst case for the reward's bridge-noised-fake ranking (the policy is the smooth
+    slow-EMA arm; its bridge siblings are the fakes G2RPO would score). Returns the acc
+    (fraction of sources whose reward's top-1 sibling matches PSNR's top-1).
+
+    ``n_probe`` defaults to 64 (the hard-gate minimum): with G=2 + threshold=0.6, n=16
+    lets a random (acc~0.5) reward pass ~23% of the time (>=10 agreements), so the
+    launch gate needs more samples (codex #110 P2). The CLI ``--probe-n-samples`` knob
+    overrides it.
+    """
+    gcfg = cfg.paired_grpo_train
+    num_steps = int(opt(gcfg, "num_steps", 8))
+    # Default the probe to a single mid first-half step (branch at step 1, away from the
+    # var-collapse terminal) - the most informative single bridge-noise level.
+    perturbed_step = int(opt(cfg, "paired_grpo.probe_step", 1))
+    G = int(opt(cfg, "paired_grpo.probe_G", 2))
+    # Use the configured training batch_size (not the probe fn default of 4): the committed
+    # recipe sets batch_size=2, so the default 2x over-allocates per-batch source/target
+    # rollouts (+ G siblings) on memory-limited 3D runs and can OOM before the gate reports
+    # (codex #110 P2).
+    batch_size = int(opt(gcfg, "batch_size", 4))
+    # Pull (src, tgt) val pairs (the probe needs the GT target for the PSNR surrogate).
+    srcs, tgts, spacings, src_labs, tgt_labs = [], [], [], [], []
+    for i in range(min(n_probe, len(inputs.val_ds))):
+        it = inputs.val_ds[i]
+        if it.get("src_latent") is None or it.get("tgt_latent") is None:
+            break
+        srcs.append(it["src_latent"])
+        tgts.append(it["tgt_latent"])
+        spacings.append(torch.as_tensor(it["spacing"], dtype=torch.float32))
+        src_labs.append(torch.as_tensor(it["src_label"], dtype=torch.long))
+        tgt_labs.append(torch.as_tensor(it["tgt_label"], dtype=torch.long))
+    if len(srcs) < 2:
+        raise ValueError(
+            "the probe needs >=2 val pairs with tgt_latent (the PSNR surrogate); the "
+            "val_ds does not carry them. Run on the real path (val carries tgt for PSNR)."
+        )
+    x_src = torch.stack(srcs).to(module.device)
+    x_tgt = torch.stack(tgts).to(module.device)
+    spacing = torch.stack(spacings)
+    res = bridge_noise_reward_ranking_probe(
+        module.unet, module.scheduler, module.reward_model, x_src, x_tgt, spacing,
+        torch.stack(src_labs), torch.stack(tgt_labs),
+        G=G, perturbed_step=perturbed_step, num_steps=num_steps, batch_size=batch_size,
+        reward_bound=module.reward_bound, reward_temp=module.reward_temp,
+    )
+    _log.info("bridge-noise probe: acc=%.3f (n=%d, G=%d, step=%d, eta=%.3f)",
+              res["acc"], res["n"], res["G"], res["perturbed_step"], res["eta"])
+    return res["acc"]
 
 
 def _build_checkpoint(
@@ -136,7 +512,10 @@ def _build_checkpoint(
         # val/mean_reward is rank-0-only (validation_step gate); drop the monitor
         # under DDP (save_last + save_top_k=1 keep the latest). val/psnr is a global
         # cross-rank mean (the PSNR callback all_gathers) -> monitor stays on (#105).
-        return ModelCheckpoint(filename="paired-grpo-{epoch:03d}", **{**common, "save_top_k": 1})  # force save_top_k=1 w/ no monitor (codex #108)
+        # Force save_top_k=1 (not the caller's): with no monitor there is no metric to
+        # rank by, so keeping >1 is pointless disk waste - mirrors grpo_cli's DDP
+        # fallback (codex #108).
+        return ModelCheckpoint(filename="paired-grpo-{epoch:03d}", **{**common, "save_top_k": 1})
     ckwt = dict(
         filename=f"paired-grpo-{{epoch:03d}}-{{{monitor_metric}:.3f}}",
         monitor=monitor_metric,
@@ -169,6 +548,8 @@ def run_paired_grpo_training(
     ckpt_path: str | None = None,
     ssim_guardrail: float | None = 0.9,
     psnr_num_inference_steps: int | None = None,
+    eta_min: float | None = None,
+    eta_ramp_fraction: float = 0.3,
 ) -> tuple[pl.Trainer, ModelCheckpoint]:
     """Assemble callbacks + ``Trainer`` and ``fit`` the G2RPO module (the core seam).
 
@@ -181,6 +562,12 @@ def run_paired_grpo_training(
     the #103 tracer default. ``val/mean_reward`` stays logged either way (the RL
     progress signal, rank-0-only).
 
+    When ``eta_min`` is set (#104), attaches :class:`EtaRampCallback` warming the
+    bridge ``eta`` from ``eta_min`` -> ``scheduler.eta`` (eta_max) over the first
+    ``eta_ramp_fraction`` of total steps, then holds (ADR-0024 Q7 - the paired UNet
+    is zero-noise-trained; a static-high eta shocks it). ``None`` (the CPU smoke) keeps
+    a static eta.
+
     Args:
         inputs: the train/val source-latent datasets + the policy/reward/scheduler
             (+ the optional KL reference + the optional VAE for PSNR).
@@ -192,6 +579,8 @@ def run_paired_grpo_training(
             top-k). Default 0.9.
         psnr_num_inference_steps: Heun steps for the PSNR rollout (defaults to
             ``module.num_steps`` - the deployed resolution).
+        eta_min: the ramp start (ADR-0024 Q7); ``None`` disables the ramp.
+        eta_ramp_fraction: fraction of total steps over which eta ramps.
         ckpt_path: optional warm-start / resume checkpoint passed to ``fit``.
     """
     pl.seed_everything(seed, workers=True)
@@ -207,6 +596,17 @@ def run_paired_grpo_training(
         multi_gpu=multi_gpu, guardrail_metric=guardrail, guardrail_min=ssim_guardrail,
     )
     callbacks: list[pl.Callback] = [ckpt]
+    if eta_min is not None:
+        # The eta warm-up (ADR-0024 Q7): ramp eta_min -> eta_max (scheduler.eta) over
+        # the first eta_ramp_fraction of steps, then hold. The rollout reads
+        # scheduler.eta at training_step, so on_train_batch_start is the load-bearing
+        # hook. ``eta_min`` is the ramp start; the scheduler's current ``eta`` is eta_max.
+        callbacks.append(
+            EtaRampCallback(
+                module.scheduler, eta_min=float(eta_min), eta_max=float(module.scheduler.eta),
+                ramp_fraction=float(eta_ramp_fraction),
+            )
+        )
     if psnr_active:
         pipeline = PairedLatentFlowPipeline(module.unet, inputs.vae, module.scheduler)
         psnr_steps = int(psnr_num_inference_steps) if psnr_num_inference_steps is not None else module.num_steps
@@ -278,6 +678,27 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         action="store_true",
         help="run a tiny-config measurement (it/s + peak GPU memory) and exit — the "
         "#106 launch gate; size G / eta_step_list / n_epochs before the full run.",
+    )
+    parser.add_argument(
+        "--probe",
+        action="store_true",
+        help="run the bridge-noise reward-ranking launch gate (ADR-0024 R1) and exit: "
+        "generate G bridge-branch siblings per source at eta_max, check the reward "
+        "ranking agrees with a PSNR-to-x_tgt surrogate. Passes (rc=0) at acc >= "
+        "--probe-threshold; fails (rc=1) when the reward can't rank bridge-noised "
+        "fakes (escalation: retrain the reward with bridge-noised fakes).",
+    )
+    parser.add_argument(
+        "--probe-threshold", type=float, default=0.6,
+        help="bridge-noise reward-ranking acc threshold to pass --probe (default 0.6).",
+    )
+    parser.add_argument(
+        "--probe-n-samples", type=int, default=64,
+        help="number of val sources the bridge-noise probe ranks (default 64). The hard "
+        "launch gate needs enough samples that a random (acc~1/G) reward can't pass by "
+        "chance: with G=2 + threshold=0.6, n=16 lets a random reward pass ~23% of the time "
+        "(>=10 agreements), so the default is larger; raise for a stricter gate, lower for "
+        "a faster smoke (codex #110 P2).",
     )
     parser.add_argument(
         "--resume", default=None, help="resume a Lightning .ckpt (trainer.fit(ckpt_path=...))."
@@ -356,8 +777,48 @@ def main(argv: list[str] | None = None, *, data_provider=None) -> int:
         reward_temp=float(opt(gcfg, "reward_temp", 8.0)),
     )
 
+    # Calibrate reward_temp from real val pairs at startup (ADR-0015/0024): the tanh
+    # bound's temperature ~ the real-data reward std. The CPU smoke (data_provider)
+    # uses the config value; the real path measures it.
+    if data_provider is None:
+        _calibrate_reward_temp_from_val(module, inputs.val_ds)
+
+    if args.probe:
+        # The bridge-noise reward-ranking launch gate (ADR-0024 R1): refuse the launch
+        # if the reward can't rank bridge-noised fakes (G2RPO would silently random-walk).
+        try:
+            acc = _run_probe(module, inputs, cfg, n_probe=int(args.probe_n_samples))
+        except ValueError as exc:
+            # A degenerate probe (all groups tied / constant reward / non-finite) can't
+            # produce an acc; that's a GATE FAILURE (the reward can't rank bridge-noised
+            # fakes), not a crash. Return 1 + the escalation path, mirroring the low-acc
+            # branch below (codex #110 P2).
+            _log.error(
+                "G2RPO launch gate FAILED: the probe produced no ranking signal (%s). "
+                "G2RPO would silently random-walk (R1). Retrain the paired reward with "
+                "bridge-noised fakes (build_paired_bridge_noised_fakes) before retrying.",
+                exc,
+            )
+            return 1
+        threshold = float(args.probe_threshold)
+        passed = acc >= threshold
+        print(
+            f"[manifold-train-paired-grpo] probe: bridge-noise reward-ranking acc={acc:.3f} "
+            f"(G=...) | threshold={threshold:.2f} | {'PASS' if passed else 'FAIL'}"
+        )
+        if not passed:
+            _log.error(
+                "G2RPO launch gate FAILED: the reward can't rank bridge-noised fakes "
+                "(acc=%.3f < %.2f). G2RPO would silently random-walk (R1). Retrain the "
+                "paired reward with bridge-noised fakes (build_paired_bridge_noised_fakes) "
+                "before retrying.", acc, threshold,
+            )
+            return 1
+        return 0
+
     if args.measure:
         # The #106 launch-gate measurement: a 1-epoch fit timing + peak GPU memory.
+        # Forward eta_min so the measurement reflects the real (ramped) training path.
         it_per_s, peak, elapsed = run_paired_grpo_measurement(
             module=module,
             inputs=inputs,
@@ -365,6 +826,8 @@ def main(argv: list[str] | None = None, *, data_provider=None) -> int:
             devices=args.num_gpus if args.num_gpus > 1 else 1,
             batch_size=int(gcfg.batch_size),
             seed=seed,
+            eta_min=(float(opt(gcfg, "eta_min", 0.1)) if bool(opt(gcfg, "eta_ramp", True)) else None),
+            eta_ramp_fraction=float(opt(gcfg, "eta_ramp_fraction", 0.3)),
         )
         print(
             f"[manifold-train-paired-grpo] measure: {it_per_s:.3f} it/s | "
@@ -383,6 +846,8 @@ def main(argv: list[str] | None = None, *, data_provider=None) -> int:
         seed=seed,
         ckpt_path=args.resume,
         limit_train_batches=args.limit_train_batches,
+        eta_min=(float(opt(gcfg, "eta_min", 0.1)) if bool(opt(gcfg, "eta_ramp", True)) else None),
+        eta_ramp_fraction=float(opt(gcfg, "eta_ramp_fraction", 0.3)),
     )
     print(f"[manifold-train-paired-grpo] done; checkpoints under {cfg.model_dir}")
     return 0
@@ -397,6 +862,8 @@ def run_paired_grpo_measurement(
     accelerator: str = "auto",
     batch_size: int = 2,
     seed: int = 0,
+    eta_min: float | None = None,
+    eta_ramp_fraction: float = 0.3,
 ) -> tuple[float, int, float]:
     """Time a 1-epoch G2RPO fit + report it/s + peak GPU memory (the #106 launch gate).
 
@@ -404,6 +871,9 @@ def run_paired_grpo_measurement(
     throughput + peak GPU memory on the target cluster before committing to the full
     run. Returns ``(it_per_s, peak_gpu_bytes, elapsed_s)``. Peak memory is 0 off-CUDA
     (the read is GPU-only); a tiny ``--measure`` run on the cluster is the real signal.
+
+    ``eta_min`` is forwarded to the fit so the measurement reflects the real training
+    path (with the ramp), not a static-eta timing (codex #109 P2).
     """
     import time
 
@@ -419,6 +889,8 @@ def run_paired_grpo_measurement(
         accelerator=accelerator,
         batch_size=batch_size,
         seed=seed,
+        eta_min=eta_min,
+        eta_ramp_fraction=eta_ramp_fraction,
     )
     elapsed = time.perf_counter() - start
     it_per_s = float(trainer.global_step) / elapsed if elapsed > 0 else float("nan")
@@ -431,25 +903,200 @@ def _real_inputs(
 ) -> PairedGRPOInputs:
     """Build the real G2RPO inputs from the slow-EMA paired UNet + the trained reward (#104).
 
-    The slow-EMA Paired JiT UNet (ADR-0021 — ``load_frozen_paired_generator``'s arm,
-    inverted for G2RPO: it is the trainable policy init, not a frozen generator) is
-    the **trainable** policy; a bit-identical frozen deep-copy is the KL reference
-    (ADR-0015). The trained paired :class:`RewardModel` (``in_channels = 2·C_latent``)
-    is the **frozen** reward. The paired latent cache furnishes the source latents +
-    contrast labels. Launch is gated on the bridge-noise reward-ranking probe + a
-    ``--measure`` run (#106) — not exercisable here (no real artifacts on the dev
-    machine), so this mirrors ``paired_reward_cli._real_inputs``'s pattern (the
-    data_provider seam covers the CPU smoke).
+    The slow-EMA Paired JiT UNet (ADR-0021 - the paired native export's arm, inverted
+    for G2RPO: it is the **trainable** policy init, not a frozen generator) is the
+    policy; a bit-identical frozen deep-copy is the KL reference (ADR-0015). The trained
+    paired RewardModel (in_channels = 2*C_latent) is the frozen reward. The paired
+    latent cache furnishes the source latents + contrast labels (train is pure-RL -
+    no tgt; val carries tgt for PSNR). The VAE (for the PSNR decode, #105) and
+    scaling_factor come from the native export.
+
+    Mirrors paired_reward_cli._real_inputs (the closest prior art - it loads the
+    paired generator + warms the paired cache) + grpo_cli._real_inputs (the
+    reward-ckpt load + the KL-reference deepcopy). Launch is gated on the bridge-noise
+    reward-ranking probe + a --measure run (#106) - not exercisable here (no real
+    artifacts on the dev machine); the data_provider seam covers the CPU smoke.
     """
-    raise NotImplementedError(
-        "G2RPO _real_inputs ships in #104 (real budget + committed recipe). The #103 "
-        "tracer drives run_paired_grpo_training via the data_provider injection seam "
-        "(fake policy + toy source latents)."
+    import copy as _copy
+    import os
+
+    from ..config import autoencoder_divisor
+    from ..data.paired_brats import build_brats_pair_manifest
+    from ..data.paired_latent_dataset import PairedLatentDataset
+    from ..data.paired_volume_dataset import PairedNiftiVolumeDataset
+    from ..models.reward_model import RewardModel
+    from ..pipelines.paired_latent_flow import PairedLatentFlowPipeline
+    from .paired_cli import _train_val_manifests
+
+    # 1. The slow-EMA paired UNet (trainable policy init) + VAE + base scheduler +
+    #    scaling_factor, all from the paired native export (ADR-0021: the export baked
+    #    the slow-EMA arm; G2RPO inverts it - the slow-EMA arm becomes the policy init,
+    #    and the published arm is raw for this stage).
+    pipe = PairedLatentFlowPipeline.from_pretrained(str(native_dir))
+    policy = pipe.unet.to(device)
+    for p in policy.parameters():  # G2RPO post-trains the policy (the reward is frozen).
+        p.requires_grad_(True)
+    vae = pipe.vae
+    scaling_factor = float(vae.scaling_factor)
+    base_sched_cfg = pipe.scheduler.config
+    # The frozen KL anchor (ADR-0015): a bit-identical snapshot taken BEFORE any G2RPO
+    # update (deepcopy, not a second from_pretrained). The Module freezes + unregisters it.
+    reference_policy = _copy.deepcopy(policy)
+
+    # 2. The bridge scheduler from the base scheduler's transport config + eta (the
+    #    bridge is training-only; the native ckpt carries the base Heun config - #104 export).
+    scheduler = FlowMatchBridgeGRPOScheduler(
+        num_train_timesteps=int(base_sched_cfg.get("num_train_timesteps", 1000)),
+        t_eps=float(base_sched_cfg.get("t_eps", 0.05)),
+        eta=float(opt(cfg.paired_grpo_train, "eta", 0.7)),
     )
 
+    # 3. The trained paired RewardModel (in_channels = 2*C_latent) from its
+    #    PairedRewardModule Lightning checkpoint. Architecture from the network config;
+    #    opt() falls back to RewardModel defaults if a non-standard network file omits it.
+    reward_cfg = opt(cfg, "reward_model", {})
+    latent_c = int(opt(cfg, "latent_channels", 4))
+    reward_model = RewardModel(
+        spatial_dims=int(opt(reward_cfg, "spatial_dims", 3)),
+        # The paired reward scores condition-aware cat([x_src, z_K]) pairs -> in_channels
+        # = 2*C_latent structurally (ADR-0019). The network config's
+        # reward_model.in_channels is the JiT default (=latent_channels=C, NOT 2*C), so
+        # the opt(..., 8) fallback was dead (codex #109 P1 - a 4-channel reward would
+        # crash on the first 8-channel concat). Force 2*C_latent regardless of config
+        # (mirrors paired_reward_cli; codex #96/#99 P1/P2).
+        in_channels=2 * latent_c,
+        channels=int(opt(reward_cfg, "channels", 64)),
+        num_layers_d=int(opt(reward_cfg, "num_layers_d", 3)),
+        norm=str(opt(reward_cfg, "norm", "BATCH")),
+    )
+    # weights_only=True (no arbitrary-code-execution risk). A PairedRewardModule ckpt
+    # is state_dict (tensors) + ModelCheckpoint callback state (dicts of tensors/nums)
+    # + optimizer_states (tensor dicts) - all allowlisted, so this never needs the
+    # unsafe fallback. reward_path is the user's OWN trained reward (trusted); if a
+    # future non-allowlisted global makes weights_only=True fail, surface the error
+    # (never fall back to weights_only=False - that unpickles arbitrary objects).
+    ckpt = torch.load(str(reward_path), map_location="cpu", weights_only=True)
+    state = ckpt.get("state_dict", ckpt)
+    reward_sd = {k[len("reward_model."):]: v for k, v in state.items() if k.startswith("reward_model.")}
+    if not reward_sd:
+        raise ValueError(
+            f"No 'reward_model.*' keys in {reward_path} - not a trained PairedRewardModule checkpoint."
+        )
+    reward_model.load_state_dict(reward_sd, strict=True)
+    reward_model.eval().to(device)
+    for p in reward_model.parameters():
+        p.requires_grad_(False)
+
+    # 4. The paired train/val split (ADR-0022): resolve via _train_val_manifests
+    #    (val_data_base_dir / val_fraction), reuse the existing paired_train cache.
+    inf_cfg = cfg.diffusion_unet_inference
+    target_dim = tuple(int(d) for d in inf_cfg.dim)
+    divisor = autoencoder_divisor(cfg)
+    brats_dir = str(cfg.data_base_dir)
+    manifest = build_brats_pair_manifest(brats_dir)
+    if not manifest:
+        raise FileNotFoundError(
+            f"No paired BraTS volumes found under data_base_dir={brats_dir} "
+            f"(need >=1 subject with all 4 contrasts)."
+        )
+    # _train_val_manifests reads ROOT cfg.val_fraction, but the G2RPO recipe defines the
+    # held-out fraction under paired_grpo.val_fraction. Mirror the nested value to root
+    # when the native-split DIRECTORY path is not taken (val_data_base_dir unset / not a
+    # dir), else the val split resolves to 0 -> empty val -> the guard below raises
+    # (codex #109 P2; mirrors paired_reward_cli._real_inputs codex #99/#100). Mirror ONLY
+    # when the root key is absent: an explicit root override (CLI dotlist / a profile)
+    # wins.
+    val_dir = opt(cfg, "val_data_base_dir", None)
+    if not (val_dir and os.path.isdir(str(val_dir))):
+        from omegaconf import OmegaConf
+
+        if OmegaConf.select(cfg, "val_fraction", default=None) is None:
+            g2rpo_val_fraction = float(opt(cfg, "paired_grpo.val_fraction", 0.0))
+            cfg = OmegaConf.merge(cfg, OmegaConf.create({"val_fraction": g2rpo_val_fraction}))
+
+    train_manifest, val_manifest = _train_val_manifests(cfg, manifest)
+    if not val_manifest:
+        raise ValueError(
+            "G2RPO needs a held-out val split (val_data_base_dir set, or val_fraction>0) "
+            "for the PSNR selection metric; train data is never reused as val (ADR-0022)."
+        )
+    cache_dir = str(
+        latents_dir
+        or opt(cfg, "latent_cache_dir", os.path.join(str(cfg.model_dir), "paired_latent_cache"))
+    )
+    cache_tag = str(opt(cfg, "paired_grpo.cache_tag", "paired_train"))
+
+    def _warm_ds(manifest_split):
+        vol_ds = PairedNiftiVolumeDataset(manifest_split, target_dim=target_dim, divisor=divisor)
+        ds = PairedLatentDataset(vol_ds, encode_fn=None, cache_dir=cache_dir, cache_tag=cache_tag)
+        ds.warm_cache(device, logger=_log, show_progress=False)
+        ds.scaling_factor = scaling_factor  # scale-on-read (ADR-0021: reuse verbatim)
+        return ds
+
+    train_latent_ds = _warm_ds(train_manifest)
+    val_latent_ds = _warm_ds(val_manifest)
+
+    # The paired_train cache is keyed by sample_id + cache_tag (NOT target_dim), so a
+    # target_dim mismatch silently reuses stale wrong-shape latents. Validate EVERY
+    # entry's spatial shape (both splits) against the config's target_dim / divisor and
+    # fail fast (ceil division: PairedNiftiVolumeDataset zero-pads each spatial dim up
+    # to a multiple of the divisor before encoding). Test fakes bypass this (no
+    # raw_latent/source) - they don't model the encode (codex #109 P2; mirrors
+    # paired_reward_cli codex #99/#100).
+    if hasattr(train_latent_ds, "raw_latent") and hasattr(train_latent_ds, "source"):
+        expected_spatial = tuple(-(-d // divisor) for d in target_dim)  # ceil(d / divisor)
+        for split_name, ds in (("train", train_latent_ds), ("val", val_latent_ds)):
+            for sid in ds.source.unique_sample_ids():
+                cached_spatial = tuple(ds.raw_latent(sid).shape[1:])
+                if cached_spatial != expected_spatial:
+                    raise ValueError(
+                        f"Cached paired latent ({split_name}, {sid}) spatial shape "
+                        f"{cached_spatial} does not match the G2RPO config's "
+                        f"target_dim={target_dim} / divisor={divisor} = {expected_spatial} "
+                        f"(ceil). The paired_train cache was built with a different "
+                        f"target_dim (or is a mixed/partial cache); point --latents-dir at "
+                        f"a matching cache or re-warm it."
+                    )
+
+    # 5. Train is pure-RL (src-only: the bridge pins Z_1 -> x_hat_1; tgt unused at
+    #    train); val carries tgt for the PSNR decode (#105). Both share the paired cache.
+    class _TrainCondDS(torch.utils.data.Dataset):
+        """Source-latent + direction only (G2RPO is pure-RL - tgt volume unused at train)."""
+
+        def __init__(self, ds):
+            self.ds = ds
+
+        def __len__(self):
+            return len(self.ds)
+
+        def __getitem__(self, i):
+            it = self.ds[i]
+            return {
+                "src_latent": it["src_latent"],
+                "src_label": it["src_label"],
+                "tgt_label": it["tgt_label"],
+                "spacing": it["spacing"],
+            }
+
+    _log.info(
+        "G2RPO real inputs: %d train (src-only) / %d val (src+tgt) paired latents.",
+        len(train_latent_ds), len(val_latent_ds),
+    )
+    return PairedGRPOInputs(
+        policy=policy,
+        reward_model=reward_model,
+        scheduler=scheduler,
+        train_ds=_TrainCondDS(train_latent_ds),
+        val_ds=val_latent_ds,  # full (src+tgt) for the PSNR callback
+        reference_policy=reference_policy,
+        vae=vae,
+    )
 
 __all__ = [
+    "EtaRampCallback",
+    "GuardedModelCheckpoint",
     "PairedGRPOInputs",
+    "calibrate_reward_temp",
     "main",
     "run_paired_grpo_measurement",
     "run_paired_grpo_training",
