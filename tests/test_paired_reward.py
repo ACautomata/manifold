@@ -59,7 +59,9 @@ class _IdentityPairedGen(nn.Module):
         super().__init__()
         self.dummy = nn.Parameter(torch.zeros(0))
 
-    def forward(self, sample, timestep, spacing, class_labels_src=None, class_labels_tgt=None, **kw):
+    def forward(
+        self, sample, timestep, spacing, class_labels_src=None, class_labels_tgt=None, **kw
+    ):
         return sample[:, :C_LATENT]
 
 
@@ -78,7 +80,9 @@ class _SoftPairedGen(nn.Module):
         self.dummy = nn.Parameter(torch.zeros(0))
         self.target = target
 
-    def forward(self, sample, timestep, spacing, class_labels_src=None, class_labels_tgt=None, **kw):
+    def forward(
+        self, sample, timestep, spacing, class_labels_src=None, class_labels_tgt=None, **kw
+    ):
         return 0.5 * self.target + 0.5 * sample[:, :C_LATENT]
 
 
@@ -126,7 +130,9 @@ def test_partial_paired_rollout_starts_from_add_noise_of_tgt_src():
     x_src = torch.randn(3, *_LAT)
     x_tgt = torch.randn_like(x_src)
     t_start = torch.tensor([0.1, 0.3, 0.45])
-    out = partial_paired_rollout(gen, sched, x_src, x_tgt, t_start, [1.0, 1.0, 1.0], 0, 1, num_steps=4)
+    out = partial_paired_rollout(
+        gen, sched, x_src, x_tgt, t_start, [1.0, 1.0, 1.0], 0, 1, num_steps=4
+    )
     z_start = sched.add_noise(x_tgt, x_src, t_start)
     assert torch.equal(out, z_start)
 
@@ -164,7 +170,9 @@ def test_partial_paired_rollout_per_sample_t_does_not_mix_samples():
     x_src = torch.randn(3, *_LAT)
     x_tgt = torch.randn_like(x_src)
     t_start = torch.tensor([0.1, 0.2, 0.3])
-    out = partial_paired_rollout(gen, sched, x_src, x_tgt, t_start, [1.0, 1.0, 1.0], 0, 1, num_steps=2)
+    out = partial_paired_rollout(
+        gen, sched, x_src, x_tgt, t_start, [1.0, 1.0, 1.0], 0, 1, num_steps=2
+    )
     # Identity generator -> out == z_start per sample (no cross-sample mixing).
     z_start = sched.add_noise(x_tgt, x_src, t_start)
     assert out.shape == x_src.shape
@@ -183,7 +191,9 @@ def test_partial_paired_rollout_threads_per_sample_labels_and_spacing():
             self.seen_tgt = []
             self.seen_spacing = []
 
-        def forward(self, sample, timestep, spacing, class_labels_src=None, class_labels_tgt=None, **kw):
+        def forward(
+            self, sample, timestep, spacing, class_labels_src=None, class_labels_tgt=None, **kw
+        ):
             self.seen_src.append(class_labels_src.detach().cpu().clone())
             self.seen_tgt.append(class_labels_tgt.detach().cpu().clone())
             self.seen_spacing.append(spacing.detach().cpu().clone())
@@ -196,7 +206,9 @@ def test_partial_paired_rollout_threads_per_sample_labels_and_spacing():
     src_labels = torch.tensor([0, 2])
     tgt_labels = torch.tensor([1, 3])
     spacing = torch.tensor([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]])
-    partial_paired_rollout(rec, sched, x_src, x_tgt, t_start, spacing, src_labels, tgt_labels, num_steps=2)
+    partial_paired_rollout(
+        rec, sched, x_src, x_tgt, t_start, spacing, src_labels, tgt_labels, num_steps=2
+    )
     # Every UNet eval got the per-sample src/tgt labels and the per-sample spacing.
     assert all(torch.equal(s, torch.tensor([0, 2])) for s in rec.seen_src)
     assert all(torch.equal(t, torch.tensor([1, 3])) for t in rec.seen_tgt)
@@ -213,7 +225,9 @@ def test_partial_paired_rollout_mismatched_batch_raises():
     import pytest
 
     with pytest.raises(ValueError, match="t_start"):
-        partial_paired_rollout(gen, sched, x_src, x_tgt, torch.zeros(3), [1.0, 1.0, 1.0], 0, 1, num_steps=1)
+        partial_paired_rollout(
+            gen, sched, x_src, x_tgt, torch.zeros(3), [1.0, 1.0, 1.0], 0, 1, num_steps=1
+        )
     # per-sample [B,3] spacing rows (3) != batch (4).
     with pytest.raises(ValueError, match="spacing"):
         partial_paired_rollout(
@@ -275,8 +289,10 @@ def test_paired_module_fit_returns_finite_bt_loss():
     """forward("fit") on precomputed pairs returns a finite BT loss."""
     mod = _module()
     ds = _ToyPairedPairDS(n=2)
-    batch = {"winner": torch.stack([ds.items[0]["winner"], ds.items[1]["winner"]]),
-             "loser": torch.stack([ds.items[0]["loser"], ds.items[1]["loser"]])}
+    batch = {
+        "winner": torch.stack([ds.items[0]["winner"], ds.items[1]["winner"]]),
+        "loser": torch.stack([ds.items[0]["loser"], ds.items[1]["loser"]]),
+    }
     out = mod.forward(batch, "fit")
     assert "loss" in out
     assert torch.isfinite(out["loss"])
@@ -292,8 +308,10 @@ def test_paired_module_backward_updates_discriminator_only():
     m = _paired_reward_model()
     mod = PairedRewardModule(m, lr=1e-2)
     ds = _ToyPairedPairDS(n=2)
-    batch = {"winner": torch.stack([ds.items[0]["winner"], ds.items[1]["winner"]]),
-             "loser": torch.stack([ds.items[0]["loser"], ds.items[1]["loser"]])}
+    batch = {
+        "winner": torch.stack([ds.items[0]["winner"], ds.items[1]["winner"]]),
+        "loser": torch.stack([ds.items[0]["loser"], ds.items[1]["loser"]]),
+    }
     mod.forward(batch, "fit")["loss"].backward()
     params = list(m.parameters())
     assert params, "reward model has parameters"
@@ -322,7 +340,7 @@ def test_paired_module_optimizer_step_raises_real_above_generated():
     def margin() -> float:
         with torch.no_grad():
             r = m(torch.cat([winner, loser]))
-            return float((r[: len(winner)] - r[len(winner):]).mean())
+            return float((r[: len(winner)] - r[len(winner) :]).mean())
 
     before = margin()
     opt = torch.optim.Adam(m.parameters(), lr=1e-2)
@@ -342,8 +360,13 @@ def test_paired_module_forward_stage_mismatch_raises():
     with pytest.raises(ValueError, match="winner"):
         mod.forward({"foo": torch.randn(1, 2 * C_LATENT, 8, 8, 8)}, "fit")
     with pytest.raises(ValueError, match="stage"):
-        mod.forward({"winner": torch.randn(1, 2 * C_LATENT, 8, 8, 8),
-                     "loser": torch.randn(1, 2 * C_LATENT, 8, 8, 8)}, "test")
+        mod.forward(
+            {
+                "winner": torch.randn(1, 2 * C_LATENT, 8, 8, 8),
+                "loser": torch.randn(1, 2 * C_LATENT, 8, 8, 8),
+            },
+            "test",
+        )
 
 
 # -- offline fake-cache + probe builders (determinism + condition-aware) -----
@@ -364,8 +387,16 @@ def test_build_paired_reward_pairs_emits_condition_aware_concat():
 
     x_src, x_tgt, gen = _toy_src_tgt(n=4)
     ds = build_paired_reward_pairs(
-        x_src, x_tgt, gen, FlowMatchHeunDiscreteScheduler(),
-        src_label=0, tgt_label=1, spacing=[1.0, 1.0, 1.0], num_steps=2, batch_size=4, device="cpu",
+        x_src,
+        x_tgt,
+        gen,
+        FlowMatchHeunDiscreteScheduler(),
+        src_label=0,
+        tgt_label=1,
+        spacing=[1.0, 1.0, 1.0],
+        num_steps=2,
+        batch_size=4,
+        device="cpu",
     )
     assert ds.winners.shape == (4, 2 * C_LATENT, *_LAT[1:])
     assert ds.losers.shape == ds.winners.shape
@@ -388,8 +419,16 @@ def test_build_paired_reward_pairs_is_deterministic():
     from manifold.data.paired_reward_pairs import build_paired_reward_pairs
 
     x_src, x_tgt, gen = _toy_src_tgt(n=4)
-    kw = dict(generator=gen, scheduler=FlowMatchHeunDiscreteScheduler(),
-              src_label=0, tgt_label=1, spacing=[1.0, 1.0, 1.0], num_steps=2, batch_size=4, device="cpu")
+    kw = dict(
+        generator=gen,
+        scheduler=FlowMatchHeunDiscreteScheduler(),
+        src_label=0,
+        tgt_label=1,
+        spacing=[1.0, 1.0, 1.0],
+        num_steps=2,
+        batch_size=4,
+        device="cpu",
+    )
     a = build_paired_reward_pairs(x_src, x_tgt, **kw)
     b = build_paired_reward_pairs(x_src, x_tgt, **kw)
     assert torch.equal(a.winners, b.winners)
@@ -401,8 +440,17 @@ def test_build_paired_reward_probe_is_deterministic_and_concat():
     from manifold.data.paired_reward_pairs import build_paired_reward_probe
 
     x_src, x_tgt, gen = _toy_src_tgt(n=4)
-    kw = dict(generator=gen, partial_scheduler=PartialFlowMatchHeunScheduler(),
-              src_label=0, tgt_label=1, spacing=[1.0, 1.0, 1.0], num_steps=2, batch_size=4, seed=0, device="cpu")
+    kw = dict(
+        generator=gen,
+        partial_scheduler=PartialFlowMatchHeunScheduler(),
+        src_label=0,
+        tgt_label=1,
+        spacing=[1.0, 1.0, 1.0],
+        num_steps=2,
+        batch_size=4,
+        seed=0,
+        device="cpu",
+    )
     a = build_paired_reward_probe(x_src, x_tgt, **kw)
     b = build_paired_reward_probe(x_src, x_tgt, **kw)
     assert torch.equal(a.winners, b.winners)
@@ -449,9 +497,16 @@ def test_build_paired_reward_pairs_accepts_scalar_zero_d_tensor_labels():
 
     x_src, x_tgt, gen = _toy_src_tgt(n=4)
     ds = build_paired_reward_pairs(
-        x_src, x_tgt, gen, FlowMatchHeunDiscreteScheduler(),
-        src_label=torch.tensor(0), tgt_label=torch.tensor(1),
-        spacing=[1.0, 1.0, 1.0], num_steps=2, batch_size=4, device="cpu",
+        x_src,
+        x_tgt,
+        gen,
+        FlowMatchHeunDiscreteScheduler(),
+        src_label=torch.tensor(0),
+        tgt_label=torch.tensor(1),
+        spacing=[1.0, 1.0, 1.0],
+        num_steps=2,
+        batch_size=4,
+        device="cpu",
     )
     assert ds.winners.shape == (4, 2 * C_LATENT, *_LAT[1:])
     assert torch.isfinite(ds.winners).all()
@@ -467,8 +522,12 @@ def test_build_paired_reward_pairs_threads_per_sample_labels():
             self.dummy = nn.Parameter(torch.zeros(0))
             self.seen = []
 
-        def forward(self, sample, timestep, spacing, class_labels_src=None, class_labels_tgt=None, **kw):
-            self.seen.append((class_labels_src.detach().cpu().clone(), class_labels_tgt.detach().cpu().clone()))
+        def forward(
+            self, sample, timestep, spacing, class_labels_src=None, class_labels_tgt=None, **kw
+        ):
+            self.seen.append(
+                (class_labels_src.detach().cpu().clone(), class_labels_tgt.detach().cpu().clone())
+            )
             return sample[:, :C_LATENT]
 
     torch.manual_seed(0)
@@ -476,9 +535,16 @@ def test_build_paired_reward_pairs_threads_per_sample_labels():
     x_tgt = torch.randn(4, *_LAT)
     rec = _Recording()
     build_paired_reward_pairs(
-        x_src, x_tgt, rec, FlowMatchHeunDiscreteScheduler(),
-        src_label=torch.tensor([0, 1, 2, 3]), tgt_label=torch.tensor([3, 2, 1, 0]),
-        spacing=[1.0, 1.0, 1.0], num_steps=2, batch_size=2, device="cpu",
+        x_src,
+        x_tgt,
+        rec,
+        FlowMatchHeunDiscreteScheduler(),
+        src_label=torch.tensor([0, 1, 2, 3]),
+        tgt_label=torch.tensor([3, 2, 1, 0]),
+        spacing=[1.0, 1.0, 1.0],
+        num_steps=2,
+        batch_size=2,
+        device="cpu",
     )
     seen_src = torch.stack([s[0] for s in rec.seen])
     seen_tgt = torch.stack([s[1] for s in rec.seen])
@@ -509,16 +575,41 @@ def _smoke_inputs() -> PairedRewardInputs:
     x_tgt = torch.randn(8, *_LAT)
     gen = _IdentityPairedGen()  # x0 = z -> gen_tgt = copy-src (the fake)
     train = build_paired_reward_pairs(
-        x_src, x_tgt, gen, FlowMatchHeunDiscreteScheduler(),
-        src_label=0, tgt_label=1, spacing=[1.0, 1.0, 1.0], num_steps=2, batch_size=4, device="cpu",
+        x_src,
+        x_tgt,
+        gen,
+        FlowMatchHeunDiscreteScheduler(),
+        src_label=0,
+        tgt_label=1,
+        spacing=[1.0, 1.0, 1.0],
+        num_steps=2,
+        batch_size=4,
+        device="cpu",
     )
     val = build_paired_reward_pairs(
-        x_src[:4], x_tgt[:4], gen, FlowMatchHeunDiscreteScheduler(),
-        src_label=0, tgt_label=1, spacing=[1.0, 1.0, 1.0], num_steps=2, batch_size=4, device="cpu",
+        x_src[:4],
+        x_tgt[:4],
+        gen,
+        FlowMatchHeunDiscreteScheduler(),
+        src_label=0,
+        tgt_label=1,
+        spacing=[1.0, 1.0, 1.0],
+        num_steps=2,
+        batch_size=4,
+        device="cpu",
     )
     probe = build_paired_reward_probe(
-        x_src[:4], x_tgt[:4], gen, PartialFlowMatchHeunScheduler(),
-        src_label=0, tgt_label=1, spacing=[1.0, 1.0, 1.0], num_steps=2, batch_size=4, seed=0, device="cpu",
+        x_src[:4],
+        x_tgt[:4],
+        gen,
+        PartialFlowMatchHeunScheduler(),
+        src_label=0,
+        tgt_label=1,
+        spacing=[1.0, 1.0, 1.0],
+        num_steps=2,
+        batch_size=4,
+        seed=0,
+        device="cpu",
     )
     return PairedRewardInputs(train_pair_ds=train, val_pair_ds=val, val_probe=probe)
 
@@ -580,8 +671,7 @@ def _write_paired_tiny_configs(tmp_path):
     env = tmp_path / "env.yaml"
     env.write_text(
         "data_base_dir: /tmp/_unused_\n"
-        "model_dir: %s\n" % (tmp_path / "model")
-        + "val_subset_size: 4\n"
+        "model_dir: %s\n" % (tmp_path / "model") + "val_subset_size: 4\n"
     )
     train = tmp_path / "train.yaml"
     train.write_text(
@@ -629,6 +719,52 @@ def test_paired_reward_main_native_dir_latents_dir_validated(tmp_path):
     assert rc == 0
 
 
+def test_paired_reward_main_forces_2c_in_channels_regardless_of_config(tmp_path):
+    """main() forces RewardModel in_channels = 2·C_latent even when the network
+    config's reward_model.in_channels is the JiT default (latent_channels).
+
+    Regression for codex #96 (P2) / #99 (P1): the ``opt(..., 2*C)`` fallback was
+    dead because the network config carried ``${latent_channels}`` (=4), so the
+    reward model would be built with 4 channels and crash on the first 8-channel
+    concat batch. The paired reward's in_channels is structural (2·C), not config-driven.
+    """
+    from unittest.mock import patch
+
+    from manifold.training.paired_reward_cli import main as paired_reward_main
+
+    # A network config with the WRONG (JiT-style) reward_model.in_channels = C (4),
+    # not 2·C. main() must ignore it and force 2·C_latent.
+    net = tmp_path / "network.yaml"
+    net.write_text(
+        "spatial_dims: 3\nlatent_channels: 4\n"
+        "reward_model:\n  spatial_dims: ${spatial_dims}\n  in_channels: 4\n"
+        "  channels: 8\n  num_layers_d: 1\n  norm: BATCH\n"
+    )
+    env = tmp_path / "env.yaml"
+    env.write_text(
+        "data_base_dir: /tmp/_unused_\nmodel_dir: %s\nval_subset_size: 4\n" % (tmp_path / "model")
+    )
+    train = tmp_path / "train.yaml"
+    train.write_text("paired_reward_train: {batch_size: 2, lr: 1.0e-2, n_epochs: 1}\n")
+
+    seen = {}
+    real_init = RewardModel.__init__
+
+    def spy(self, *a, **kw):
+        seen["in_channels"] = kw.get("in_channels")
+        return real_init(self, *a, **kw)
+
+    with patch.object(RewardModel, "__init__", spy):
+        rc = paired_reward_main(
+            ["-e", str(env), "-c", str(train), "-t", str(net), "-g", "1", "--max-epochs", "1"],
+            data_provider=lambda cfg, device: _smoke_inputs(),
+        )
+    assert rc == 0
+    assert seen["in_channels"] == 2 * 4, (
+        "paired reward model must be 2·C_latent regardless of reward_model.in_channels"
+    )
+
+
 def test_paired_reward_build_checkpoint_monitors_gen_pair_acc_and_ddp_fallback():
     """_build_checkpoint monitors val/gen_pair_acc (single-GPU) and drops it under DDP."""
     from pathlib import Path
@@ -663,6 +799,12 @@ def test_run_paired_reward_training_fails_fast_without_probe(tmp_path):
     inputs = PairedRewardInputs(train_pair_ds=ds, val_pair_ds=ds, val_probe=None)
     with pytest.raises(ValueError, match="probe"):
         run_paired_reward_training(
-            module=_module(), inputs=inputs, model_dir=str(tmp_path),
-            max_epochs=1, devices=1, accelerator="cpu", batch_size=2, limit_val_batches=1.0,
+            module=_module(),
+            inputs=inputs,
+            model_dir=str(tmp_path),
+            max_epochs=1,
+            devices=1,
+            accelerator="cpu",
+            batch_size=2,
+            limit_val_batches=1.0,
         )

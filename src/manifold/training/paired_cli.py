@@ -260,18 +260,28 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     )
     parser.add_argument("-e", "--env", required=True, help="env config YAML (paths).")
     parser.add_argument(
-        "-c", "--train", default="configs/train/config_paired_jit.yaml", help="paired train recipe YAML."
+        "-c",
+        "--train",
+        default="configs/train/config_paired_jit.yaml",
+        help="paired train recipe YAML.",
     )
     parser.add_argument("-t", "--network", required=True, help="network construction YAML.")
-    parser.add_argument("-g", "--num-gpus", type=int, default=1, help="number of GPUs (1 = single-GPU).")
+    parser.add_argument(
+        "-g", "--num-gpus", type=int, default=1, help="number of GPUs (1 = single-GPU)."
+    )
     parser.add_argument("--max-epochs", type=int, default=None, help="override n_epochs.")
     parser.add_argument(
         "--resume", default=None, help="resume a Lightning .ckpt (trainer.fit(ckpt_path=...))."
     )
     parser.add_argument(
-        "--monitor", default="val/psnr", choices=("val/psnr", "val/ssim"), help="checkpoint selection metric."
+        "--monitor",
+        default="val/psnr",
+        choices=("val/psnr", "val/ssim"),
+        help="checkpoint selection metric.",
     )
-    parser.add_argument("overrides", nargs="*", help="Hydra-style dotlist (e.g. diffusion_unet_train.lr=1e-4).")
+    parser.add_argument(
+        "overrides", nargs="*", help="Hydra-style dotlist (e.g. diffusion_unet_train.lr=1e-4)."
+    )
     return parser.parse_args(argv)
 
 
@@ -435,7 +445,8 @@ def _warm_data(cfg, device) -> tuple[_DataBundle, int]:
     vol_ds = PairedNiftiVolumeDataset(train_manifest, target_dim=target_dim, divisor=divisor)
     val_dir = opt(cfg, "val_data_base_dir", None)
     split_note = (
-        f"val_data_base_dir={val_dir}" if val_dir
+        f"val_data_base_dir={val_dir}"
+        if val_dir
         else f"val_fraction={float(opt(cfg, 'val_fraction', 0.0)):.3f}"
     )
     logger.info(
@@ -455,8 +466,12 @@ def _warm_data(cfg, device) -> tuple[_DataBundle, int]:
     # place every rank's encoder on GPU 0. The warm re-stages it onto the per-rank
     # local GPU inside setup(); PSNR's decode stages it to the UNet device at eval.
     # The CPU encode_fn built here is unused on the cold path (rebuilt in warm_fn).
-    autoencoder, _cpu_encode_fn = build_encode_pipeline(cfg, device=torch.device("cpu"), logger=logger)
-    cache_dir = str(opt(cfg, "latent_cache_dir", os.path.join(str(cfg.model_dir), "paired_latent_cache")))
+    autoencoder, _cpu_encode_fn = build_encode_pipeline(
+        cfg, device=torch.device("cpu"), logger=logger
+    )
+    cache_dir = str(
+        opt(cfg, "latent_cache_dir", os.path.join(str(cfg.model_dir), "paired_latent_cache"))
+    )
     val_subset_size = int(opt(cfg, "val_subset_size", 64))
 
     def warm_fn():
@@ -470,11 +485,15 @@ def _warm_data(cfg, device) -> tuple[_DataBundle, int]:
         warm_device = resolve_warm_device(device)
         autoencoder.to(warm_device)
         encode_fn = make_encode_fn(autoencoder, warm_device, cfg)
-        latent_ds = PairedLatentDataset(vol_ds, encode_fn=encode_fn, cache_dir=cache_dir, cache_tag="paired_train")
+        latent_ds = PairedLatentDataset(
+            vol_ds, encode_fn=encode_fn, cache_dir=cache_dir, cache_tag="paired_train"
+        )
         latent_ds.warm_cache(warm_device, logger=logger, show_progress=True)
         val_latent_ds = None
         if val_manifest:
-            val_vol_ds = PairedNiftiVolumeDataset(val_manifest, target_dim=target_dim, divisor=divisor)
+            val_vol_ds = PairedNiftiVolumeDataset(
+                val_manifest, target_dim=target_dim, divisor=divisor
+            )
             val_latent_ds = PairedLatentDataset(
                 val_vol_ds, encode_fn=encode_fn, cache_dir=cache_dir, cache_tag="paired_train"
             )
@@ -484,9 +503,22 @@ def _warm_data(cfg, device) -> tuple[_DataBundle, int]:
         autoencoder.cpu()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
-        estimate_paired_scale_factor(latent_ds, autoencoder, sample_size=val_subset_size, logger=logger)
+        estimate_paired_scale_factor(
+            latent_ds, autoencoder, sample_size=val_subset_size, logger=logger
+        )
         if val_latent_ds is not None:
             val_latent_ds.scaling_factor = latent_ds.scaling_factor
+        # Persist the estimated scale so the paired-reward export can bake it into
+        # the frozen generator's VAE: the reward pairs scale src latents by this
+        # value, and the paired module holds no VAE (so the scale is otherwise lost
+        # with the process). scripts/export_checkpoint.py reads it (via
+        # torch.load(..., weights_only=True)) for --pipeline paired (codex #98 P1).
+        os.makedirs(str(cfg.model_dir), exist_ok=True)
+        scale_path = os.path.join(str(cfg.model_dir), "paired_scaling_factor.pt")
+        torch.save(torch.tensor(float(autoencoder.scaling_factor)), scale_path)
+        logger.info(
+            f"Persisted paired scaling_factor={float(autoencoder.scaling_factor):.6f} -> {scale_path}"
+        )
         return latent_ds, val_latent_ds, autoencoder
 
     return _DataBundle(vae=autoencoder, warm_fn=warm_fn, has_val=has_val), len(vol_ds)

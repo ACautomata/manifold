@@ -77,6 +77,28 @@ def _as_per_sample(value, n: int, device: torch.device) -> Tensor | int:
     return t.to(device=device, dtype=torch.long)
 
 
+def _resolve_rollout_device(generator, device) -> torch.device:
+    """Resolve the rollout device, failing fast on a generator/device mismatch.
+
+    The paired rollouts derive their execution device from
+    ``next(generator.parameters()).device`` and return generated tensors there, so a
+    caller-passed ``device`` that differs from the generator's leaves the concat
+    ``[src_b (→device), gen_tgt (→gen_device)]`` mixing devices (codex #96 P2).
+    Auto-detect when ``device is None``; otherwise require the generator to already
+    be on ``device`` (the CLI's ``_real_inputs`` moves it before calling).
+    """
+    gen_device = next(generator.parameters()).device
+    resolved = torch.device(device) if device is not None else gen_device
+    if resolved != gen_device:
+        raise ValueError(
+            f"Generator is on {gen_device} but the builder was called with "
+            f"device={resolved}. Move the generator onto {resolved} before calling "
+            f"(the rollout runs on the generator's device), or pass device=None to "
+            f"auto-detect from the generator."
+        )
+    return resolved
+
+
 def build_paired_reward_pairs(
     x_src: Tensor | Sequence[Tensor],
     x_tgt: Tensor | Sequence[Tensor],
@@ -117,7 +139,7 @@ def build_paired_reward_pairs(
     tgt = x_tgt if isinstance(x_tgt, Tensor) else torch.stack(list(x_tgt))
     if src.shape != tgt.shape:
         raise ValueError(f"x_src {tuple(src.shape)} and x_tgt {tuple(tgt.shape)} must match.")
-    device = torch.device(device) if device is not None else next(generator.parameters()).device
+    device = _resolve_rollout_device(generator, device)
     if not isinstance(spacing, Tensor):
         spacing = torch.as_tensor(spacing)
     n = len(src)
@@ -132,10 +154,16 @@ def build_paired_reward_pairs(
         src_b = src[start : start + b].to(device)
         tgt_b = tgt[start : start + b].to(device)
         spacing_b = (
-            spacing[start : start + b] if isinstance(spacing, Tensor) and spacing.dim() == 2 else spacing
+            spacing[start : start + b]
+            if isinstance(spacing, Tensor) and spacing.dim() == 2
+            else spacing
         )
-        src_lab = src_lab_full[start : start + b] if isinstance(src_lab_full, Tensor) else src_lab_full
-        tgt_lab = tgt_lab_full[start : start + b] if isinstance(tgt_lab_full, Tensor) else tgt_lab_full
+        src_lab = (
+            src_lab_full[start : start + b] if isinstance(src_lab_full, Tensor) else src_lab_full
+        )
+        tgt_lab = (
+            tgt_lab_full[start : start + b] if isinstance(tgt_lab_full, Tensor) else tgt_lab_full
+        )
         gen_tgt = sample_paired_latent_flow(
             generator, scheduler, src_b, spacing_b, src_lab, tgt_lab, num_inference_steps=num_steps
         ).detach()
@@ -178,7 +206,7 @@ def build_paired_reward_probe(
     tgt = x_tgt if isinstance(x_tgt, Tensor) else torch.stack(list(x_tgt))
     if src.shape != tgt.shape:
         raise ValueError(f"x_src {tuple(src.shape)} and x_tgt {tuple(tgt.shape)} must match.")
-    device = torch.device(device) if device is not None else next(generator.parameters()).device
+    device = _resolve_rollout_device(generator, device)
     if not isinstance(spacing, Tensor):
         spacing = torch.as_tensor(spacing)
     gen = torch.Generator(device=device).manual_seed(seed)  # device-aware (CPU gen raises on CUDA)
@@ -196,19 +224,43 @@ def build_paired_reward_probe(
         winner_t = torch.maximum(t_a, t_b)
         loser_t = torch.minimum(t_a, t_b)
         spacing_b = (
-            spacing[start : start + b] if isinstance(spacing, Tensor) and spacing.dim() == 2 else spacing
+            spacing[start : start + b]
+            if isinstance(spacing, Tensor) and spacing.dim() == 2
+            else spacing
         )
-        src_lab = src_lab_full[start : start + b] if isinstance(src_lab_full, Tensor) else src_lab_full
-        tgt_lab = tgt_lab_full[start : start + b] if isinstance(tgt_lab_full, Tensor) else tgt_lab_full
+        src_lab = (
+            src_lab_full[start : start + b] if isinstance(src_lab_full, Tensor) else src_lab_full
+        )
+        tgt_lab = (
+            tgt_lab_full[start : start + b] if isinstance(tgt_lab_full, Tensor) else tgt_lab_full
+        )
         gen_w = partial_paired_rollout(
-            generator, partial_scheduler, src_b, tgt_b, winner_t, spacing_b, src_lab, tgt_lab, num_steps=num_steps
+            generator,
+            partial_scheduler,
+            src_b,
+            tgt_b,
+            winner_t,
+            spacing_b,
+            src_lab,
+            tgt_lab,
+            num_steps=num_steps,
         ).detach()
         gen_l = partial_paired_rollout(
-            generator, partial_scheduler, src_b, tgt_b, loser_t, spacing_b, src_lab, tgt_lab, num_steps=num_steps
+            generator,
+            partial_scheduler,
+            src_b,
+            tgt_b,
+            loser_t,
+            spacing_b,
+            src_lab,
+            tgt_lab,
+            num_steps=num_steps,
         ).detach()
         winners.append(torch.cat([src_b, gen_w], dim=1).detach().cpu())
         losers.append(torch.cat([src_b, gen_l], dim=1).detach().cpu())
-    _log.info("build_paired_reward_probe: %d probe pairs (t ∈ %s, num_steps=%d).", n, t_range, num_steps)
+    _log.info(
+        "build_paired_reward_probe: %d probe pairs (t ∈ %s, num_steps=%d).", n, t_range, num_steps
+    )
     return RewardPairDataset(torch.cat(winners), torch.cat(losers))
 
 
@@ -327,31 +379,56 @@ def build_paired_reward_inputs(
     """
     from ..training.paired_reward_cli import PairedRewardInputs
 
-    device = torch.device(device) if device is not None else next(generator.parameters()).device
+    device = _resolve_rollout_device(generator, device)
     partial_scheduler = PartialFlowMatchHeunScheduler(**base_scheduler.config)
     probe_steps = int(probe_num_steps) if probe_num_steps is not None else int(num_steps)
 
     x_src_tr, x_tgt_tr, src_lab_tr, tgt_lab_tr, spacing_tr = _stack_paired_latents(train_ds)
     train_pairs = build_paired_reward_pairs(
-        x_src_tr, x_tgt_tr, generator, base_scheduler,
-        src_label=src_lab_tr, tgt_label=tgt_lab_tr, spacing=spacing_tr,
-        num_steps=num_steps, batch_size=batch_size, device=device,
+        x_src_tr,
+        x_tgt_tr,
+        generator,
+        base_scheduler,
+        src_label=src_lab_tr,
+        tgt_label=tgt_lab_tr,
+        spacing=spacing_tr,
+        num_steps=num_steps,
+        batch_size=batch_size,
+        device=device,
     )
     x_src_va, x_tgt_va, src_lab_va, tgt_lab_va, spacing_va = _stack_paired_latents(val_ds)
     val_pairs = build_paired_reward_pairs(
-        x_src_va, x_tgt_va, generator, base_scheduler,
-        src_label=src_lab_va, tgt_label=tgt_lab_va, spacing=spacing_va,
-        num_steps=num_steps, batch_size=batch_size, device=device,
+        x_src_va,
+        x_tgt_va,
+        generator,
+        base_scheduler,
+        src_label=src_lab_va,
+        tgt_label=tgt_lab_va,
+        spacing=spacing_va,
+        num_steps=num_steps,
+        batch_size=batch_size,
+        device=device,
     )
     n_probe = min(n_probe, len(val_ds))
     probe = build_paired_reward_probe(
-        x_src_va[:n_probe], x_tgt_va[:n_probe], generator, partial_scheduler,
-        src_label=src_lab_va[:n_probe], tgt_label=tgt_lab_va[:n_probe], spacing=spacing_va[:n_probe],
-        num_steps=probe_steps, batch_size=batch_size, seed=seed, device=device,
+        x_src_va[:n_probe],
+        x_tgt_va[:n_probe],
+        generator,
+        partial_scheduler,
+        src_label=src_lab_va[:n_probe],
+        tgt_label=tgt_lab_va[:n_probe],
+        spacing=spacing_va[:n_probe],
+        num_steps=probe_steps,
+        batch_size=batch_size,
+        seed=seed,
+        device=device,
     )
     _log.info(
         "build_paired_reward_inputs: %d train / %d val pairs + %d probe (num_steps=%d).",
-        len(train_pairs), len(val_pairs), len(probe), num_steps,
+        len(train_pairs),
+        len(val_pairs),
+        len(probe),
+        num_steps,
     )
     return PairedRewardInputs(train_pair_ds=train_pairs, val_pair_ds=val_pairs, val_probe=probe)
 
