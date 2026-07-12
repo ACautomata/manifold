@@ -520,40 +520,45 @@ def build_paired_bridge_noised_fakes(
     gen = torch.Generator(device=device).manual_seed(seed)
     generator.eval()
     winners, losers = [], []
-    for start in range(0, n, batch_size):
-        b = min(batch_size, n - start)
-        src_b = src[start : start + b].to(device=device, dtype=dtype)
-        tgt_b = tgt[start : start + b].to(device=device, dtype=dtype)
-        spacing_b = (
-            spacing[start : start + b] if isinstance(spacing, Tensor) and spacing.dim() == 2 else spacing
-        )
-        src_lab = src_lab_full[start : start + b] if isinstance(src_lab_full, Tensor) else src_lab_full
-        tgt_lab = tgt_lab_full[start : start + b] if isinstance(tgt_lab_full, Tensor) else tgt_lab_full
-        # Anchor to the perturbed step (the deployed-Heun path from x_src).
-        anchor_z = _heun_rollout_paired(
-            generator, bridge_scheduler, src_b, src_b, nodes, spacing_b, src_lab, tgt_lab, 0, perturbed_step
-        )
-        z_k = anchor_z[perturbed_step]
-        t_k = float(nodes[perturbed_step])
-        t_next = float(nodes[perturbed_step + 1])
-        x0 = _paired_unet_call(generator, z_k, src_b, t_k, spacing_b, src_lab, tgt_lab)
-        mean_old, std_old = bridge_scheduler.sde_step_mean(x0, z_k, t_k, t_next)
-        xi = torch.randn(b, G, *spatial, generator=gen, device=device, dtype=src_b.dtype)
-        z_kplus1 = mean_old.unsqueeze(1) + float(std_old) * xi  # (b, G, *spatial)
-        # Suffix to z_K (G-expanded conditioning).
-        src_lab_bg = src_lab.repeat_interleave(G) if isinstance(src_lab, Tensor) else src_lab
-        tgt_lab_bg = tgt_lab.repeat_interleave(G) if isinstance(tgt_lab, Tensor) else tgt_lab
-        spacing_bg = spacing_b.repeat_interleave(G, dim=0) if spacing_b.dim() == 2 else spacing_b
-        x_src_bg = src_b.repeat_interleave(G, dim=0)
-        z_g = z_kplus1.reshape(b * G, *spatial)
-        suffix = _heun_rollout_paired(
-            generator, bridge_scheduler, z_g, x_src_bg, nodes, spacing_bg, src_lab_bg, tgt_lab_bg,
-            perturbed_step + 1, num_steps,
-        )
-        z_K = suffix[-1]  # (b·G, *spatial)
-        # Winner: real cat([x_src, x_tgt]); Loser: bridge-noised cat([x_src, z_K]).
-        winners.append(torch.cat([x_src_bg, tgt_b.repeat_interleave(G, dim=0)], dim=1).detach().cpu())
-        losers.append(torch.cat([x_src_bg, z_K], dim=1).detach().cpu())
+    # Wrap the rollout in CUDA autocast (mirrors sample_paired_latent_flow +
+    # singular_branch_rollout_paired + the probe, which all run 16-mixed): the full 3D
+    # fake-cache job allocates fp32 UNet activations for the b anchor + b*G suffix
+    # rollouts and can OOM even though training/probing fit under autocast (codex #110 P2).
+    with torch.autocast(device_type=device.type, enabled=device.type == "cuda"):
+        for start in range(0, n, batch_size):
+            b = min(batch_size, n - start)
+            src_b = src[start : start + b].to(device=device, dtype=dtype)
+            tgt_b = tgt[start : start + b].to(device=device, dtype=dtype)
+            spacing_b = (
+                spacing[start : start + b] if isinstance(spacing, Tensor) and spacing.dim() == 2 else spacing
+            )
+            src_lab = src_lab_full[start : start + b] if isinstance(src_lab_full, Tensor) else src_lab_full
+            tgt_lab = tgt_lab_full[start : start + b] if isinstance(tgt_lab_full, Tensor) else tgt_lab_full
+            # Anchor to the perturbed step (the deployed-Heun path from x_src).
+            anchor_z = _heun_rollout_paired(
+                generator, bridge_scheduler, src_b, src_b, nodes, spacing_b, src_lab, tgt_lab, 0, perturbed_step
+            )
+            z_k = anchor_z[perturbed_step]
+            t_k = float(nodes[perturbed_step])
+            t_next = float(nodes[perturbed_step + 1])
+            x0 = _paired_unet_call(generator, z_k, src_b, t_k, spacing_b, src_lab, tgt_lab)
+            mean_old, std_old = bridge_scheduler.sde_step_mean(x0, z_k, t_k, t_next)
+            xi = torch.randn(b, G, *spatial, generator=gen, device=device, dtype=src_b.dtype)
+            z_kplus1 = mean_old.unsqueeze(1) + float(std_old) * xi  # (b, G, *spatial)
+            # Suffix to z_K (G-expanded conditioning).
+            src_lab_bg = src_lab.repeat_interleave(G) if isinstance(src_lab, Tensor) else src_lab
+            tgt_lab_bg = tgt_lab.repeat_interleave(G) if isinstance(tgt_lab, Tensor) else tgt_lab
+            spacing_bg = spacing_b.repeat_interleave(G, dim=0) if spacing_b.dim() == 2 else spacing_b
+            x_src_bg = src_b.repeat_interleave(G, dim=0)
+            z_g = z_kplus1.reshape(b * G, *spatial)
+            suffix = _heun_rollout_paired(
+                generator, bridge_scheduler, z_g, x_src_bg, nodes, spacing_bg, src_lab_bg, tgt_lab_bg,
+                perturbed_step + 1, num_steps,
+            )
+            z_K = suffix[-1]  # (b·G, *spatial)
+            # Winner: real cat([x_src, x_tgt]); Loser: bridge-noised cat([x_src, z_K]).
+            winners.append(torch.cat([x_src_bg, tgt_b.repeat_interleave(G, dim=0)], dim=1).detach().cpu())
+            losers.append(torch.cat([x_src_bg, z_K], dim=1).detach().cpu())
     _log.info(
         "build_paired_bridge_noised_fakes: %d bridge-noised pairs (G=%d, step=%d, num_steps=%d).",
         n * G, G, perturbed_step, num_steps,

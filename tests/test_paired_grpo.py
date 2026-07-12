@@ -1905,6 +1905,41 @@ def test_build_paired_bridge_noised_fakes_runs_under_no_grad(monkeypatch):
     )
 
 
+# -- codex #110 round-6: builder autocast (1 P2) -------------------------------
+
+
+def test_build_paired_bridge_noised_fakes_rollout_runs_under_cuda_autocast(monkeypatch):
+    """The builder's rollout is wrapped in torch.autocast(enabled=cuda): the full 3D fake-
+    cache job allocates fp32 UNet activations (b anchor + b*G suffix rollouts) and can OOM
+    even though training/probing fit under 16-mixed. Mirrors sample_paired_latent_flow +
+    singular_branch_rollout_paired + the probe (codex #110 P2)."""
+    from manifold.data.paired_reward_pairs import build_paired_bridge_noised_fakes
+
+    entered = []
+    real_autocast = torch.autocast
+
+    class _SpyAutocast:
+        def __init__(self, device_type, enabled=True, **kw):
+            self.enabled = enabled
+        def __enter__(self):
+            entered.append(self.enabled)
+            return real_autocast.__new__(real_autocast)
+        def __exit__(self, *a):
+            return False
+
+    monkeypatch.setattr(torch, "autocast", _SpyAutocast)
+    x_src = torch.randn(2, *_LAT)
+    x_tgt = torch.randn(2, *_LAT)
+    build_paired_bridge_noised_fakes(
+        x_src, x_tgt, _SoftPairedPolicy(), FlowMatchBridgeGRPOScheduler(eta=0.7),
+        src_label=1, tgt_label=2, spacing=[1.0, 1.0, 1.0], num_steps=4,
+        perturbed_step=1, G=2, batch_size=2, seed=0,
+    )
+    assert entered, "the builder rollout must be wrapped in torch.autocast"
+    # On CPU the autocast is disabled (enabled=device.type=='cuda' is False), but entered.
+    assert all(e is False for e in entered)
+
+
 # -- codex #110 round-3: tied maxima + label sequences (2 P2) ------------------
 
 
