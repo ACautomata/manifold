@@ -97,8 +97,8 @@ class GuardedModelCheckpoint(ModelCheckpoint):
             return False
         if self.guardrail_metric is not None and self.guardrail_min is not None:
             gr = trainer.callback_metrics.get(self.guardrail_metric)
-            if gr is None or float(gr) < float(self.guardrail_min):
-                # Below the guardrail -> never eligible for "best" (save_last still
+            if gr is None or not torch.isfinite(gr) or float(gr) < float(self.guardrail_min):
+                # Reject non-finite (NaN/Inf) + below guardrail (codex #108) -> never eligible for "best" (save_last still
                 # keeps the latest). The PSNR callback's val/ssim is the observable.
                 return False
         return super().check_monitor_top_k(trainer, current)
@@ -128,15 +128,15 @@ class EtaRampCallback(pl.Callback):
         self.eta_max = float(eta_max)
         self.ramp_fraction = float(ramp_fraction)
 
-    def eta_at(self, global_step: int, total_steps: int) -> float:
-        """The ramped ``eta`` at ``global_step`` of ``total_steps`` (pure, testable)."""
+    def eta_at(self, step: int, total_steps: int) -> float:
+        """The ramped eta at step of total_steps (batch counts - codex #109 P2)."""
         ramp_steps = max(1.0, self.ramp_fraction * float(total_steps))
         frac = min(1.0, float(global_step) / ramp_steps)
         return self.eta_min + (self.eta_max - self.eta_min) * frac
 
     def on_train_batch_start(self, trainer, pl_module, batch, batch_idx) -> None:
         total = int(trainer.estimated_stepping_batches) or 1
-        self.scheduler.eta = self.eta_at(int(trainer.global_step), total)
+        self.scheduler.eta = self.eta_at(int(batch_idx), total)  # batch timeline (codex #109 P2)
 
 
 def calibrate_reward_temp(reward_model, samples: torch.Tensor, *, batch_size: int = 8) -> float:
@@ -228,7 +228,7 @@ def _build_checkpoint(
         # val/mean_reward is rank-0-only (validation_step gate); drop the monitor
         # under DDP (save_last + save_top_k=1 keep the latest). val/psnr is a global
         # cross-rank mean (the PSNR callback all_gathers) -> monitor stays on (#105).
-        return ModelCheckpoint(filename="paired-grpo-{epoch:03d}", **common)
+        return ModelCheckpoint(filename="paired-grpo-{epoch:03d}", **{**common, "save_top_k": 1})  # force save_top_k=1 (codex #108)
     ckwt = dict(
         filename=f"paired-grpo-{{epoch:03d}}-{{{monitor_metric}:.3f}}",
         monitor=monitor_metric,
@@ -484,6 +484,8 @@ def main(argv: list[str] | None = None, *, data_provider=None) -> int:
             devices=args.num_gpus if args.num_gpus > 1 else 1,
             batch_size=int(gcfg.batch_size),
             seed=seed,
+            eta_min=(float(opt(gcfg, "eta_min", 0.1)) if bool(opt(gcfg, "eta_ramp", True)) else None),
+            eta_ramp_fraction=float(opt(gcfg, "eta_ramp_fraction", 0.3)),
         )
         print(
             f"[manifold-train-paired-grpo] measure: {it_per_s:.3f} it/s | "
@@ -518,6 +520,8 @@ def run_paired_grpo_measurement(
     accelerator: str = "auto",
     batch_size: int = 2,
     seed: int = 0,
+    eta_min: float | None = None,
+    eta_ramp_fraction: float = 0.3,
 ) -> tuple[float, int, float]:
     """Time a 1-epoch G2RPO fit + report it/s + peak GPU memory (the #106 launch gate).
 
@@ -540,6 +544,8 @@ def run_paired_grpo_measurement(
         accelerator=accelerator,
         batch_size=batch_size,
         seed=seed,
+        eta_min=eta_min,
+        eta_ramp_fraction=eta_ramp_fraction,
     )
     elapsed = time.perf_counter() - start
     it_per_s = float(trainer.global_step) / elapsed if elapsed > 0 else float("nan")
@@ -604,9 +610,10 @@ def _real_inputs(
     #    PairedRewardModule Lightning checkpoint. Architecture from the network config;
     #    opt() falls back to RewardModel defaults if a non-standard network file omits it.
     reward_cfg = opt(cfg, "reward_model", {})
+    latent_c = int(opt(cfg, "latent_channels", 4))
     reward_model = RewardModel(
         spatial_dims=int(opt(reward_cfg, "spatial_dims", 3)),
-        in_channels=int(opt(reward_cfg, "in_channels", 8)),  # 2*C_latent (paired)
+        in_channels=2 * latent_c,  # force 2*C_latent regardless of config (codex #109 P1)
         channels=int(opt(reward_cfg, "channels", 64)),
         num_layers_d=int(opt(reward_cfg, "num_layers_d", 3)),
         norm=str(opt(reward_cfg, "norm", "BATCH")),
@@ -641,6 +648,14 @@ def _real_inputs(
             f"No paired BraTS volumes found under data_base_dir={brats_dir} "
             f"(need >=1 subject with all 4 contrasts)."
         )
+    val_dir = opt(cfg, "val_data_base_dir", None)
+    if not (val_dir and os.path.isdir(str(val_dir))):
+        from omegaconf import OmegaConf
+
+        if OmegaConf.select(cfg, "val_fraction", default=None) is None:
+            g2rpo_val_fraction = float(opt(cfg, "paired_grpo.val_fraction", 0.0))
+            cfg = OmegaConf.merge(cfg, OmegaConf.create({"val_fraction": g2rpo_val_fraction}))
+
     train_manifest, val_manifest = _train_val_manifests(cfg, manifest)
     if not val_manifest:
         raise ValueError(
@@ -662,6 +677,17 @@ def _real_inputs(
 
     train_latent_ds = _warm_ds(train_manifest)
     val_latent_ds = _warm_ds(val_manifest)
+
+    if hasattr(train_latent_ds, "raw_latent") and hasattr(train_latent_ds, "source"):
+        expected_spatial = tuple(-(-d // divisor) for d in target_dim)
+        for split_name, ds in (("train", train_latent_ds), ("val", val_latent_ds)):
+            for sid in ds.source.unique_sample_ids():
+                cached_spatial = tuple(ds.raw_latent(sid).shape[1:])
+                if cached_spatial != expected_spatial:
+                    raise ValueError(
+                        f"Cached paired latent ({split_name}, {sid}) spatial shape "
+                        f"{cached_spatial} does not match config target_dim={target_dim}"
+                        f" / divisor={divisor} = {expected_spatial} (ceil).")
 
     # 5. Train is pure-RL (src-only: the bridge pins Z_1 -> x_hat_1; tgt unused at
     #    train); val carries tgt for the PSNR decode (#105). Both share the paired cache.
