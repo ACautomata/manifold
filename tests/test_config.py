@@ -334,6 +334,34 @@ def test_jit_recipe_carries_x0_formulation() -> None:
     assert cfg.diffusion_unet_inference.cfg_guidance_scale == 1.5
 
 
+def test_paired_recipe_warmup_is_ratio_not_absolute() -> None:
+    """Regression (autoresearch best-experiment finding): the paired-JiT recipe's
+    default ``lr_warmup_steps: 1000`` exceeded the ~500-step horizon of a 20-ep
+    8-DDU run, so ``cosine_with_warmup`` never left its linear ramp and the run
+    trained on a monotonic 0->peak ramp - ending at peak LR (worst convergence
+    point). Setting it to 50 gave +1 dB. The recipe now defaults to
+    ``lr_warmup_ratio: 0.1`` (0.1 x 500 = 50 there), which tracks the horizon at
+    any run length. This fails if the ratio is removed (the absolute 1000 returns
+    and again exceeds a short horizon).
+    """
+    from manifold.modules.latent_flow import resolve_warmup_steps
+
+    cfg = load_config(
+        str(_REPOS / "configs/env/environment_brats2023.yaml"),
+        str(_REPOS / "configs/train/config_paired_jit.yaml"),
+        str(_REPOS / "configs/network/config_network.yaml"),
+    )
+    train = cfg.diffusion_unet_train
+    assert float(train.lr_warmup_ratio) == pytest.approx(0.1)
+    # The 20-ep/8-DDU horizon (~500 steps): resolved warmup must be 50, NOT the
+    # old absolute 1000 that exceeds the horizon -> a pure linear ramp.
+    resolved = resolve_warmup_steps(
+        int(train.lr_warmup_steps), train.lr_warmup_ratio, total_steps=500
+    )
+    assert resolved == 50
+    assert resolved < 500
+
+
 def test_env_configs_are_tracked_in_repo() -> None:
     """Regression: a bare ``env/`` gitignore pattern shadowed ``configs/env/``, so
     the migrated env profiles were present in the working tree but UNTRACKED — a
