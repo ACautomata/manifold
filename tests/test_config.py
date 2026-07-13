@@ -362,6 +362,27 @@ def test_paired_recipe_warmup_is_ratio_not_absolute() -> None:
     assert resolved < 500
 
 
+def test_paired_recipe_ema_val_arm_matches_autoresearch() -> None:
+    """Regression (autoresearch best-experiment finding): the paired-JiT recipe's
+    legacy ``ema_decays: [0.9999, 0.9996]`` set the PSNR/SSIM val arm (the slow
+    shadow, argmax(decays)) to a ~10^4-step window that barely moves over a
+    realistic 20-50ep run (~6-15k steps), so val/psnr read a near-random shadow
+    and the baseline collapsed to 13.75 dB (≈ random init). Dropping the val arm
+    to 0.999 (window ~10^3) was the sweep's single largest lever — +9.0 dB (exp1,
+    13.75 -> 22.75), the only EMA change that cleared the 0.5-dB keep rule
+    alongside the warmup fix. This fails if the default reverts to [0.9999,
+    0.9996] (val again reads a stale shadow on realistic budgets).
+    """
+    cfg = load_config(
+        str(_REPOS / "configs/env/environment_brats2023.yaml"),
+        str(_REPOS / "configs/train/config_paired_jit.yaml"),
+        str(_REPOS / "configs/network/config_network.yaml"),
+    )
+    assert list(cfg.formulation.ema_decays) == [0.999, 0.99]
+    # The val arm is the SLOWER shadow (argmax(decays)) — 0.999, not 0.99.
+    assert max(cfg.formulation.ema_decays) == 0.999
+
+
 def test_env_configs_are_tracked_in_repo() -> None:
     """Regression: a bare ``env/`` gitignore pattern shadowed ``configs/env/``, so
     the migrated env profiles were present in the working tree but UNTRACKED — a
