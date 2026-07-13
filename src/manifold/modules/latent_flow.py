@@ -104,9 +104,12 @@ def resolve_warmup_steps(
     ``lr_warmup_ratio`` (a fraction of the total optimizer-step horizon) takes
     precedence when set — so warmup auto-tracks the schedule length when the
     batch/GPU count moves the horizon. When it is ``None`` (default), the
-    absolute ``lr_warmup_steps`` is used unchanged (the historical behavior).
-    A ratio outside ``[0.0, 1.0]`` is rejected (a ``>1`` ratio would make
-    warmup exceed the horizon and the peak LR would never be reached).
+    absolute ``lr_warmup_steps`` is used, clamped to ``total_steps − 1`` so the
+    peak LR (reached at the first post-warmup step) lands on an actual update:
+    a warmup of ``total_steps`` would put the peak one step past the last update
+    and leave the whole run on the linear ramp. A ratio outside ``[0.0, 1.0]``
+    is rejected (a ``>1`` ratio would make warmup exceed the horizon and the
+    peak LR would never be reached).
     """
     if lr_warmup_ratio is not None:
         ratio = float(lr_warmup_ratio)
@@ -115,7 +118,25 @@ def resolve_warmup_steps(
                 f"lr_warmup_ratio must be in [0.0, 1.0] (a fraction of total steps), got {ratio}."
             )
         return max(0, int(round(ratio * max(1, int(total_steps)))))
-    return int(lr_warmup_steps)
+    steps = int(lr_warmup_steps)
+    total = int(total_steps)
+    # Peak LR (lr_lambda == 1.0) is reached at the first post-warmup step
+    # (step ``warmup``), so warmup must be < total for the peak to land on an
+    # actual optimizer update - warmup == total puts the peak one step past the
+    # last update and the whole run stays on the linear ramp.
+    horizon = max(0, total - 1)
+    if steps > horizon:
+        _log.warning(
+            "lr_warmup_steps=%d leaves no room for the cosine peak over %d "
+            "optimizer steps (peak LR would never be reached); clamping warmup "
+            "to %d so the peak is still hit. Set lr_warmup_ratio to scale "
+            "warmup to the horizon instead.",
+            steps,
+            total,
+            horizon,
+        )
+        return horizon
+    return steps
 
 
 class LatentFlowModule(spt.Module):
