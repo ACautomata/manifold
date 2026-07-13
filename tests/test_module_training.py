@@ -255,13 +255,13 @@ def test_resolve_warmup_steps():
     """``lr_warmup_ratio`` overrides the absolute step count; None falls back.
 
     When ``lr_warmup_ratio`` is ``None`` the absolute count is used but clamped
-    to the horizon: ``1000`` warmup over a 12-step run is capped at 12 so the
-    peak LR can still be reached.
+    to ``total_steps − 1``: ``1000`` warmup over a 12-step run is capped at 11
+    so the peak LR (reached at the first post-warmup step) lands on an update.
     """
     from manifold.modules.latent_flow import resolve_warmup_steps
 
-    # None → the absolute count clamped to the horizon (1000 > 12 → 12).
-    assert resolve_warmup_steps(1000, None, total_steps=12) == 12
+    # None → clamped below the horizon (1000 > 12 → 11; peak at the last step).
+    assert resolve_warmup_steps(1000, None, total_steps=12) == 11
     # A set ratio → round(ratio × total).
     assert resolve_warmup_steps(1000, 0.0, total_steps=12) == 0
     assert resolve_warmup_steps(1000, 0.25, total_steps=40) == 10
@@ -273,10 +273,24 @@ def test_resolve_warmup_steps():
 
 
 def test_resolve_warmup_steps_clamps_to_horizon():
-    """Absolute warmup longer than the run is clamped so peak LR is reachable."""
+    """Absolute warmup longer than the run is clamped to total-1 so peak LR is hit."""
     from manifold.modules.latent_flow import resolve_warmup_steps
 
-    assert resolve_warmup_steps(1000, None, total_steps=500) == 500
+    assert resolve_warmup_steps(1000, None, total_steps=500) == 499
+
+
+def test_resolve_warmup_steps_boundary_warmup_equals_total(caplog):
+    """warmup == total is also clamped (peak is one step past the last update)."""
+    import logging
+
+    from manifold.modules.latent_flow import resolve_warmup_steps
+
+    with caplog.at_level(logging.WARNING, logger="manifold.modules.latent_flow"):
+        result = resolve_warmup_steps(500, None, total_steps=500)
+    assert result == 499
+    assert any(
+        "peak LR would never be reached" in r.getMessage() for r in caplog.records
+    )
 
 
 def test_resolve_warmup_steps_unchanged_when_within_horizon():
@@ -301,9 +315,9 @@ def test_resolve_warmup_steps_warns_when_clamped(caplog):
 
     with caplog.at_level(logging.WARNING, logger="manifold.modules.latent_flow"):
         result = resolve_warmup_steps(1000, None, total_steps=500)
-    assert result == 500
+    assert result == 499
     assert any(
-        "exceeds the total optimizer-step horizon" in r.getMessage()
+        "peak LR would never be reached" in r.getMessage()
         for r in caplog.records
     )
 
