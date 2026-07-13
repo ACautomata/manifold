@@ -129,7 +129,7 @@ def run_paired_training(
     every_n_epochs: int = 1,
     monitor_metric: str = "val/psnr",
     ckpt_path: str | None = None,
-    ema_decays: tuple[float, ...] = (0.9999, 0.9996),
+    ema_decays: tuple[float, ...] = (0.999, 0.99),
     check_val_every_n_epoch: int | None = None,
 ) -> tuple[pl.Trainer, ModelCheckpoint]:
     """Assemble callbacks + ``Trainer`` and ``fit`` the paired module (the core seam).
@@ -143,8 +143,9 @@ def run_paired_training(
         num_inference_steps: Heun integration steps for the validation rollout.
         monitor_metric: ``"val/psnr"`` or ``"val/ssim"`` (both ``mode="max"``).
         ckpt_path: optional resume checkpoint passed to ``fit``.
-        ema_decays: EMA decays for the DoubleEMACallback (JiT default ``(0.9999, 0.9996)``);
-            read from ``formulation.ema_decays`` by :func:`main`.
+        ema_decays: EMA decays for the DoubleEMACallback (paired recipe default
+            ``(0.999, 0.99)``); read from ``formulation.ema_decays`` by
+            :func:`main` (this is the fallback when a custom YAML omits it).
         check_val_every_n_epoch: when set (and validation is enabled), forward
             ``check_val_every_n_epoch`` + ``num_sanity_val_steps=0`` to the Trainer so
             validation runs only every N epochs — e.g. ``=max_epochs`` yields a single
@@ -338,7 +339,7 @@ def main(argv: list[str] | None = None, *, data_provider=None) -> int:
     )
 
     paired_eval = opt(cfg, "paired_eval", {})
-    ema_decays = opt(cfg.formulation, "ema_decays", [0.9999, 0.9996])
+    ema_decays = opt(cfg.formulation, "ema_decays", [0.999, 0.99])
     max_epochs = int(args.max_epochs or train_cfg.n_epochs)
     run_paired_training(
         module=module,

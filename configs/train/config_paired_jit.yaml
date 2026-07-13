@@ -48,9 +48,17 @@ formulation:
   # On the ep25 run this collapsed the RAW model to ≈copy-src (+0.07 dB); uniform
   # MSE + low-t-biased sampling (p_mean=-0.8) forces genuine low-t translation.
   loss_weight: uniform   # "uniform" | "1mt_sq" (the legacy velocity-MSE default)
-  # Double EMA: shadows at 0.9999 (slow, used for the PSNR/SSIM val arm) + 0.9996.
+  # Double EMA: slow shadow 0.999 (the PSNR/SSIM val arm — argmax(decays)) +
+  # fast shadow 0.99. Autoresearch (sugon 8-DCU, 20ep sweep, 2026-07-13) found
+  # the legacy 0.9999 val arm (window ~10^4) barely moves over a realistic
+  # 20-50ep run (~6-15k steps), so val/psnr read a near-random shadow and the
+  # baseline collapsed to 13.75 dB (≈ random init). 0.999 (window ~10^3) was
+  # the sweep's single largest lever — +9.0 dB (exp1, 13.75→22.75), the only
+  # EMA change that cleared the 0.5-dB keep rule — and stays well-converged
+  # (≥6 windows) for 20-100ep while still slow enough to denoise; 0.995 overfits
+  # 20ep, 0.9999 needs ≥300ep to converge.
   ema: true
-  ema_decays: [0.9999, 0.9996]
+  ema_decays: [0.999, 0.99]
 
 # Subject-level held-out validation split. The legacy path reused the train set as
 # val (build_datamodule val_dataset=None), so val/psnr was a TRAIN-set number. This
