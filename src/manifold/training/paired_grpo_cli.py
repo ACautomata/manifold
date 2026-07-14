@@ -497,7 +497,7 @@ def _build_checkpoint(
     ``val/mean_reward`` (mode ``max``) for the reward-only smoke. ``auto_insert_metric_name
     = False`` because the metric key contains a ``/``. ``save_last=True`` for resume.
     Under DDP the rank-local ``val/mean_reward`` is dropped (the PSNR callback's
-    ``val/psnr`` is the global cross-rank selection metric, kept) — mirroring the
+    ``val/psnr`` is a rank-0-shard selection metric (rank-0-only decode, like FID), kept) — mirroring the
     noise→data GRPO checkpoint DDP fallback.
     """
     common = dict(
@@ -510,8 +510,8 @@ def _build_checkpoint(
     )
     if multi_gpu and monitor_metric == "val/mean_reward":
         # val/mean_reward is rank-0-only (validation_step gate); drop the monitor
-        # under DDP (save_last + save_top_k=1 keep the latest). val/psnr is a global
-        # cross-rank mean (the PSNR callback all_gathers) -> monitor stays on (#105).
+        # under DDP (save_last + save_top_k=1 keep the latest). val/psnr is logged on rank 0 only
+        # rank-0-shard (the PSNR callback no longer all_gathers) -> monitor stays on (#105).
         # Force save_top_k=1 (not the caller's): with no monitor there is no metric to
         # rank by, so keeping >1 is pointless disk waste - mirrors grpo_cli's DDP
         # fallback (codex #108).

@@ -10,11 +10,7 @@ data-warming lives in :func:`main`, the integration core :func:`run_paired_train
 ``fit``) is split out so a tiny CPU smoke can drive it with a fake latent cache
 (the issue's testing seam) instead of BraTS + a real VAE.
 
-Best-checkpoint selection monitors ``val/psnr`` (``mode="max"``) on every config,
-including DDP: the PSNR/SSIM callback runs the decode on all ranks (each over its
-``DistributedSampler`` shard) and ``all_gather``'s the per-volume sums, so
-``val/psnr`` is a global cross-rank mean (ADR-0016 amendment) - unlike the
-noise→data FID path, which stays rank-0-only.
+Best-checkpoint selection monitors ``val/psnr`` (``mode="max"``) on every config: the PSNR/SSIM callback decodes on rank 0 only (mirrors FIDCallback; the ADR-0016 "distributed PSNR" amendment is reverted - the concurrent 8-rank full-volume VAE decode deadlocks the DCU runtime), so ``val/psnr`` is a rank-0-shard estimate (rank 0 logs it; non-root ranks log nothing, like the noise->data FID path)
 """
 
 from __future__ import annotations
@@ -76,12 +72,7 @@ def _build_checkpoint(
 ) -> ModelCheckpoint:
     """Stock Lightning ``ModelCheckpoint`` (ADR-0006), monitoring ``val/psnr``.
 
-    ``val/psnr`` is a global cross-rank mean under DDP (the PSNR/SSIM callback
-    decodes on all ranks over their ``DistributedSampler`` shards and
-    ``all_gather``'s the per-volume sums - ADR-0016 amendment), so the monitor
-    stays on for every config, including multi-GPU (unlike the noise->data FID
-    path, which stays rank-0-only). ``mode="max"``, top-k, last, full state; the
-    raw-optimizer metric is sufficient on a short from-scratch run.
+    ``val/psnr`` is a rank-0-shard estimate under DDP (the PSNR/SSIM callback decodes on rank 0 only - mirrors FIDCallback; the ADR-0016 "distributed PSNR" amendment is reverted because the concurrent 8-rank full-volume VAE decode deadlocks the DCU runtime), so the monitor stays on for every config, including multi-GPU. ``mode="max"``, top-k, last, full state; the raw-optimizer metric is sufficient on a short from-scratch run.
     ``auto_insert_metric_name = False`` because the metric key contains a ``/``.
 
     ``monitor=False`` (no held-out val -> validation disabled): no metric to

@@ -569,7 +569,7 @@ def cold_cache_ddp_worker(rank: int, world: int, results_dir: str, port: str, n_
     }))
 
 
-# -- paired PSNR 2-rank worker (distributed decode + global mean) ------------
+# -- paired PSNR 2-rank worker (rank-0-only decode) -------------------------
 
 
 _C_PAIRED = 4
@@ -595,9 +595,8 @@ class _IdentityVAE(nn.Module):
 class _PairedLatentDS(Dataset):
     """Tiny in-RAM paired latent dataset (the 5-key contract) for the DDP test.
 
-    Per-sample latents are scaled by ``i`` so the two ranks' DistributedSampler
-    shards differ -> a rank-local mean would disagree across ranks (the property
-    the epoch-end ``all_gather`` must overcome to produce one global ``val/psnr``).
+    Used by the rank-0-only PSNR worker: rank 0 decodes its ``DistributedSampler``
+    shard of this set and logs ``val/psnr`` as a rank-0-shard estimate (rank 1 skips).
     """
 
     def __init__(self, n: int = 5, *, seed: int = 0):
@@ -621,22 +620,17 @@ class _PairedLatentDS(Dataset):
 
 
 def paired_psnr_ddp_worker(rank: int, world: int, results_dir: str, port: str, _unused: bool) -> None:
-    """2-rank paired fit: every rank decodes its DistributedSampler val shard, then
-    :class:`~manifold.metrics.PairedPSNRSSIMCallback` ``all_gather``'s the
-    per-volume sums to a global ``val/psnr`` (ADR-0016 amendment).
+    """2-rank paired fit: only rank 0 decodes its ``DistributedSampler`` val shard and
+    logs ``val/psnr`` / ``val/ssim`` as a rank-0-shard estimate (mirrors FIDCallback;
+    ADR-0016 "distributed PSNR" amendment reverted - the concurrent all-rank full-volume
+    VAE decode deadlocks the DCU runtime).
 
-    Captures each rank's LOCAL pre-gather ``(_psnr_sum, _ssim_sum, _count)`` - the
-    instance attrs are read into locals in ``on_validation_epoch_end`` and the
-    locals (not the attrs) are overwritten by the gather, so the attrs survive
-    post-fit holding the rank-local contribution - plus the logged global
-    ``val/psnr`` / ``val/ssim``. The downstream test asserts:
-    (a) both ranks decoded (``_count > 0`` on both - pre-fix only rank 0 was > 0);
-    (b) the two ranks' LOCAL means differ (shards are disjoint -> a rank-local log
-        would disagree, so the cross-rank equality proves the all_gather fired);
-    (c) ``val/psnr`` is identical across ranks AND equals the hand-computed global
-        ``(r0_sum + r1_sum) / (r0_count + r1_count)``;
-    (d) no deadlock (the spawn joined -> both ranks wrote a result).
-    """
+    Captures each rank's ``(_psnr_sum, _ssim_sum, _count)`` post-fit (rank 0 holds its
+    shard totals; rank 1 never decoded -> 0) plus the logged ``val/psnr`` / ``val/ssim``
+    (rank 0 only; rank 1 logs nothing). The downstream test asserts: (a) rank 0 decoded
+    and rank 1 did NOT; (b) the metrics are logged on rank 0 only; (c) the rank-0 value
+    equals its own shard mean (no cross-rank ``all_gather``); (d) no deadlock (spawn
+    joined)."""
     import lightning.pytorch as pl  # noqa: F401 (Lightning import side-effect)
 
     from torch.utils.data import DataLoader

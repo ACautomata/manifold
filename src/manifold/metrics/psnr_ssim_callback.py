@@ -35,20 +35,12 @@ the noise→data stack uses for ``val/fid`` (see ``training/cli.py``).
 This callback only *logs* the metrics, so wiring selection needs no trainer
 change here (the paired trainer, Slice 4, will pass the monitor name through).
 
-Distributed under DDP (ADR-0016 amendment): every rank runs the decode loop over
-its own ``DistributedSampler`` shard of the val set, then the per-volume sums are
-``all_gather``'d at epoch end so ``val/psnr`` / ``val/ssim`` are the **global** mean
-over the full val set (not a rank-0-shard estimate). The decode itself is single-volume
-and stateless, so sharding is free; the only cross-rank collective is the epoch-end
-gather, called by all ranks together (cadence agrees across ranks) - no per-batch
-collective, so the loop cannot deadlock on an unbalanced shard. ``val/psnr`` being
-global re-enables the stock ``ModelCheckpoint(monitor="val/psnr")`` under DDP. (The
-noise→data ``FIDCallback`` stays rank-0-only: its Fréchet distance needs a
-feature-matrix gather, not a ``(sum, count)`` reduction - ADR-0016.)
+Distributed under DDP: **rank-0-only** (mirrors :class:`~manifold.metrics.FIDCallback`; the ADR-0016 "distributed PSNR" amendment is reverted). The per-batch full-volume 3D MAISI VAE decode (``monai sliding_window_inference``) is heavy, and running it concurrently on all DDP ranks deadlocks the DCU/DTK vendor runtime inside the decode conv (a device-side stall in ``_conv_forward``, not an NCCL collective - observed on sugon 8-DCU; single-DCU and 8-NVIDIA run the identical callback clean). The amendment's "no per-batch collective -> no deadlock" premise is falsified: the freeze is in the *local* conv, not the (now-removed) epoch-end ``all_gather``. So under DDP only rank 0 decodes its ``DistributedSampler`` shard and logs ``val/psnr`` / ``val/ssim`` as a rank-0-shard estimate (like ``val/fid``); the other ranks skip and log nothing (the ``ModelCheckpoint(monitor="val/psnr")`` "monitor not found" note on non-root ranks is benign - selection runs on rank 0).
 """
 
 from __future__ import annotations
 
+import logging
 import math
 
 import torch
@@ -58,6 +50,9 @@ try:
     import lightning.pytorch as pl
 except ImportError:  # pragma: no cover — lightning is a hard dep via spt
     import pytorch_lightning as pl  # type: ignore
+
+
+_log = logging.getLogger(__name__)
 
 
 class PairedPSNRSSIMCallback(pl.Callback):
@@ -97,15 +92,33 @@ class PairedPSNRSSIMCallback(pl.Callback):
     # -- gate + staging (mirror FIDCallback) ---------------------------------
 
     def _gated(self, trainer) -> bool:
-        """Cadence-only gate; every rank participates under DDP (ADR-0016 amendment).
+        """Rank-0 + cadence gate; warn loudly under DDP and skip otherwise.
 
-        The val loader is sharded by Lightning's ``DistributedSampler`` under DDP, so
-        each rank's ``on_validation_batch_end`` already sees a disjoint 1/world slice of
-        the val set. All ranks therefore run the decode + accumulate over their own
-        shard, then ``on_validation_epoch_end`` ``all_gather``'s the per-volume sums to
-        a global mean. ``current_epoch`` is identical across ranks, so every rank is
-        active (or skipped) together - no rank-asymmetric collective, no deadlock.
+        Mirrors :class:`~manifold.metrics.FIDCallback`: the per-batch full-volume 3D
+        MAISI VAE decode (``monai sliding_window_inference``) is heavy, and running it
+        concurrently on all DDP ranks deadlocks the DCU/DTK vendor runtime inside the
+        decode conv (a device-side stall, not a collective). The ADR-0016 "distributed
+        PSNR" amendment's "no per-batch collective -> no deadlock" premise is
+        falsified by repeated sugon 8-DCU hangs (single-DCU and 8-NVIDIA run the same
+        callback clean). So under DDP only rank 0 decodes its ``DistributedSampler``
+        shard and logs ``val/psnr`` / ``val/ssim`` as a rank-0-shard estimate (like
+        ``val/fid``); the other ranks skip and must NOT block on a collective here.
         """
+        world = 1
+        if torch.distributed.is_available() and torch.distributed.is_initialized():
+            world = torch.distributed.get_world_size()
+        if world > 1:
+            if not trainer.is_global_zero:
+                return False
+            _log.warning(
+                "PairedPSNRSSIMCallback: running only on rank 0 (world_size=%d). The "
+                "other ranks skip the per-batch VAE decode - a concurrent 8-rank "
+                "full-volume decode deadlocks the DCU runtime. val/psnr / val/ssim are "
+                "a rank-0-shard estimate (not a global mean); non-root ranks do not log "
+                "them (the ModelCheckpoint 'monitor not found' note on those ranks is "
+                "benign).",
+                world,
+            )
         epoch = trainer.current_epoch
         if self.every_n_epochs <= 1 or (epoch % self.every_n_epochs == 0):
             return True
@@ -217,6 +230,14 @@ class PairedPSNRSSIMCallback(pl.Callback):
         if not self._active:
             return
         self._stage_eval_on_device()
+        # Defragment the caching allocator before the heavy per-batch full-volume 3D
+        # decode loop. Under DDP rank 0 also holds the UNet + optimizer + gradient
+        # buckets + HCCL buffers, so a fragmented cache is the leading residual way the
+        # multi-GB image-resolution decode can still device-stall even after the
+        # rank-0-only revert (single-DCU, with none of that overhead, decodes clean).
+        # Runs on rank 0 only (the gate above returned on non-root ranks); no-op on CPU.
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
         self._psnr_sum = 0.0
         self._ssim_sum = 0.0
         self._count = 0
@@ -264,33 +285,23 @@ class PairedPSNRSSIMCallback(pl.Callback):
         if not self._active:
             return
         try:
-            psnr_sum = self._psnr_sum
-            ssim_sum = self._ssim_sum
+            # Rank-0-only (ADR-0016 amendment reverted): only rank 0 ran the decode +
+            # accumulate, so the per-volume sums are already the rank-0-shard totals.
+            # The cross-rank ``all_gather`` is removed - it was the amendment's
+            # mechanism, and the hang is in the *local* decode conv, not the gather
+            # (py-spy: all ranks frozen in ``_conv_forward``). Rank 0 logs
+            # ``val/psnr`` / ``val/ssim`` as a rank-0-shard estimate; the other ranks
+            # skipped (``_active`` False) and log nothing. No collective is called, so
+            # non-root ranks cannot block here (they sync implicitly at the next DDP
+            # training-step gradient all-reduce - the FIDCallback contract).
             count = float(self._count)
-            # All ranks reach here together (cadence agrees -> _active agrees), so the
-            # all_gather cannot deadlock. Gather (psnr_sum, ssim_sum, count) and reduce
-            # to the global per-volume mean over ALL ranks' shards. PSNR/SSIM are
-            # per-volume scalars, so sum/count = the mean of per-volume scores
-            # (weight = 1/volume) - NOT a mean-of-per-rank-means. sync_dist is left
-            # False because the value is already cross-rank-reduced here.
-            if torch.distributed.is_available() and torch.distributed.is_initialized():
-                world = torch.distributed.get_world_size()
-                if world > 1:
-                    local = torch.tensor(
-                        [psnr_sum, ssim_sum, count], device=self._device()
-                    )
-                    gathered = [torch.zeros_like(local) for _ in range(world)]
-                    torch.distributed.all_gather(gathered, local)
-                    stacked = torch.stack(gathered)
-                    psnr_sum = float(stacked[:, 0].sum())
-                    ssim_sum = float(stacked[:, 1].sum())
-                    count = float(stacked[:, 2].sum())
             if count > 0:
-                pl_module.log("val/psnr", psnr_sum / count)
-                pl_module.log("val/ssim", ssim_sum / count)
+                pl_module.log("val/psnr", self._psnr_sum / count)
+                pl_module.log("val/ssim", self._ssim_sum / count)
         finally:
             self._restore_eval_to_cpu()
             self._active = False
+
 
 
 __all__ = ["PairedPSNRSSIMCallback"]
