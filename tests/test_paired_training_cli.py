@@ -280,6 +280,63 @@ def test_run_paired_training_skips_validation_when_no_held_out_val(tmp_path):
     assert trainer.check_val_every_n_epoch is not None
 
 
+def test_run_paired_training_drops_psnr_monitor_under_ddp(tmp_path, monkeypatch):
+    """Under multi-GPU the rank-0-only ``val/psnr`` monitor is DROPPED (mirrors FID):
+    a rank-0-only metric is absent from the non-root ranks' ``callback_metrics``, so
+    ``ModelCheckpoint(monitor="val/psnr")`` can't find the key there (codex #115 P1).
+    Single-GPU keeps the monitor on (``val/psnr`` is the rank's own metric). Verified
+    by spying on ``_build_checkpoint``'s ``monitor`` kwarg with ``build_trainer``
+    stubbed so ``devices=2`` does not spawn a real DDP fit.
+    """
+    import manifold.training.paired_cli as cli
+
+    captured: dict = {}
+    real_bcp = cli._build_checkpoint
+
+    def spy_bcp(model_dir, *, monitor_metric="val/psnr", save_top_k=3, monitor=True, every_n_epochs=1):
+        captured["monitor"] = monitor
+        return real_bcp(
+            model_dir, monitor_metric=monitor_metric, save_top_k=save_top_k,
+            monitor=monitor, every_n_epochs=every_n_epochs,
+        )
+
+    monkeypatch.setattr(cli, "_build_checkpoint", spy_bcp)
+
+    class _FakeTrainer:
+        def fit(self, *a, **k):
+            return None
+
+    monkeypatch.setattr(cli, "build_trainer", lambda **kw: _FakeTrainer())
+
+    def _bundle():
+        module = PairedLatentFlowModule(
+            _trainable_paired_unet(), FlowMatchHeunDiscreteScheduler(), lr=1e-2,
+            lr_warmup_steps=0, num_train_examples=4, train_batch_size=2, n_epochs=1,
+        )
+        bundle = _DataBundle(
+            latent_ds=_FakePairedDataset(n=4), vae=AutoencoderKL(scaling_factor=0.5),
+            allow_train_as_val=True,
+        )
+        return module, bundle
+
+    # multi-GPU -> monitor dropped (rank-0-only val/psnr can't drive ModelCheckpoint
+    # on the other ranks).
+    module, bundle = _bundle()
+    run_paired_training(
+        module=module, bundle=bundle, model_dir=str(tmp_path / "ddp"),
+        max_epochs=1, batch_size=2, devices=2, num_inference_steps=2, every_n_epochs=1,
+    )
+    assert captured["monitor"] is False, "multi-GPU must drop the rank-0-only val/psnr monitor"
+
+    # single-GPU -> monitor kept on (val/psnr is the rank's own metric).
+    module, bundle = _bundle()
+    run_paired_training(
+        module=module, bundle=bundle, model_dir=str(tmp_path / "single"),
+        max_epochs=1, batch_size=2, devices=1, num_inference_steps=2, every_n_epochs=1,
+    )
+    assert captured["monitor"] is True, "single-GPU must keep the val/psnr monitor"
+
+
 # -- console-entry config helper (mirrors test_training_cli._write_tiny_configs) --
 
 

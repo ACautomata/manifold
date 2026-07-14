@@ -299,19 +299,18 @@ def test_gate_single_process_always_active(identity_vae):
     assert cb._gated(_fake_trainer(is_global_zero=True, current_epoch=0)) is True
 
 
-def test_gate_active_on_all_ranks_under_ddp(identity_vae, monkeypatch):
-    """Under DDP every rank runs the decode over its own ``DistributedSampler`` shard
-    (``on_validation_epoch_end`` ``all_gather``'s the per-volume sums to the global
-    mean), so the gate is cadence-only - it no longer skips non-rank-0. There is no
-    per-batch collective, so the decode loop cannot deadlock; the rank-asymmetric
-    early-return is gone (ADR-0016 amendment).
+def test_gate_skips_non_rank0_under_ddp(identity_vae, monkeypatch):
+    """Under DDP only rank 0 runs the decode (mirrors FIDCallback); non-rank-0 is
+    skipped so the 8-way concurrent full-volume VAE decode that deadlocks the DCU
+    runtime is avoided (ADR-0016 "distributed PSNR" amendment reverted). There is no
+    cross-rank collective, so a skipped rank cannot block.
     """
     cb = _make_callback(_FakePipeline(_FakeUNet(), identity_vae))
     monkeypatch.setattr(torch.distributed, "is_initialized", lambda: True)
     monkeypatch.setattr(torch.distributed, "get_world_size", lambda: 2)
 
     assert cb._gated(_fake_trainer(is_global_zero=True)) is True
-    assert cb._gated(_fake_trainer(is_global_zero=False)) is True
+    assert cb._gated(_fake_trainer(is_global_zero=False)) is False
 
 
 def test_gate_cadence_every_n_epochs(identity_vae):

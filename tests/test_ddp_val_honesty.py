@@ -6,12 +6,13 @@
   is logged exactly once (rank 0).
 - **M4**: ``val/mean_reward`` scope documented in the ``validation_step``
   docstring (rank-0-shard-scoped; no ``sync_dist``).
-- **M5** (retired by the ADR-0016 amendment): ``val/psnr`` / ``val/ssim`` are now
-  GLOBAL under DDP (every rank decodes its ``DistributedSampler`` shard +
-  ``all_gather`` of the per-volume sums); the rank-0-shard scope + one-shot warning
-  are gone. The metric names (``val/psnr`` / ``val/ssim``) are unchanged.
+- **M5** (reverted to rank-0-only): ``val/psnr`` / ``val/ssim`` are logged on rank 0
+  ONLY (mirrors FIDCallback). The ADR-0016 "distributed PSNR" amendment (all-rank
+  decode + epoch-end ``all_gather``) is reverted - the concurrent 8-rank full-volume
+  VAE decode deadlocks the DCU runtime. Metric names unchanged; non-root ranks do not
+  log them (a benign "monitor not found" note)
 - **L1**: the FID "running only on rank 0" DDP warning is hoisted below the
-  ``is_global_zero`` guard (fires rank-0 only). (PSNR no longer warns - distributed.)
+  ``is_global_zero`` guard (fires rank-0 only). (PSNR is rank-0-only too - mirrors FIDCallback.)
 - **L3**: the RadImageNet ``feature_net`` is lazy-built inside the rank-0-gated
   FID stage path (``make_feature_network`` call_count == 1 on rank 0, == 0 on rank 1).
 
@@ -127,31 +128,33 @@ def test_l1_fid_warning_below_guard():
     )
 
 
-# -- M5: PSNR is distributed (no rank-0 gate) ---------------------------------
+# -- M5: PSNR is rank-0-only (mirrors FIDCallback) ----------------------------
 
 
-def test_m5_psnr_gate_is_distributed_no_rank0():
-    """The PSNR callback's ``_gated`` is cadence-only under DDP - no ``is_global_zero``
-    guard and no rank-0 scope warning (every rank decodes its ``DistributedSampler``
-    shard + ``all_gather``'s the per-volume sums, per the ADR-0016 amendment). The
-    metric names (``val/psnr`` / ``val/ssim``) are unchanged (the consumer keys on them)."""
+def test_m5_psnr_gate_is_rank0_only():
+    """The PSNR callback's ``_gated`` is rank-0-only under DDP (mirrors FIDCallback):
+    an ``is_global_zero`` guard + a rank-0 scope warning. The ADR-0016 "distributed
+    PSNR" amendment (all-rank decode + epoch-end ``all_gather``) is reverted - the
+    concurrent 8-rank full-volume VAE decode deadlocks the DCU runtime. Metric names
+    (``val/psnr`` / ``val/ssim``) are unchanged (the consumer keys on them)."""
     from manifold.metrics import psnr_ssim_callback
 
     src = inspect.getsource(psnr_ssim_callback.PairedPSNRSSIMCallback._gated)
-    assert "is_global_zero" not in src, "PSNR _gated still has a rank-0 guard (should be distributed)"
-    assert "_log.warning" not in src, "PSNR _gated still has a rank-0 warning (should be distributed)"
+    assert "is_global_zero" in src, "PSNR _gated lost the rank-0 guard (should be rank-0-only)"
+    assert "_log.warning" in src, "PSNR _gated lost the rank-0 warning (should be rank-0-only)"
+    end_src = inspect.getsource(psnr_ssim_callback.PairedPSNRSSIMCallback.on_validation_epoch_end)
+    # The epoch-end all_gather call is gone (rank-0 logs its shard estimate directly).
+    assert "all_gather(" not in end_src, "PSNR on_validation_epoch_end still calls all_gather"
     # Metric names unchanged (the log calls stay val/psnr / val/ssim).
-    log_src = inspect.getsource(psnr_ssim_callback.PairedPSNRSSIMCallback.on_validation_epoch_end)
-    assert 'log("val/psnr"' in log_src
-    assert 'log("val/ssim"' in log_src
-
-
+    assert 'log("val/psnr"' in end_src
+    assert 'log("val/ssim"' in end_src
 def test_m5_metric_names_unchanged():
-    """``val/psnr`` / ``val/ssim`` / ``val/mean_reward`` metric names are unchanged
-    (the ``monitor_psnr`` / GRPO monitor consumers key on them). No ``sync_dist=``
-    argument on any ``log(...)`` call in the PSNR callback: the value is already
-    cross-rank-reduced by the epoch-end ``all_gather``, so ``sync_dist`` would
-    double-sync (and a plain-float ``sync_dist`` would give a mean-of-per-rank-means)."""
+    """``val/psnr`` / ``val/ssim`` metric names are unchanged (the ``monitor_psnr`` /
+    GRPO monitor consumers key on them). No ``sync_dist=`` argument on any ``log(...)``
+    call in the PSNR callback: rank 0 logs its rank-0-shard estimate locally (no
+    cross-rank ``all_gather`` after the ADR-0016 amendment revert), so ``sync_dist``
+    would be wrong (a plain-float ``sync_dist`` gives a mean-of-per-rank-means, and
+    non-root ranks have nothing to sync)."""
     import re
 
     from manifold.metrics import psnr_ssim_callback

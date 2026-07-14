@@ -8,7 +8,19 @@ status: proposed
 > DDP-correctness audit; the implementation is **not yet landed** (planned PR #1).
 > The "Consequences" below describe the *target* state, not today's code.
 
-> **Amendment (2026-07-10): distributed PSNR.** The PSNR/SSIM callback is no
+> **Reverted (2026-07-14): back to rank-0-only.** The amendment's "no per-batch
+> collective -> no deadlock" premise is falsified: on sugon 8-DCU the in-loop
+> validation reliably deadlocks inside the per-batch full-volume MAISI VAE decode
+> (py-spy: all 8 ranks frozen in `sliding_window_inference -> _conv_forward`, a
+> device-side stall - NOT at the epoch-end `all_gather`). 8-NVIDIA (gauss) and
+> single-DCU run the identical callback clean, so the trigger is 8-way concurrent
+> full-volume decode on the DCU/DTK vendor runtime, not a logic bug. PSNR/SSIM
+> decode is back to rank-0-only (mirrors FIDCallback); `val/psnr` / `val/ssim` are
+> a rank-0-shard estimate again, and the epoch-end `all_gather` is removed. The
+> 89%-validation-idle the amendment traded away is acceptable (validation is
+> infrequent + short relative to training).
+
+> **Amendment (2026-07-10, SUPERSEDED 2026-07-14): distributed PSNR.** The PSNR/SSIM callback is no
 > longer rank-0-only: every rank decodes its own `DistributedSampler` shard of
 > the val set and `all_gather`'s the per-volume `(psnr_sum, ssim_sum, count)`, so
 > `val/psnr` / `val/ssim` are the **global** mean over the full val set under DDP,
@@ -70,7 +82,7 @@ decided offline via export.
   `train/loss_epoch` / `val/x0_mae` callbacks accumulated `_sum/_n` with no
   `batch_size` - naive `sync_dist` would give a mean-of-per-rank-means, not the
   global mean. `MeanMetric` reduces `sum(loss*B)/sum(B)` across ranks (codex
-  M6=PARTIAL; see the amendment above).
+  M6=PARTIAL; see the reversion above above).
 - **The `-g 1 → "auto"` default was the root of defect (1).** Defaulting to
   exactly one device removes the dangerous auto→DDP path entirely; multi-GPU
   becomes an explicit, deliberate launch.
