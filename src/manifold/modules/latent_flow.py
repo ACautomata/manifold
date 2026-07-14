@@ -279,9 +279,10 @@ class LatentFlowModule(spt.Module):
         :func:`~manifold.modules.sample_latent_flow` primitive the Pipeline also
         uses, so the train and infer paths cannot drift.
 
-        Because generation shares ``self.unet`` with training, an EMA shadow
-        swapped into ``self.unet`` in place (the EMA callback, around eval) is
-        seen here with no extra wiring — reported quality reflects the EMA model.
+        Because generation shares ``self.unet`` with training, generation
+        samples the live (raw) optimizer weights directly - no EMA swap occurs
+        (EMA training was removed; ADR-0006), so reported quality reflects the
+        weights being optimized.
 
         Args mirror :meth:`~manifold.LatentFlowPipeline.sample_latent`: same
         generator + shape produces a bit-identical latent (parity).

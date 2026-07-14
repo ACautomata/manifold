@@ -91,4 +91,5 @@ Root cause: **unbounded reward + no KL anchor + η=0.7.** The group-normalized a
   `val/fid` ≈ 3.98 (not climbing). If signal dead ⇒ raise `reward_temp` / drop the bound; if
   FID climbs ⇒ raise `kl_coef`. Only then the full `--max-epochs 10` run.
 - ADR-0012's KL=0 decision is reversed here; its other decisions (training_step override,
-  multi-step inner loop, no-EMA, raw arm, val/fid selection) stand.
+  multi-step inner loop, no-EMA, raw arm, val/fid selection) stand (the no-EMA point is now
+  codebase-wide rather than GRPO-specific: EMA was removed from JiT).

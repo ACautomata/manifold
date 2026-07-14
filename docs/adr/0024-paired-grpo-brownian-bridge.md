@@ -52,11 +52,9 @@ adversarially verified (4 independent re-derivations, 0 errors).
   (ADR-0015); aux-MSE is the documented second. Training batch =
   `{x_src, src_label, tgt_label, spacing}` (tgt volume unused at train; mirrors GRPO's
   conditioning-only batch).
-- **Raw arm, inverting ADR-0021 for this stage.** Init = slow-EMA paired UNet
-  (`load_frozen_paired_generator`, ADR-0021 — the smoothest arm, degrades most gracefully
-  under bridge perturbation); train no-EMA (ADR-0012 — RL shadows are laggy + ~7 GB);
-  resume/select/export **raw** (ADR-0006/0012). The published paired arm is thus no longer
-  slow-EMA for the G2RPO stage — a deliberate asymmetry surfaced here.
+- **Raw arm, inheriting ADR-0021 for this stage.** Init = raw paired UNet
+  (`load_frozen_paired_generator`, ADR-0021); train no-EMA (ADR-0012 — RL shadows are
+  laggy + ~7 GB); resume/select/export **raw** (ADR-0006/0012).
 - **η-ramp, not static.** The paired UNet was trained on a *zero-noise* deterministic
   transport (unlike the JiT UNet, trained on noisy inputs), so a static-high η shocks it
   (off-manifold suffix inputs → degraded x̂₁ → contaminated reward — off the grad path).
@@ -130,7 +128,7 @@ adversarially verified (4 independent re-derivations, 0 errors).
 - **CLI** `manifold-train-paired-grpo` (`training/paired_grpo_cli.py`) +
   `config_paired_grpo.yaml` (`num_steps=8`, `eta_step_list=[0..3]`, η-ramp,
   `kl_coef = β·D` — per-element scale, see below — `reward_temp` recalibrated to the paired
-  PatchGAN). Init via `load_frozen_paired_generator` (slow-EMA),
+  PatchGAN). Init via `load_frozen_paired_generator` (raw paired UNet),
   `reference_policy = deepcopy(policy)`, reward from the `manifold-train-paired-reward`
   `.ckpt`.
 - **KL scale caveat (per-element).** `_transition_kl` returns the per-element MEAN (joint
@@ -148,5 +146,5 @@ adversarially verified (4 independent re-derivations, 0 errors).
 - **ADR-0013's bridge rejection is superseded for the RL regime only.** Supervised Paired
   JiT (ADR-0013) stays deterministic; the bridge lives in the G2RPO training path and never
   reaches the inference `PairedLatentFlowPipeline` (whose native ckpt carries the base
-  `FlowMatchHeunDiscreteScheduler` config, not the bridge scheduler). ADR-0021's
-  slow-EMA-as-published-arm is inverted for the G2RPO stage (raw arm); surfaced here.
+  `FlowMatchHeunDiscreteScheduler` config, not the bridge scheduler). ADR-0021 bakes the
+  raw paired arm, which G2RPO inherits (no inversion); surfaced here.

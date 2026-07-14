@@ -3,10 +3,10 @@
 The end-to-end Training-pipeline + Export round-trip (the highest seam, per the
 issue's testing plan): ``run_training`` on a tiny CPU config (tiny UNet + a
 fake-latent cache + a fake feature network) writes a Lightning ``.ckpt`` and
-logs ``train/loss_epoch`` / ``train/grad_norm`` / ``val/x0_mae`` / ``val/fid_avg`` (slow-EMA) / ``val/fid_raw`` (raw, monitored for ckpt);
-Export bakes the slowest EMA shadow into a native dir ``Pipeline.from_pretrained``
-loads, whose decode matches ``Module.sample()`` + the held-VAE decode. Plus resume
-via ``ckpt_path`` and the ``main`` console entry.
+logs ``train/loss_epoch`` / ``train/grad_norm`` / ``val/x0_mae`` / ``val/fid``
+(single raw arm); Export always bakes the RAW UNet weights into a native dir
+``Pipeline.from_pretrained`` loads, whose decode matches ``Module.sample()`` +
+the held-VAE decode. Plus resume via ``ckpt_path`` and the ``main`` console entry.
 """
 
 from __future__ import annotations
@@ -161,7 +161,7 @@ def test_run_training_threads_inference_recipe_to_fid_callback(tmp_path):
 def test_run_training_writes_ckpt_and_logs_metrics(tmp_path):
     trainer, ckpt = _run(tmp_path, enable_fid=True)
     metrics = trainer.callback_metrics
-    for key in ("train/loss_epoch", "train/grad_norm", "val/x0_mae", "val/fid_avg", "val/fid_raw"):
+    for key in ("train/loss_epoch", "train/grad_norm", "val/x0_mae", "val/fid"):
         assert key in metrics, f"missing {key}"
         assert torch.isfinite(metrics[key])
     # A Lightning .ckpt was written (best-by-FID + last), full state.
@@ -203,50 +203,37 @@ def test_run_training_skips_validation_when_no_held_out_val(tmp_path):
 
 
 def test_build_checkpoint_monitor_matches_logged_arm(tmp_path):
-    """The checkpoint monitor tracks the arm that is actually logged: val/fid_raw
-    by default (raw arm on), val/fid_avg when log_raw_fid=False (only slow arm).
-    A mismatch would make Lightning error on a never-logged monitored metric."""
+    """The checkpoint monitor tracks the single arm that is logged: ``val/fid``
+    (the raw optimizer arm). A mismatch would make Lightning error on a
+    never-logged monitored metric."""
     from manifold.training.cli import _build_checkpoint
 
-    assert _build_checkpoint(str(tmp_path / "a"), monitor_fid=True).monitor == "val/fid_raw"
-    assert (
-        _build_checkpoint(str(tmp_path / "b"), monitor_fid=True, monitor_metric="val/fid_avg").monitor
-        == "val/fid_avg"
-    )
+    assert _build_checkpoint(str(tmp_path / "a"), monitor_fid=True).monitor == "val/fid"
 
 
-def test_export_bakes_slowest_ema_and_round_trips(tmp_path):
-    """Export -> native dir -> from_pretrained -> decode == Module.sample + VAE."""
+def test_export_bakes_raw_and_round_trips(tmp_path):
+    """Export -> native dir -> from_pretrained -> decode == Module.sample + VAE
+    (on the raw optimizer weights; export always bakes raw now)."""
     module = _module()
     bundle = _bundle()  # ONE bundle: same held VAE for training, export, and decode
     _run(tmp_path, module=module, bundle=bundle, enable_fid=True)
-    # The trainer's EMA callback holds the slow shadow module.sample must use.
-    ema_cb = next(
-        c for c in module.trainer.callbacks if type(c).__name__ == "DoubleEMACallback"
-    )
     ckpt_path = str(Path(str(tmp_path)) / "last.ckpt")
 
     # Fresh UNet (built from a network config in the real CLI); export bakes the
-    # slowest EMA shadow into it (opt-in: the default now bakes raw), the SAME
-    # held VAE carries scaling_factor.
+    # RAW optimizer weights into it, the SAME held VAE carries scaling_factor.
     fresh_unet = UNet3DConditionModel(num_class_embeds=4, include_spacing_input=True)
     export_to_native(
         ckpt_path, str(tmp_path / "native"),
         unet=fresh_unet, vae=bundle.vae, scheduler=FlowMatchHeunDiscreteScheduler(),
-        prefer_ema=True,
     )
     loaded = LatentFlowPipeline.from_pretrained(str(tmp_path / "native"))
 
-    # module.sample on the EMA-swapped weights, decoded through the held VAE,
-    # must equal the exported pipeline's generate+decode (same seed).
-    ema_cb.swap_in(module)
-    try:
-        g = torch.Generator().manual_seed(3)
-        decode_mod = bundle.vae.decode(
-            module.sample((1, 4, 4, 4, 4), [1.0, 1.0, 1.0], 1, 2, generator=g)
-        )
-    finally:
-        ema_cb.restore(module)
+    # module.sample on the raw weights, decoded through the held VAE, must equal
+    # the exported pipeline's generate+decode (same seed).
+    g = torch.Generator().manual_seed(3)
+    decode_mod = bundle.vae.decode(
+        module.sample((1, 4, 4, 4, 4), [1.0, 1.0, 1.0], 1, 2, generator=g)
+    )
     g = torch.Generator().manual_seed(3)
     decode_pipe = loaded(
         (1, 4, 4, 4, 4), [1.0, 1.0, 1.0], 1, num_inference_steps=2, generator=g
@@ -255,8 +242,8 @@ def test_export_bakes_slowest_ema_and_round_trips(tmp_path):
 
 
 def test_export_default_bakes_raw_weights(tmp_path):
-    """The default export bakes the RAW UNet weights (aligned with the val/fid_raw
-    checkpoint monitor); prefer_ema=True is the opt-in for EMA."""
+    """The export bakes the RAW UNet weights (aligned with the val/fid
+    checkpoint monitor)."""
     module = _module()
     _run(tmp_path, module=module, enable_fid=True)
     ckpt_path = str(Path(str(tmp_path)) / "last.ckpt")
@@ -271,7 +258,7 @@ def test_export_default_bakes_raw_weights(tmp_path):
 
 
 def test_resume_from_checkpoint(tmp_path):
-    """A second fit resumes via ckpt_path (full state: optim + LR + EMA)."""
+    """A second fit resumes via ckpt_path (full state: optim + LR)."""
     module = _module()
     _run(tmp_path / "run1", module=module, enable_fid=False)
     ckpt_path = str(Path(str(tmp_path / "run1")) / "last.ckpt")
@@ -334,7 +321,7 @@ def _write_tiny_configs(tmp_path):
     train = tmp_path / "train.yaml"
     train.write_text(
         "diffusion_unet_train: {batch_size: 2, lr: 1.0e-2, n_epochs: 1, lr_warmup_steps: 0}\n"
-        "formulation: {p_mean: -0.8, p_std: 0.8, t_eps: 0.05, ema: true, ema_decays: [0.9999, 0.9996]}\n"
+        "formulation: {p_mean: -0.8, p_std: 0.8, t_eps: 0.05}\n"
         "fid_eval: {num_synth: 2, every_n_epochs: 1, center_slices_ratio: 0.5, cov_ridge: 1.0e-2}\n"
     )
     return str(env), str(train), str(net)

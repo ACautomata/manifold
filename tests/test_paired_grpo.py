@@ -800,30 +800,6 @@ def test_paired_grpo_module_sample_is_deployed_heun_not_the_bridge(paired_unet):
     assert torch.equal(out, ref), "η-agnostic deployed Heun — no bridge SDE leak into generation"
 
 
-def test_run_paired_grpo_training_attaches_no_ema_callback(tmp_path):
-    """G2RPO runs WITHOUT DoubleEMACallback (ADR-0012; inverts ADR-0021 for this stage).
-
-    The double-EMA's supervised-decay shadows are useless under RL and hold ~7 GB the
-    rollout needs; deployment / validation evaluate the raw policy. The checkpoint is the
-    only callback attached by the tracer (#105 adds the PSNR callback)."""
-    from manifold.modules import PairedGRPOModule
-    from manifold.training import DoubleEMACallback
-    from manifold.training.paired_grpo_cli import run_paired_grpo_training
-
-    inputs = _inputs()
-    module = PairedGRPOModule(
-        inputs.policy, inputs.reward_model, inputs.scheduler,
-        G=2, eta_step_list=(0,), num_steps=3, lr=1e-3,
-    )
-    trainer, _ = run_paired_grpo_training(
-        module=module, inputs=inputs, model_dir=str(tmp_path),
-        max_epochs=1, devices=1, accelerator="cpu", batch_size=2,
-    )
-    assert not any(isinstance(c, DoubleEMACallback) for c in trainer.callbacks), (
-        "G2RPO must NOT attach DoubleEMACallback — the shadows are useless under RL."
-    )
-
-
 def test_run_paired_grpo_measurement_reports_it_per_s(tmp_path):
     """run_paired_grpo_measurement times a fit + reports it/s (peak GPU is 0 off-CUDA)."""
     from manifold.modules import PairedGRPOModule
@@ -1331,7 +1307,7 @@ def test_export_g2rpo_raw_arm_loads_with_base_heun(tmp_path, vae):
 
     The bridge scheduler is training-only; inference reuses the existing
     PairedLatentFlowPipeline + the deterministic Heun (ADR-0024 Q4). export_to_native
-    bakes the raw UNet arm (prefer_ema=False - G2RPO trains no EMA) with a fresh BASE
+    bakes the raw UNet arm (export always bakes raw) with a fresh BASE
     FlowMatchHeunDiscreteScheduler; PairedLatentFlowPipeline.from_pretrained then loads a
     base Heun (NOT FlowMatchBridgeGRPOScheduler), and the pipeline generates."""
     import copy as _copy
@@ -1359,7 +1335,7 @@ def test_export_g2rpo_raw_arm_loads_with_base_heun(tmp_path, vae):
     assert Path(last_ckpt).is_file()
 
     # Export the RAW arm with a fresh BASE Heun scheduler (NOT the bridge) + the paired
-    # pipeline. prefer_ema=False (G2RPO has no EMA - ADR-0012).
+    # pipeline. export_to_native always bakes the raw UNet state_dict.
     fresh_unet = UNet3DConditionModel(
         in_channels=8, out_channels=4, num_class_embeds=4, include_spacing_input=True
     )
@@ -1367,7 +1343,7 @@ def test_export_g2rpo_raw_arm_loads_with_base_heun(tmp_path, vae):
     out_dir = str(tmp_path / "native")
     source = export_to_native(
         last_ckpt, out_dir, unet=fresh_unet, vae=vae, scheduler=base_sched,
-        prefer_ema=False, pipeline_cls=PairedLatentFlowPipeline,
+        pipeline_cls=PairedLatentFlowPipeline,
     )
     assert source == "unet_state_dict"  # raw arm (no EMA baked)
 

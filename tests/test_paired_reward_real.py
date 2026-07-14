@@ -266,7 +266,7 @@ def test_real_inputs_loads_generator_and_resolves_paired_split(tmp_path, monkeyp
 
     The real BraTS+VAE path is cluster-only; this smoke fakes build_brats_pair_manifest
     + _train_val_manifests + the warmed cache so _real_inputs runs end-to-end
-    without NIfTIs. Asserts the generator is loaded (slow-EMA arm via #94), the
+    without NIfTIs. Asserts the generator is loaded (raw arm via #94), the
     paired split resolves, and the returned inputs carry precomputed pairs (no
     generator held by the Module downstream).
     """
@@ -280,10 +280,9 @@ def test_real_inputs_loads_generator_and_resolves_paired_split(tmp_path, monkeyp
     from manifold.modules.paired_latent_flow import PairedLatentFlowModule
     from manifold.training import paired_cli as pcli
     from manifold.training import paired_reward_cli
-    from manifold.training.ema import DoubleEMACallback
     from manifold.training.export import export_to_native
 
-    # Build a paired native export (slow-EMA arm) via #94's export bridge.
+    # Build a paired native export (raw arm) via #94's export bridge.
     torch.manual_seed(0)
     unet = UNet3DConditionModel(
         in_channels=2 * C_LATENT,
@@ -304,7 +303,6 @@ def test_real_inputs_loads_generator_and_resolves_paired_split(tmp_path, monkeyp
         n_epochs=1,
     )
     vae = AutoencoderKL(scaling_factor=0.5)
-    ema = DoubleEMACallback(module)
     trainer = pl.Trainer(
         accelerator="cpu",
         devices=1,
@@ -313,7 +311,6 @@ def test_real_inputs_loads_generator_and_resolves_paired_split(tmp_path, monkeyp
         enable_progress_bar=False,
         enable_checkpointing=False,
         enable_model_summary=False,
-        callbacks=[ema],
         num_sanity_val_steps=0,
     )
 
@@ -345,7 +342,6 @@ def test_real_inputs_loads_generator_and_resolves_paired_split(tmp_path, monkeyp
         unet=fresh,
         vae=vae,
         scheduler=FlowMatchHeunDiscreteScheduler(),
-        prefer_ema=True,
         pipeline_cls=PairedLatentFlowPipeline,
     )
 

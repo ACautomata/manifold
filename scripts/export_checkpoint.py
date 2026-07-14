@@ -2,8 +2,7 @@
 """Export a manifold training ``.ckpt`` to the native per-component inference dir.
 
 The ADR-0006 bridge: load a Lightning ``.ckpt``, bake the inference UNet (the
-**raw UNet weights** by default, matching the ``val/fid_raw`` checkpoint monitor;
-``--ema`` bakes the slowest EMA shadow instead), and write a directory
+**raw UNet weights**; EMA training was removed), and write a directory
 :meth:`manifold.LatentFlowPipeline.from_pretrained` (or
 :meth:`manifold.PairedLatentFlowPipeline.from_pretrained` with ``--pipeline paired``)
 loads.
@@ -16,7 +15,7 @@ Example (gauss, JiT noise->data)::
         --vae-checkpoint models/autoencoder_v1.pt \\
         --output /data72/junran/manifold-runtime/checkpoints/jit_exported
 
-Example (paired src->tgt, slow-EMA arm - the reward's frozen generator)::
+Example (paired src->tgt - the reward's frozen generator)::
 
     python scripts/export_checkpoint.py \\
         --ckpt <paired_run>/last.ckpt \\
@@ -26,9 +25,10 @@ Example (paired src->tgt, slow-EMA arm - the reward's frozen generator)::
         --scaling-factor $(python -c "import torch;print(torch.load('<paired_run>/paired_scaling_factor.pt', weights_only=True))") \\
         --output <paired_native>
 
-    ``--pipeline paired`` forces the slow-EMA arm (ADR-0021) and builds the 2·C_latent
-    UNet; ``--scaling-factor`` (read from the paired run's paired_scaling_factor.pt)
-    bakes the generator's training scale into the exported VAE.
+    ``--pipeline paired`` builds the 2\u00b7C_latent UNet (the paired
+    condition-aware concat); ``--scaling-factor`` (read from the paired run's
+    paired_scaling_factor.pt) bakes the generator's training scale into the
+    exported VAE.
 """
 
 from __future__ import annotations
@@ -65,14 +65,6 @@ def main(argv: list[str] | None = None) -> int:
         "vae.autoencoder before export so the exported VAE decodes.",
     )
     parser.add_argument(
-        "--ema",
-        action="store_true",
-        help="bake the slowest EMA shadow instead of the raw UNet weights (the "
-        "default bakes raw, matching the val/fid_raw checkpoint monitor; use this "
-        "for warm-start / long-horizon runs where the 0.9999 EMA has converged, or "
-        "for the paired reward whose val/psnr monitors the slow-EMA arm - ADR-0021).",
-    )
-    parser.add_argument(
         "--pipeline",
         choices=("jit", "paired"),
         default="jit",
@@ -94,8 +86,8 @@ def main(argv: list[str] | None = None) -> int:
 
     cfg = load_config(args.network_config, None, args.network_config)
 
-    # Paired src->tgt checkpoints train a 2·C_latent condition-aware UNet: the input
-    # is the [x_src, x_tgt_noisy] concat (in_channels=2·C), the output predicts the
+    # Paired src->tgt checkpoints train a 2\u00b7C_latent condition-aware UNet: the input
+    # is the [x_src, x_tgt_noisy] concat (in_channels=2\u00b7C), the output predicts the
     # tgt velocity (out_channels=C, unchanged). The stock network config builds
     # in_channels=${latent_channels}=4; override in_channels before construction or
     # the backbone load hits a conv-weight size mismatch (codex #98 P1).
@@ -139,20 +131,12 @@ def main(argv: list[str] | None = None) -> int:
 
         pipeline_cls = PairedLatentFlowPipeline
 
-    # Paired checkpoint selection + the reward's frozen-generator contract monitor the
-    # slow-EMA arm (val/psnr @ slow-EMA, ADR-0021). Force it for paired exports rather
-    # than silently baking raw non-EMA weights (codex #98 P2).
-    prefer_ema = args.ema or args.pipeline == "paired"
-    if args.pipeline == "paired" and not args.ema:
-        print("[export_checkpoint] paired export: forcing slow-EMA arm (ADR-0021).")
-
     source = export_to_native(
         args.ckpt,
         args.output,
         unet=unet,
         vae=vae,
         scheduler=scheduler,
-        prefer_ema=prefer_ema,
         pipeline_cls=pipeline_cls,
     )
     print(f"Exported {args.ckpt} -> {args.output} ({source}; pipeline={args.pipeline}).")

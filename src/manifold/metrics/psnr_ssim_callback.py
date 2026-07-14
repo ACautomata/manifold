@@ -31,7 +31,7 @@ For each validation batch the callback:
 
 Best-checkpoint selection is configurable on either metric via a stock
 Lightning ``ModelCheckpoint(monitor="val/psnr" | "val/ssim")`` — the same pattern
-the noise→data stack uses for ``val/fid_raw`` (see ``training/cli.py``).
+the noise→data stack uses for ``val/fid`` (see ``training/cli.py``).
 This callback only *logs* the metrics, so wiring selection needs no trainer
 change here (the paired trainer, Slice 4, will pass the monitor name through).
 
@@ -74,11 +74,6 @@ class PairedPSNRSSIMCallback(pl.Callback):
             (staged around validation) are touched.
         num_inference_steps: Heun integration steps over ``t: 0 → 1``.
         every_n_epochs: run cadence (1 = every validation epoch).
-        ema_callback: optional :class:`~manifold.training.DoubleEMACallback`. When
-            provided, the slow-EMA shadow is swapped into ``module.unet`` around
-            each rollout so the reported PSNR/SSIM reflects the published EMA
-            model (mirrors :class:`FIDCallback`'s slow arm). ``None`` reports on
-            the raw optimizer weights (e.g. a no-EMA regime or a raw-arm monitor).
     """
 
     def __init__(
@@ -87,13 +82,11 @@ class PairedPSNRSSIMCallback(pl.Callback):
         pipeline,
         num_inference_steps: int,
         every_n_epochs: int = 1,
-        ema_callback=None,
     ):
         super().__init__()
         self.pipeline = pipeline
         self.num_inference_steps = int(num_inference_steps)
         self.every_n_epochs = int(every_n_epochs)
-        self.ema_callback = ema_callback
         self._active = False
         self._eval_staged = False
         self._norm16_disabled = False
@@ -242,23 +235,16 @@ class PairedPSNRSSIMCallback(pl.Callback):
         # wrong translation. ``batch["src_label"]`` / ``["tgt_label"]`` are ``[B]``
         # long tensors (the same tensors training consumes); the shared rollout
         # forwards them per-sample.
-        # Swap the slow-EMA shadow in around the rollout so the reported metric
-        # reflects the published EMA model (mirrors FIDCallback's slow arm).
         # ``pipeline.unet`` is ``pl_module.unet`` (the pipeline is built over the
-        # module's UNet by reference), so swapping the module swaps the rollout.
-        if self.ema_callback is not None:
-            self.ema_callback.swap_in(pl_module)
-        try:
-            pred_latent = self.pipeline.sample_latent(
-                batch["src_latent"],
-                batch["spacing"],
-                batch["src_label"],
-                batch["tgt_label"],
-                self.num_inference_steps,
-            )
-        finally:
-            if self.ema_callback is not None:
-                self.ema_callback.restore(pl_module)
+        # module's UNet by reference), so the rollout samples the live (raw)
+        # optimizer weights directly - no EMA swap (EMA training was removed).
+        pred_latent = self.pipeline.sample_latent(
+            batch["src_latent"],
+            batch["spacing"],
+            batch["src_label"],
+            batch["tgt_label"],
+            self.num_inference_steps,
+        )
         pred_vol = self._eval_decode(pred_latent)
         tgt_vol = self._eval_decode(batch["tgt_latent"])
         # PSNR/SSIM on the RAW float32 decodes (C2): pred and tgt both pass through

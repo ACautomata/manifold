@@ -159,3 +159,5 @@ Thumbs.db
 #   part of the shared install surface.
 .claude/
 uv.lock
+
+results.tsv

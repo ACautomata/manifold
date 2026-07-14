@@ -5,7 +5,7 @@
 # logit-normal t (the regime fix — see formulation.loss_weight; the legacy
 # (1−t)^-2 velocity-MSE collapsed the model to ≈copy-src), the true
 # two-evaluation Heun sampler STARTING FROM x_src (deterministic given x_src — no
-# CFG, no re-seed), a 10% subject-level held-out val, and double EMA.
+# CFG, no re-seed), a 10% subject-level held-out val.
 # Composed with a BraTS2023 env + the network config (in_channels = 2·C_latent).
 #
 # Consumed by manifold-train-paired (#69).
@@ -48,17 +48,7 @@ formulation:
   # On the ep25 run this collapsed the RAW model to ≈copy-src (+0.07 dB); uniform
   # MSE + low-t-biased sampling (p_mean=-0.8) forces genuine low-t translation.
   loss_weight: uniform   # "uniform" | "1mt_sq" (the legacy velocity-MSE default)
-  # Double EMA: slow shadow 0.999 (the PSNR/SSIM val arm — argmax(decays)) +
-  # fast shadow 0.99. Autoresearch (sugon 8-DCU, 20ep sweep, 2026-07-13) found
-  # the legacy 0.9999 val arm (window ~10^4) barely moves over a realistic
-  # 20-50ep run (~6-15k steps), so val/psnr read a near-random shadow and the
-  # baseline collapsed to 13.75 dB (≈ random init). 0.999 (window ~10^3) was
-  # the sweep's single largest lever — +9.0 dB (exp1, 13.75→22.75), the only
-  # EMA change that cleared the 0.5-dB keep rule — and stays well-converged
-  # (≥6 windows) for 20-100ep while still slow enough to denoise; 0.995 overfits
-  # 20ep, 0.9999 needs ≥300ep to converge.
-  ema: true
-  ema_decays: [0.999, 0.99]
+
 
 # Subject-level held-out validation split. The legacy path reused the train set as
 # val (build_datamodule val_dataset=None), so val/psnr was a TRAIN-set number. This
@@ -72,7 +62,7 @@ val_fraction: 0.1
 # manifold-train-paired falls back to sensible defaults; each knob is overridable
 # via dotlist (e.g. `paired_eval.num_inference_steps=8`).
 paired_eval:
-  num_inference_steps: 8   # OPTIMAL, not 15: step-sweep on ep25 SLOW-EMA gives 8>12>15>20
+  num_inference_steps: 8   # OPTIMAL, not 15: step-sweep on ep25 gives 8>12>15>20
                            # (15=−0.75dB/−0.17SSIM, 20=−2.4dB). Paired is an x_src-anchored
                            # x0-predictor → few Heun steps; unlike noise→data (rflow_jit=15),
                            # more steps diverge on the undertrained high-t velocity field.

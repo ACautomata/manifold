@@ -257,7 +257,7 @@ def _real_inputs(
     """Build the real paired-reward inputs from the paired native export + latent cache.
 
     Loads the frozen paired generator (``--native-dir``, issue #94's
-    :func:`~manifold.data.paired_reward_pairs.load_frozen_paired_generator` - slow-EMA
+    :func:`~manifold.data.paired_reward_pairs.load_frozen_paired_generator` - raw
     arm + base scheduler + scaling_factor), resolves the **paired** train/val split
     (``_train_val_manifests`` / ``val_data_base_dir`` / ``val_fraction`` - NOT JiT
     reward's ``partition_subjects``, ADR-0022), warms the paired latent cache over
@@ -285,7 +285,7 @@ def _real_inputs(
     target_dim = tuple(int(d) for d in inf_cfg.dim)
     divisor = autoencoder_divisor(cfg)
 
-    # The frozen paired generator (slow-EMA arm, base scheduler, scaling_factor).
+    # The frozen paired generator (raw arm, base scheduler, scaling_factor).
     generator, base_scheduler, scaling_factor = load_frozen_paired_generator(native_dir)
     generator.to(device).eval()
     for p in generator.parameters():

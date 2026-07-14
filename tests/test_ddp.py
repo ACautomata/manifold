@@ -18,7 +18,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
 import torch
 
 from tests.ddp import jit_ddp_worker, run_ddp_two_rank
@@ -47,9 +46,8 @@ def test_ddp_cpu_two_rank_fit_completes(tmp_path):
     """The fixture runs a 2-rank Lightning fit on CPU (gloo), exits 0, no hang.
 
     Both ranks reach the same ``global_step``, the checkpoint monitor is dropped
-    under DDP (``is_multi_gpu`` -> rank-0-only FID is not monitored), and the
-    double-EMA slow shadow is bit-identical across ranks (the E1 invariant the
-    published slow-EMA arm relies on). Downstream 2-rank gates reuse this runner.
+    under DDP (``is_multi_gpu`` -> rank-0-only FID is not monitored). Downstream
+    2-rank gates reuse this runner.
     """
     results = run_ddp_two_rank(jit_ddp_worker, results_dir=str(tmp_path), args=(True,))
 
@@ -62,11 +60,8 @@ def test_ddp_cpu_two_rank_fit_completes(tmp_path):
     # rank-0-only FID monitor is dropped on BOTH ranks.
     assert results[0]["ckpt_monitor"] is None
     assert results[1]["ckpt_monitor"] is None
-    # E1 (EMA parity): the slow + fast shadow sums are identical across ranks.
-    assert results[0]["ema_slow_sum"] == pytest.approx(results[1]["ema_slow_sum"])
-    assert results[0]["ema_fast_sum"] == pytest.approx(results[1]["ema_fast_sum"])
     # Rank 0 ran FID (val/fid_*); rank 1 skipped it (rank-0-only generation).
-    assert "val/fid_avg" in results[0]["metrics"]
+    assert "val/fid" in results[0]["metrics"]
     assert not any(k.startswith("val/fid") for k in results[1]["metrics"])
 
 
@@ -84,8 +79,7 @@ def test_single_gpu_jit_matches_baseline(tmp_path):
         "train/loss_epoch": 2.813438,
         "train/grad_norm": 2.550957,
         "val/x0_mae": 0.789255,
-        "val/fid_avg": 1.121644,
-        "val/fid_raw": 1.024621,
+        "val/fid": 1.024621,  # RE-BASELINE by running
     }
     for key, expected in baseline.items():
         assert key in m, f"missing {key}"
@@ -93,9 +87,6 @@ def test_single_gpu_jit_matches_baseline(tmp_path):
         assert _close(float(m[key]), expected), f"{key}={float(m[key])} drifted from {expected}"
     sd = _state_dict(tmp_path)
     assert any(k.startswith("unet.") for k in sd), "checkpoint missing unet state"
-    assert "ema_callback" in str(_ckpt.state_dict()) or any(  # EMA captured in the ckpt
-        "ema" in k.lower() for k in sd
-    ) or True  # EMA lives in the callback state, not the module state_dict
 
 
 def test_single_gpu_paired_matches_baseline(tmp_path):
@@ -132,8 +123,8 @@ def test_single_gpu_paired_matches_baseline(tmp_path):
         # Removing it restores the pre-#86 raw-decode values exactly. C1 (per-sample
         # labels) is a no-op on this fixture — _FakePairedDataset emits one
         # direction (0→1), so per-sample labels == the scalar broadcast.
-        "val/psnr": 14.222277,
-        "val/ssim": 0.049186,
+        "val/psnr": 14.228303,  # raw optimizer arm (EMA training removed; was 14.222277 slow-EMA)
+        "val/ssim": 0.096884,  # raw optimizer arm (EMA training removed; was 0.049186 slow-EMA)
     }
     for key, expected in baseline.items():
         assert key in m, f"missing {key}"

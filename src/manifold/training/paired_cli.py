@@ -2,7 +2,7 @@
 
 The console entry (issue #69) composes the OmegaConf experiment config, warms the
 paired latent cache (Slice 2), builds the :class:`~manifold.modules.PairedLatentFlowModule`
-+ the fixed validation subset + the callbacks (train metrics, double EMA,
++ the fixed validation subset + the callbacks (train metrics,
 PSNR/SSIM, ``ModelCheckpoint``), and calls ``Trainer.fit``. From scratch
 (ADR-0014 — no warm-start). Sibling of ``manifold.training.cli``; the heavy
 data-warming lives in :func:`main`, the integration core :func:`run_paired_training`
@@ -39,7 +39,6 @@ from ..data.datamodule import build_datamodule
 from ..metrics import PairedPSNRSSIMCallback
 from ..modules.paired_latent_flow import PairedLatentFlowModule
 from ..pipelines.paired_latent_flow import PairedLatentFlowPipeline
-from .ema import DoubleEMACallback
 from .metrics import LatentX0MAE, TrainLossLogger
 from .trainer import build_trainer
 
@@ -129,12 +128,11 @@ def run_paired_training(
     every_n_epochs: int = 1,
     monitor_metric: str = "val/psnr",
     ckpt_path: str | None = None,
-    ema_decays: tuple[float, ...] = (0.999, 0.99),
     check_val_every_n_epoch: int | None = None,
 ) -> tuple[pl.Trainer, ModelCheckpoint]:
     """Assemble callbacks + ``Trainer`` and ``fit`` the paired module (the core seam).
 
-    Builds the train-metrics / double-EMA / PSNR-SSIM callbacks + a stock
+    Builds the train-metrics / PSNR-SSIM callbacks + a stock
     ``ModelCheckpoint`` and runs ``Trainer.fit``. Returns ``(trainer, ckpt)`` so
     callers can find the written ``.ckpt``.
 
@@ -143,9 +141,6 @@ def run_paired_training(
         num_inference_steps: Heun integration steps for the validation rollout.
         monitor_metric: ``"val/psnr"`` or ``"val/ssim"`` (both ``mode="max"``).
         ckpt_path: optional resume checkpoint passed to ``fit``.
-        ema_decays: EMA decays for the DoubleEMACallback (paired recipe default
-            ``(0.999, 0.99)``); read from ``formulation.ema_decays`` by
-            :func:`main` (this is the fallback when a custom YAML omits it).
         check_val_every_n_epoch: when set (and validation is enabled), forward
             ``check_val_every_n_epoch`` + ``num_sanity_val_steps=0`` to the Trainer so
             validation runs only every N epochs — e.g. ``=max_epochs`` yields a single
@@ -159,11 +154,10 @@ def run_paired_training(
     # (cold path: from the val manifest; warmed path: inferred from val_latent_ds).
     has_val = bundle.has_val if bundle.has_val is not None else (bundle.val_latent_ds is not None)
     val_enabled = has_val or bundle.allow_train_as_val
-    ema = DoubleEMACallback(module, decays=tuple(ema_decays))
-    callbacks: list = [TrainLossLogger(), LatentX0MAE(), ema]
+    callbacks: list = [TrainLossLogger(), LatentX0MAE()]
     if val_enabled:
         # The PSNR/SSIM pipeline carries the LIVE module UNet by reference, so
-        # optimizer updates + the EMA swap-in are visible at validation.
+        # optimizer updates are visible at validation.
         pipeline = PairedLatentFlowPipeline(module.unet, bundle.vae, module.scheduler)
         # When last-epoch-only val is active (check_val_every_n_epoch set), Lightning
         # already gates WHEN validation runs. The callback's own ``every_n_epochs`` is
@@ -183,7 +177,6 @@ def run_paired_training(
             pipeline=pipeline,
             num_inference_steps=num_inference_steps,
             every_n_epochs=1 if check_val_every_n_epoch is not None else every_n_epochs,
-            ema_callback=ema,  # report on the slow-EMA arm (criterion 2)
         )
         callbacks.append(psnr)
         ckpt = _build_checkpoint(
@@ -339,7 +332,6 @@ def main(argv: list[str] | None = None, *, data_provider=None) -> int:
     )
 
     paired_eval = opt(cfg, "paired_eval", {})
-    ema_decays = opt(cfg.formulation, "ema_decays", [0.999, 0.99])
     max_epochs = int(args.max_epochs or train_cfg.n_epochs)
     run_paired_training(
         module=module,
@@ -350,7 +342,6 @@ def main(argv: list[str] | None = None, *, data_provider=None) -> int:
         batch_size=int(train_cfg.batch_size),
         seed=seed,
         ckpt_path=args.resume,
-        ema_decays=ema_decays,
         num_inference_steps=int(paired_eval.get("num_inference_steps", 4)),
         every_n_epochs=int(paired_eval.get("every_n_epochs", 1)),
         monitor_metric=args.monitor,

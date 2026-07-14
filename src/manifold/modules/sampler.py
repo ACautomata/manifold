@@ -52,8 +52,10 @@ def sample_latent_flow(
 
     The single shared x0 Heun rollout (ADR-0005). ``Module.sample`` and
     ``Pipeline.sample_latent`` both call this; because the Module's
-    training-time generation and the Pipeline share one rollout, an EMA shadow
-    swapped into ``unet`` in place is seen here with no extra wiring.
+    training-time generation and the Pipeline share one rollout, the rollout
+    uses whatever weights the caller passes (the Module passes live optimizer
+    weights; the inference Pipeline passes its loaded weights) - no EMA shadow is
+    ever swapped into ``unet``.
 
     The rollout puts the UNet in ``eval()`` and runs under ``inference_mode`` +
     cuda autocast so the latent-trajectory tolerance for numerical validation is

@@ -11,7 +11,7 @@ The integration core :func:`run_paired_grpo_training` (Module + datamodule +
 ``ModelCheckpoint`` + ``build_trainer`` + ``fit``) is split out so a tiny CPU smoke
 can drive it with a fake policy + toy source latents (the issue's testing seam)
 instead of the real paired checkpoint + trained reward. The real-data launch path
-(loading the slow-EMA paired UNet + the trained paired reward, wiring the paired
+(loading the raw paired UNet + the trained paired reward, wiring the paired
 latent cache, the η-ramp, the raw-arm export) is gated on the bridge-noise
 reward-ranking probe + a tiny-config measurement (#106); the ``data_provider`` seam
 ships in #103, ``_real_inputs`` in #104.
@@ -53,7 +53,7 @@ class PairedGRPOInputs:
     (``{src_latent, src_label, tgt_label, spacing}`` — pure-RL, the target volume is
     unused at train). The ``data_provider`` seam injects a fake policy + toy source
     latents for the CPU smoke; the real path (``_real_inputs``, #104) loads the
-    slow-EMA paired UNet + the trained paired reward.
+    raw paired UNet + the trained paired reward.
     """
 
     policy: Any
@@ -430,8 +430,8 @@ def _run_probe(module, inputs, cfg, *, n_probe: int = 64) -> float:
     """Pull real val (src, tgt) pairs + run the bridge-noise reward-ranking probe.
 
     The probe gate runs on the INIT policy (before any G2RPO update) at eta_max - the
-    worst case for the reward's bridge-noised-fake ranking (the policy is the smooth
-    slow-EMA arm; its bridge siblings are the fakes G2RPO would score). Returns the acc
+    worst case for the reward's bridge-noised-fake ranking (the policy is the raw
+    arm; its bridge siblings are the fakes G2RPO would score). Returns the acc
     (fraction of sources whose reward's top-1 sibling matches PSNR's top-1).
 
     ``n_probe`` defaults to 64 (the hard-gate minimum): with G=2 + threshold=0.6, n=16
@@ -614,7 +614,6 @@ def run_paired_grpo_training(
             PairedPSNRSSIMCallback(
                 pipeline=pipeline,
                 num_inference_steps=psnr_steps,
-                ema_callback=None,  # G2RPO evaluates the raw policy (no EMA, ADR-0012)
             )
         )
     datamodule = build_datamodule(
@@ -659,7 +658,7 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument(
         "--native-dir",
         default=None,
-        help="native paired export dir (the slow-EMA policy + VAE scale); "
+        help="native paired export dir (the raw policy + VAE scale); "
         "required without --data-provider.",
     )
     parser.add_argument(
@@ -720,7 +719,7 @@ def main(argv: list[str] | None = None, *, data_provider=None) -> int:
     ``data_provider`` is the injection seam for the CPU smoke test: a callable
     ``(cfg, device) -> PairedGRPOInputs`` returning a fake policy + toy source
     latents so the full ``main`` path runs without the real paired checkpoint +
-    trained reward. The real path loads the slow-EMA paired UNet from ``--native-dir``
+    trained reward. The real path loads the raw paired UNet from ``--native-dir``
     and the paired reward from ``--reward-path`` (#104).
     """
     args = _parse_args(argv)
@@ -753,7 +752,7 @@ def main(argv: list[str] | None = None, *, data_provider=None) -> int:
         # here, only on the real path.
         if not args.native_dir or not args.reward_path or not args.latents_dir:
             raise ValueError(
-                "G2RPO needs --native-dir <native paired export (slow-EMA arm)>, "
+                "G2RPO needs --native-dir <native paired export (raw arm)>, "
                 "--reward-path <trained paired RewardModel .ckpt>, and "
                 "--latents-dir <paired latent cache> (or inject a data_provider for the smoke)."
             )
@@ -904,9 +903,9 @@ def run_paired_grpo_measurement(
 def _real_inputs(
     cfg, native_dir: str, reward_path: str, latents_dir: str, device: torch.device
 ) -> PairedGRPOInputs:
-    """Build the real G2RPO inputs from the slow-EMA paired UNet + the trained reward (#104).
+    """Build the real G2RPO inputs from the raw paired UNet + the trained reward (#104).
 
-    The slow-EMA Paired JiT UNet (ADR-0021 - the paired native export's arm, inverted
+    The raw Paired JiT UNet (ADR-0021 - the paired native export's arm, inverted
     for G2RPO: it is the **trainable** policy init, not a frozen generator) is the
     policy; a bit-identical frozen deep-copy is the KL reference (ADR-0015). The trained
     paired RewardModel (in_channels = 2*C_latent) is the frozen reward. The paired
@@ -931,10 +930,9 @@ def _real_inputs(
     from ..pipelines.paired_latent_flow import PairedLatentFlowPipeline
     from .paired_cli import _train_val_manifests
 
-    # 1. The slow-EMA paired UNet (trainable policy init) + VAE + base scheduler +
-    #    scaling_factor, all from the paired native export (ADR-0021: the export baked
-    #    the slow-EMA arm; G2RPO inverts it - the slow-EMA arm becomes the policy init,
-    #    and the published arm is raw for this stage).
+    # 1. The raw paired UNet (trainable policy init) + VAE + base scheduler +
+    #    scaling_factor, all from the paired native export (ADR-0021: the export bakes
+    #    the raw optimizer arm, which G2RPO trains as the policy).
     pipe = PairedLatentFlowPipeline.from_pretrained(str(native_dir))
     policy = pipe.unet.to(device)
     for p in policy.parameters():  # G2RPO post-trains the policy (the reward is frozen).

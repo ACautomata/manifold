@@ -22,9 +22,9 @@ pair ADR-0002 specifies); only its home moves, and `validate_against_hope.py`'s
   silently break the parity a working sampler was migrated for.
 - **Train/infer boundary.** Training (the module + Lightning callbacks) never
   reaches for the Pipeline; the Pipeline stays the inference-only object.
-- **EMA is transparent.** `module.sample()` uses `self.unet`; the `EMACallback`
-  swaps EMA weights into `module.unet` in place, so generation automatically
-  reflects the EMA model with no extra wiring.
+- **Generation samples the live optimizer weights.** `module.sample()` uses
+  `self.unet` (the raw optimizer weights); no EMA swap-in occurs (EMA training
+  was removed).
 
 ## Consequences
 

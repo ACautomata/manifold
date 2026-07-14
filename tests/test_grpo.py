@@ -582,11 +582,11 @@ class _FakeFeatureNet(nn.Module):
 
 
 def test_run_grpo_training_with_fid_logs_val_fid_and_selects_on_it(tmp_path):
-    """The FID triple ⇒ FIDCallback (no EMA) logs val/fid; ckpt monitors val/fid (#58).
+    """The FID triple ⇒ FIDCallback logs val/fid; ckpt monitors val/fid (#58).
 
     The anti-reward-hacking screen: when ``GRPOInputs`` carries ``vae`` +
     ``real_latents`` + ``feature_net``, ``run_grpo_training`` attaches
-    ``FIDCallback(ema_callback=None)`` which generates via the deployed Heun
+    ``FIDCallback`` which generates via the deployed Heun
     (``GRPOModule.sample``) and logs ``val/fid``; the checkpoint switches its monitor
     to ``val/fid`` (mode ``min``) — a higher-reward-but-higher-FID checkpoint is NOT
     selected. The PatchGAN ``val/mean_reward`` stays logged (validation_step's own
@@ -616,7 +616,7 @@ def test_run_grpo_training_with_fid_logs_val_fid_and_selects_on_it(tmp_path):
         num_synth=3, cov_ridge=1e-2,
     )
     metrics = trainer.callback_metrics
-    assert "val/fid" in metrics, "FIDCallback (no EMA) must log val/fid"
+    assert "val/fid" in metrics, "FIDCallback must log val/fid"
     assert torch.isfinite(metrics["val/fid"])
     assert "val/mean_reward" in metrics, "the PatchGAN progress signal stays logged"
     assert torch.isfinite(metrics["val/mean_reward"])
@@ -688,32 +688,6 @@ def test_grpo_module_sample_is_deployed_heun_not_the_sde(unet):
 
 
 # -- launch readiness (#59): no EMA + measurement harness -------------------
-
-
-def test_run_grpo_training_attaches_no_ema_callback(tmp_path):
-    """GRPO runs WITHOUT DoubleEMACallback (#59).
-
-    The double-EMA's supervised-decay shadows are useless under RL (no supervised
-    gradient feeds them) and hold ~7 GB the rollout needs; the FID callback's
-    EMA-swap is a no-op so ``val/fid`` evaluates the RAW policy (ADR-0012). The
-    checkpoint + the (optional) FID callback are the only callbacks attached."""
-    from manifold.modules import GRPOModule
-    from manifold.training import DoubleEMACallback
-    from manifold.training.grpo_cli import run_grpo_training
-
-    inputs = _inputs()
-    module = GRPOModule(
-        inputs.policy, inputs.reward_model, inputs.scheduler,
-        G=2, eta_step_list=(0,), num_steps=3, latent_shape=inputs.latent_shape, lr=1e-3,
-    )
-    trainer, _ = run_grpo_training(
-        module=module, inputs=inputs, model_dir=str(tmp_path),
-        max_epochs=1, devices=1, accelerator="cpu", batch_size=2,
-    )
-    assert not any(isinstance(c, DoubleEMACallback) for c in trainer.callbacks), (
-        "GRPO must NOT attach DoubleEMACallback (#59) — the shadows are useless under "
-        "RL and val/fid evaluates the raw policy."
-    )
 
 
 def test_run_grpo_measurement_reports_it_per_s(tmp_path):

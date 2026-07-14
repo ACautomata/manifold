@@ -2,16 +2,14 @@
 
 Generates ``num_synth`` unconditional volumes through ``Module.sample`` + the
 held frozen VAE's decode — never the inference Pipeline — extracts 2.5D
-RadImageNet features over the three orthogonal planes, and logs the small-sample-
-bias-corrected Fréchet distance ``val/fid_avg`` (plus per-plane).
+RadImageNet features over the three orthogonal planes, and logs the
+small-sample-bias-corrected Fréchet distance ``val/fid`` (plus per-plane).
 
-Two arms share the same fixed real reference and per-sample seeds:
-
-- **slow** (``val/fid_avg``): the 0.9999 EMA shadow swapped in — the published
-  model (matches hope's policy).
-- **raw** (``val/fid_raw``): the raw optimizer weights, sampled without the EMA
-  swap — blind to the slow EMA's convergence lag, so it tracks whether the model
-  is actually learning. The best checkpoint monitors this arm.
+Generation samples the **live (raw) optimizer weights** — ``Module.sample``
+shares ``self.unet`` with training, so the reported FID reflects the weights
+being optimized, with no EMA swap (EMA training was removed; ADR-0006). This is
+the anti-reward-hacking selection metric (#58): a single arm, logged as
+``val/fid`` (+ per-plane ``val/fid_{xy,yz,zx}``).
 
 Fixed-sample mechanism:
 
@@ -48,12 +46,7 @@ class FIDCallback(pl.Callback):
         module: the :class:`~manifold.modules.LatentFlowModule` (its
             :meth:`~manifold.modules.LatentFlowModule.sample` generates).
         vae: the held frozen VAE; its :meth:`~manifold.AutoencoderKL.decode`
-            decodes both arms (no Pipeline).
-        ema_callback: the :class:`~manifold.training.DoubleEMACallback`; the slow
-            shadow is swapped in around generation so reported quality reflects
-            the published EMA model. ``None`` selects the no-EMA regime (e.g. GRPO
-            policy post-training, #59): a single arm with no swap, logged as
-            ``val/fid`` (the anti-reward-hacking selection metric, #58).
+            decodes the generated latents (no Pipeline).
         real_latents: the FIXED real reference subset ``[N, C, D, H, W]`` (scaled
             latents — the seeded-shuffle prefix of ``val_subset_size``). Decoded
             once and cached.
@@ -68,11 +61,6 @@ class FIDCallback(pl.Callback):
             :func:`~manifold.metrics.fid.get_features_2p5d` /
             :func:`~manifold.metrics.fid.frechet_distance_unbiased`.
         seed: the re-seeded generation noise seed (fixed across epochs).
-        log_raw_fid: also log ``val/fid_raw`` (+ per-plane) sampled from the RAW
-            optimizer weights — blind to the slow EMA's convergence lag, so it
-            tracks whether the model is actually learning (this is the metric
-            the best checkpoint monitors). Costs one extra generation pass per
-            validation epoch. The slow-EMA arm stays logged as ``val/fid_avg``.
     """
 
     def __init__(
@@ -80,7 +68,6 @@ class FIDCallback(pl.Callback):
         *,
         module,
         vae,
-        ema_callback,
         real_latents=None,
         real_latents_source=None,
         feature_net=None,
@@ -96,12 +83,10 @@ class FIDCallback(pl.Callback):
         center_slices_ratio: float = 0.5,
         cov_ridge: float = 1e-6,
         seed: int = 0,
-        log_raw_fid: bool = True,
     ):
         super().__init__()
         self.module = module
         self.vae = vae
-        self.ema_callback = ema_callback
         # F5 (ADR-0017): ``real_latents`` may be ``None`` at construction (the warm
         # has moved into DataModule.setup(), so the val reference does not exist
         # until the first validation epoch). ``real_latents_source`` is a callable
@@ -126,7 +111,6 @@ class FIDCallback(pl.Callback):
         self.center_slices_ratio = float(center_slices_ratio)
         self.cov_ridge = float(cov_ridge)
         self.seed = int(seed)
-        self.log_raw_fid = bool(log_raw_fid)
         self._real_planes: list[torch.Tensor] | None = None
 
     # -- internals -----------------------------------------------------------
@@ -251,33 +235,26 @@ class FIDCallback(pl.Callback):
         return get_features_2p5d(real_images, self.feature_net, center_slices_ratio=self.center_slices_ratio)
 
     @torch.no_grad()
-    def _synth_features(self, *, raw: bool = False) -> list[torch.Tensor]:
-        """Generate num_synth volumes + held-VAE decode (slow-EMA-swapped).
+    def _synth_features(self) -> list[torch.Tensor]:
+        """Generate num_synth volumes + held-VAE decode (raw optimizer weights).
 
-        raw=True samples the raw optimizer weights — it skips ema.swap_in/restore
-        so the result is blind to the slow EMA's convergence lag (the
-        ``val/fid_raw`` arm). Both arms share the same per-sample seeds, so the
-        slow-vs-raw gap reflects weights, not sampling noise.
+        Generation samples the live optimizer weights (``Module.sample`` shares
+        ``self.unet`` with training) — no EMA swap occurs (EMA training was
+        removed; ADR-0006).
         """
         self.vae.eval()
         planes: list[list[torch.Tensor]] = [[], [], []]
         for i in range(self.num_synth):
             gen = torch.Generator(device=self._device()).manual_seed(self.seed + i)
-            if not raw:
-                self.ema_callback.swap_in(self.module)
-            try:
-                latent = self.module.sample(
-                    self.latent_shape,
-                    self.spacing,
-                    self.modality,
-                    self.num_inference_steps,
-                    guidance_scale=self.guidance_scale,
-                    cfg_interval=self.cfg_interval,
-                    generator=gen,
-                )
-            finally:
-                if not raw:
-                    self.ema_callback.restore(self.module)
+            latent = self.module.sample(
+                self.latent_shape,
+                self.spacing,
+                self.modality,
+                self.num_inference_steps,
+                guidance_scale=self.guidance_scale,
+                cfg_interval=self.cfg_interval,
+                generator=gen,
+            )
             image = self._eval_decode(latent)
             for axis, feats in enumerate(
                 get_features_2p5d(image, self.feature_net, center_slices_ratio=self.center_slices_ratio)
@@ -298,54 +275,32 @@ class FIDCallback(pl.Callback):
         try:
             # codex #85 P2: the lazy feature_net factory is fail-safe; if it returned
             # None (bad/corrupt cache, no network), FID is unavailable. Log the
-            # monitored metrics as +inf ONCE so ModelCheckpoint(monitor='val/fid_*',
+            # monitored metric as +inf ONCE so ModelCheckpoint(monitor='val/fid',
             # mode='min') does not crash on a never-logged metric (inf is never the
             # best, so selection falls through to save_last) instead of aborting the
             # run mid-fit. The online torch.hub fallback stays reachable on hosts
             # with network (no launch-time pre-disable on a missing cache).
             if getattr(self, "_fid_disabled", False):
-                keys = (
-                    ["val/fid"]
-                    if self.ema_callback is None
-                    else (["val/fid_avg"] + (["val/fid_raw"] if self.log_raw_fid else []))
-                )
-                for key in keys:
-                    module.log(key, float("inf"))
+                module.log("val/fid", float("inf"))
                 return
             if self._real_planes is None:
                 self._real_planes = self._real_features()
-            if self.ema_callback is None:
-                # No-EMA regime (e.g. GRPO policy post-training, #59: the supervised-
-                # decay shadows are useless under RL). One arm, no swap, logged as
-                # ``val/fid`` — the anti-reward-hacking selection metric (#58).
-                self._compute_and_log(module, raw=True, total_key="val/fid", plane_key="val/fid")
-            else:
-                # Slow-EMA(0.9999) arm — the published model (matches hope's policy).
-                self._compute_and_log(
-                    module, raw=False, total_key="val/fid_avg", plane_key="val/fid"
-                )
-                # Raw-optimizer arm — decoupled from the slow EMA's convergence lag,
-                # so it tracks whether the model is actually learning. Monitored for
-                # the best checkpoint (a lagging EMA otherwise hides raw progress).
-                if self.log_raw_fid:
-                    self._compute_and_log(
-                        module, raw=True, total_key="val/fid_raw", plane_key="val/fid_raw"
-                    )
+            # Single raw arm — the anti-reward-hacking selection metric (#58):
+            # generation samples the live optimizer weights, no EMA swap.
+            self._compute_and_log(module, total_key="val/fid", plane_key="val/fid")
         finally:
             self._restore_eval_to_cpu()
 
-    def _compute_and_log(self, module, *, raw: bool, total_key: str, plane_key: str) -> None:
+    def _compute_and_log(self, module, *, total_key: str, plane_key: str) -> None:
         """Generate one arm + log its per-plane unbiased FID vs the cached real.
 
-        ``total_key`` is the metric logged for the arm's mean FID; ``plane_key`` is
-        the prefix for the per-plane diagnostics (``f"{plane_key}_{xy,yz,zx}"``).
-        The JiT two-arm regime uses ``val/fid_avg`` (+ ``val/fid_{axis}``) for the
-        slow-EMA arm and ``val/fid_raw`` (+ ``val/fid_raw_{axis}``) for the raw arm;
-        the no-EMA regime (#58) uses a single ``val/fid`` (+ ``val/fid_{axis}``).
-        ``raw=True`` skips the EMA swap (absent under no-EMA). No-op when no plane
-        has ≥2 features.
+        ``total_key`` is the metric logged for the mean FID; ``plane_key`` is the
+        prefix for the per-plane diagnostics (``f"{plane_key}_{xy,yz,zx}"``). The
+        sole regime logs ``val/fid`` (+ ``val/fid_{axis}``) on the raw optimizer
+        weights (the anti-reward-hacking selection metric, #58). No-op when no
+        plane has ≥2 features.
         """
-        synth_planes = self._synth_features(raw=raw)
+        synth_planes = self._synth_features()
         per_plane: dict[str, float] = {}
         total = 0.0
         n = 0

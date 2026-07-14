@@ -181,7 +181,6 @@ def run_grpo_training(
             FIDCallback(
                 module=module,
                 vae=inputs.vae,
-                ema_callback=None,  # GRPO has no double-EMA (#59)
                 real_latents=inputs.real_latents,
                 feature_net=inputs.feature_net,
                 feature_net_factory=inputs.feature_net_factory,
@@ -408,8 +407,8 @@ def _real_inputs(
 ) -> GRPOInputs:
     """Build the real GRPO inputs from the raw JiT arm + the trained reward (#59).
 
-    The raw-arm JiT UNet (ADR-0006 — NOT the EMA shadow; ``export_to_native``'s default
-    ``prefer_ema=False`` baked the raw ``state_dict`` weights) is the **trainable**
+    The raw-arm JiT UNet (ADR-0006: ``export_to_native`` bakes the raw ``state_dict``
+    weights) is the **trainable**
     policy. The trained :class:`RewardModel` (a ``RewardModule`` Lightning checkpoint —
     its ``reward_model.*`` state_dict) is the **frozen** reward. The latent cache
     furnishes the manifold conditioning (``{spacing, label}`` — GRPO is generative, so

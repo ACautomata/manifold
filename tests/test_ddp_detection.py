@@ -191,10 +191,8 @@ def test_jit_checkpoint_monitor_set_on_single_gpu(tmp_path):
     from manifold.training.cli import _build_checkpoint
 
     # monitor_fid=True mirrors run_training's single-GPU enable_fid branch.
-    ckpt = _build_checkpoint(str(tmp_path), monitor_fid=True, monitor_metric="val/fid_raw")
-    assert ckpt.monitor == "val/fid_raw"
-    ckpt2 = _build_checkpoint(str(tmp_path / "b"), monitor_fid=True, monitor_metric="val/fid_avg")
-    assert ckpt2.monitor == "val/fid_avg"
+    ckpt = _build_checkpoint(str(tmp_path), monitor_fid=True, monitor_metric="val/fid")
+    assert ckpt.monitor == "val/fid"
 
 
 def test_paired_checkpoint_monitor_always_set(tmp_path):
