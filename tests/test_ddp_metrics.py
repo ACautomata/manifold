@@ -10,9 +10,6 @@
 - **G3**: ``train/grad_norm`` needs no ``sync_dist`` - DDP all-reduces the UNet
   gradients before the ``after_manual_backward`` hook, so the value is identical
   on every rank. Asserted as a 2-rank invariant.
-- **E1**: the ``DoubleEMACallback`` slow + fast shadows are bit-identical across
-  ranks (the load-bearing invariant for the published slow-EMA arm). Asserted
-  via ``torch.equal`` over all named params.
 - **D1**: the val loader actually has a ``DistributedSampler`` attached (first
   val-batch checksum differs across ranks); without it the M6 reduction is a
   no-op.
@@ -86,23 +83,6 @@ def test_m6_meanmetric_unit_math_is_weighted_not_rank_means():
     reduced = float(merged_value / merged_weight)
     assert reduced == pytest.approx(3.0, abs=1e-6), f"true weighted mean {reduced} != 3.0"
     assert reduced != pytest.approx(3.25, abs=1e-6), "collapsed to mean-of-rank-means (wrong)"
-
-
-# -- E1: DoubleEMA shadows are bit-identical across ranks -----------------------
-
-
-def test_e1_double_ema_shadows_identical_across_ranks(tmp_path):
-    """2-rank: the ``DoubleEMACallback`` slow + fast shadow tensors are bit-identical
-    across ranks after N train batches (``torch.equal`` over all named params).
-
-    Load-bearing for the published slow-EMA arm used by rank-0 FID generation: the
-    docstring claims DDP all-reduces params before ``on_train_batch_end``'s shadow
-    update, so the shadows stay in sync with no extra collective. The rank-0
-    ``swap_in``/``restore`` around eval must not perturb the shadows seen by rank 1.
-    """
-    results = run_ddp_two_rank(jit_ddp_worker, results_dir=str(tmp_path), args=(True,))
-    assert results[0]["ema_slow_sum"] == pytest.approx(results[1]["ema_slow_sum"])
-    assert results[0]["ema_fast_sum"] == pytest.approx(results[1]["ema_fast_sum"])
 
 
 # -- G3: grad_norm is naturally cross-rank-identical ---------------------------

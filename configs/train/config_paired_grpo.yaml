@@ -6,7 +6,7 @@
 #
 # Consumed by manifold-train-paired-grpo. G2RPO needs no VAE / image data — the
 # reward scores the terminal latent cat([x_src, z_K]) (no VAE decode per branch).
-# The real-data launch (slow-EMA paired UNet + trained paired reward) is gated on
+# The real-data launch (raw paired UNet + trained paired reward) is gated on
 # the bridge-noise reward-ranking probe + a tiny-config measurement (#106).
 
 paired_grpo_train:
@@ -54,7 +54,7 @@ paired_grpo_train:
   # per dataset.
   latent_shape: [4, 64, 64, 32]
 
-# Real-data wiring (the #104 launch). The slow-EMA Paired JiT policy loads from
+# Real-data wiring (the #104 launch). The raw Paired JiT policy loads from
 # --native-dir (load_frozen_paired_generator, ADR-0021); the trained paired
 # RewardModel (in_channels = 2·C_latent) from --reward-path; the source latents +
 # contrast labels from --latents-dir. The RewardModel architecture comes from the

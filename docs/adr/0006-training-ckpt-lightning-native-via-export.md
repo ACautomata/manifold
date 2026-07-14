@@ -7,30 +7,19 @@ We do neither during training: training writes a stock Lightning
 `ModelCheckpoint` `.ckpt`, and the native per-component inference dir is produced
 by a **separate export** step.
 
-The `ModelCheckpoint` monitors `val/fid_raw` (`mode='min'`, `save_top_k`, `save_last`,
+The `ModelCheckpoint` monitors `val/fid` (`mode='min'`, `save_top_k`, `save_last`,
 `save_on_train_epoch_end`), writes full training state (UNet + optimizer +
-LR-schedule + epoch + EMA callback state) so `trainer.fit(ckpt_path=…)` resumes
-cleanly, and the `EMACallback` shadows are captured via its callback `state_dict`.
-The export loads a `.ckpt` and bakes the **raw UNet weights** as the inference
-UNet by default, and writes the native dir so `Pipeline.from_pretrained` can load
-it. The monitor (`val/fid_raw`, the raw-optimizer arm) and the export default
-(raw weights) are deliberately aligned: the exported "best" checkpoint is best
-for the weights that are actually published. `prefer_ema=True` bakes the slowest
-EMA shadow instead (EMA-selection lives in `slowest_shadow_index`; the hope→native
-converter that previously shared it is retired — ADR-0007) for runs where the
-0.9999 EMA has converged (warm-start / long horizon, as hope trains).
+LR-schedule + epoch) so `trainer.fit(ckpt_path=…)` resumes cleanly. The export
+loads a `.ckpt` and bakes the **raw UNet weights** as the inference UNet, and
+writes the native dir so `Pipeline.from_pretrained` can load it. The monitor
+(`val/fid`, the raw-optimizer arm) and the export (raw weights) are deliberately
+aligned: the exported "best" checkpoint is best for the weights that are actually
+published.
 
-## Note on the monitor/export policy (2026-07)
+## Note on EMA removal (2026-07-14)
 
-`val/fid_avg` (slow-EMA, the published model under hope's policy) is still logged
-alongside `val/fid_raw`, but is no longer what selects or weights the "best"
-checkpoint. On short from-scratch runs the 0.9999 EMA lags the raw model (at ep7
-of the GLI BraTS run: raw FID ≈ 5.8 vs slow-EMA ≈ 21.5 — the shadow is still
-~61% init at `0.9999^5008`), so monitoring/publishing the EMA undersells the
-model and its per-plane quality oscillates epoch-to-epoch. hope avoids this by
-warm-starting + training 200–1000 epochs; manifold's default monitor/export now
-tracks the raw model until manifold matches that regime, at which point
-`prefer_ema=True` (and monitoring `val/fid_avg`) restores the EMA-publish policy.
+EMA training was removed 2026-07-14, accepting the reversal of the paired-JiT
++9dB fast-EMA finding (#113).
 
 ## Why
 
@@ -41,8 +30,8 @@ tracks the raw model until manifold matches that regime, at which point
 - **Respects the train/infer boundary (ADR-0005).** Training never instantiates
   the `LatentFlowPipeline`; the native format is the inference side's concern,
   reached only through the export bridge.
-- **Resume + EMA are automatic.** Lightning persists optimizer/scheduler/EMA
-  state in the `.ckpt`; the bespoke flat format had to hand-wire the `ema` key.
+- **Resume is automatic.** Lightning persists optimizer/scheduler state in the
+  `.ckpt`; the bespoke flat format had to hand-wire the `ema` key.
 
 ## Consequences
 

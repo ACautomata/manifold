@@ -16,9 +16,10 @@ singular-branch rollout (ADR-0011) fills a buffer; then an **inner loop over the
 `eta_step_list`** runs one PPO update each — recompute `new_log_prob` under grad, clipped
 surrogate loss, `manual_backward`, grad-clip, `opt.step`, scheduler, `zero_grad`, so the
 ratio drifts off 1 and the clip **binds** (real trust region, Granular-faithful). **No EMA
-during GRPO** (the supervised-decay shadows are useless under RL and waste ~7 GB); resume
-**raw**, select and export **raw** (ADR-0006). Validation reuses JiT's fixed-sample FID
-unchanged, monitored on `val/fid`; `val/mean_reward` is logged as the progress signal.
+during GRPO**: GRPO inherits the raw / no-EMA arm from JiT (ADR-0006; JiT itself attaches no
+EMA callback, EMA having been removed codebase-wide); resume **raw**, select and export
+**raw**. Validation reuses JiT's fixed-sample FID unchanged, monitored on `val/fid`;
+`val/mean_reward` is logged as the progress signal.
 
 ## Why
 
@@ -31,19 +32,21 @@ unchanged, monitored on `val/fid`; `val/mean_reward` is logged as the progress s
 - **Override `training_step`, not `forward`.** `RewardModule` fit spt's "forward → one loss
   → one `manual_backward` → one `opt.step`" by returning a single BT loss. GRPO needs N
   `opt.step`s per rollout, so the single-loss seam cannot hold. Overriding `training_step`
-  is still fully within `spt.Module` (Trainer, EMA slot, checkpointing, callbacks all
+  is still fully within `spt.Module` (Trainer, checkpointing, callbacks all
   reused); only the per-step optimizer loop is customized (~5-line replication of spt's
   grad-clip / `opt.step` / scheduler / `zero_grad`).
 - **Memory stays at one live grad eval.** Inside each inner step, the per-term (or
   per-`eta_step`) `manual_backward` releases each term's graph as it returns, so peak
   autograd memory is one UNet-forward's activations — not N×G — at any group size. This is
   the property that lets `G` and `eta_step_list` be tuned later without an OOM wall.
-- **No EMA under RL.** The JiT double-EMA decays (0.9999 / 0.9996) are calibrated for
-  supervised LR; over RL steps the slow shadow is `0.9999^N ≈ 1` (effectively the initial
-  policy for the whole run), so it reflects no RL progress and is worthless for eval. It
-  also holds two full UNet copies (~7 GB) the rollout can use. Dropping `DoubleEMACallback`
-  during GRPO returns that memory and matches Granular's single-model design; the JiT FID
-  callback's EMA-swap becomes a no-op (no shadows ⇒ eval on raw, which is what we want).
+- **No EMA under RL.** GRPO inherits the raw / no-EMA arm from JiT (ADR-0006); JiT itself
+  attaches no EMA callback (EMA was removed codebase-wide), so there are no supervised-decay
+  shadows to maintain or swap. The earlier rationale was that the JiT double-EMA decays
+  (0.9999 / 0.9996) were RL-laggy (over RL steps the slow shadow sat at `0.9999^N ≈ 1`,
+  reflecting no RL progress and worthless for eval) and wasted ~7 GB across two full UNet
+  copies; that argument is now historical, since JiT never held those shadows in the current
+  codebase. The JiT FID callback needs no EMA-swap (it already evaluates raw), matching
+  Granular's single-model design.
 - **Resume and select raw.** ADR-0006 deploys the raw arm; post-training anything else
   optimizes a non-deployed distribution. Monitor `val/fid` on raw (mode=min) so a
   reward-hacked checkpoint (high reward, high FID) is never selected.
@@ -61,9 +64,13 @@ unchanged, monitored on `val/fid`; `val/mean_reward` is logged as the progress s
   activations in one backward (OOM risk at large `G·N`).
 - **Override `training_step` with one aggregated `opt.step`** (single-step). Rejected: same
   clip-no-op degeneration as above; loses the trust region (c) was chosen to provide.
-- **Maintain JiT double-EMA during GRPO.** Rejected: RL-laggy useless shadows + ~7 GB.
-- **Resume / select the slow-EMA arm.** Rejected: ADR-0006 deploys raw; would post-train a
-  non-deployed distribution.
+- **Maintain JiT EMA during GRPO.** Rejected (now moot): the historical argument was
+  RL-laggy useless shadows + ~7 GB, but JiT itself attaches no EMA callback (EMA removed
+  codebase-wide), so there are no shadows to maintain; GRPO inherits JiT's raw arm directly
+  (ADR-0006).
+- **Resume / select a non-raw arm.** Rejected: ADR-0006 deploys raw; would post-train a
+  non-deployed distribution. (Historically the slow-EMA arm; now moot, JiT carrying no EMA
+  arm.)
 - **KL-to-reference from v1.** Rejected as a v1 default: low reversal cost, so building it
   preemptively violates Simplicity First; FID selection already screens for hacking.
   **Adopted 2026-07-06 by [ADR-0015](0015-grpo-kl-anchor-and-bounded-reward.md)** (with a
@@ -75,8 +82,8 @@ unchanged, monitored on `val/fid`; `val/mean_reward` is logged as the progress s
   `configure_optimizers`), the frozen `RewardModel` (unregistered via
   `object.__setattr__`, `eval` + `requires_grad_(False)`, device-moved in `on_fit_start`),
   the `FlowMatchGRPOScheduler`, and the GRPO knobs (`G`, `eta_step_list`, `η`, `clip_range`,
-  `lr`, `adv_clip_max`). It overrides `training_step` and `configure_optimizers`; it does
-  **not** add `DoubleEMACallback`.
+  `lr`, `adv_clip_max`). It overrides `training_step` and `configure_optimizers`; it
+  attaches no EMA callback.
 - The rollout buffer per `(i,k)` stores `(z_k, t_k, t_{k+1}, z_{k+1}, old_log_prob, A_{i,k})`;
   `new_log_prob` is recomputed under grad in the inner loop (`mean_new` via
   `scheduler.sde_step_mean(UNet(z_k,t_k), z_k, t_k, t_{k+1})`), so no policy output is

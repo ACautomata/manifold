@@ -151,7 +151,7 @@ def _tiny_jit_module():
 
 
 def _jit_callbacks(module, *, enable_fid: bool, devices, seed: int = 0):
-    """Build the JiT callback stack (train metrics + EMA + optional FID + ckpt).
+    """Build the JiT callback stack (train metrics + optional FID + ckpt).
 
     ``devices`` is the value passed to ``build_trainer``; the checkpoint monitor
     uses the production ``is_multi_gpu`` guard so under DDP (rank-0-only FID)
@@ -159,20 +159,17 @@ def _jit_callbacks(module, *, enable_fid: bool, devices, seed: int = 0):
     """
     from manifold import AutoencoderKL
     from manifold.metrics import FIDCallback
-    from manifold.training import DoubleEMACallback
     from manifold.training.cli import _build_checkpoint, _inference_recipe
     from manifold.training.metrics import LatentX0MAE, TrainLossLogger
     from manifold.training.trainer import is_multi_gpu
 
-    ema = DoubleEMACallback(module)
-    callbacks: list = [TrainLossLogger(), LatentX0MAE(), ema]
+    callbacks: list = [TrainLossLogger(), LatentX0MAE()]
     val_latents = torch.randn(5, 4, 4, 4, 4)
     inf = _inference_recipe(module, cfg=None, val_latents=val_latents)
     if enable_fid:
         fid = FIDCallback(
             module=module,
             vae=AutoencoderKL(scaling_factor=0.5),
-            ema_callback=ema,
             real_latents=val_latents,
             feature_net=_FakeFeatureNet(),
             latent_shape=inf["latent_shape"],
@@ -201,12 +198,12 @@ def _jit_callbacks(module, *, enable_fid: bool, devices, seed: int = 0):
 
 
 def jit_ddp_worker(rank: int, world: int, results_dir: str, port: str, enable_fid: bool) -> None:
-    """Run a tiny 2-rank JiT fit; dump per-rank metrics + grad_norm + EMA shadows.
+    """Run a tiny 2-rank JiT fit; dump per-rank metrics + grad_norm.
 
     Captures everything the downstream 2-rank gates need in one fit:
     ``train/loss_epoch`` / ``val/x0_mae`` (M6 #82), ``train/grad_norm`` (G3 #82),
-    the ``DoubleEMACallback`` slow/fast shadows (E1 #82), the val-loader
-    first-batch checksum (D1 #82), and the checkpoint ``monitor`` (M1a #81).
+    the val-loader first-batch checksum (D1 #82), and the checkpoint
+    ``monitor`` (M1a #81).
     """
     import lightning.pytorch as pl
     from lightning.pytorch.strategies import DDPStrategy
@@ -255,13 +252,6 @@ def jit_ddp_worker(rank: int, world: int, results_dir: str, port: str, enable_fi
         trainer.callbacks.append(_D1Capture())
         trainer.fit(module, datamodule=datamodule)
 
-        # EMA shadows: compare across ranks via the callback's state.
-        ema_cb = next(c for c in trainer.callbacks if type(c).__name__ == "DoubleEMACallback")
-        slow_shadow = ema_cb._shadows.shadows[ema_cb._shadows.slow_index]
-        fast_shadow = ema_cb._shadows.shadows[0]
-        slow_sum = sum(float(t.sum().item()) for t in slow_shadow.values())
-        fast_sum = sum(float(t.sum().item()) for t in fast_shadow.values())
-
         metrics = {k: float(v) for k, v in trainer.callback_metrics.items()}
         result = {
             "rank": rank,
@@ -272,8 +262,6 @@ def jit_ddp_worker(rank: int, world: int, results_dir: str, port: str, enable_fi
             "ckpt_monitor": ckpt.monitor,
             "first_val_sum": first_val_sum[0],
             "val_sampler": sampler_type[0],
-            "ema_slow_sum": slow_sum,
-            "ema_fast_sum": fast_sum,
             "dist_initialized_at_fit": True,  # the warm/metrics ran with a live PG
         }
         Path(results_dir, f"r{rank}.json").write_text(json.dumps(result))
@@ -303,11 +291,9 @@ def _unbalanced_val_worker(rank: int, world: int, results_dir: str, port: str, _
     try:
         torch.manual_seed(0)
         module = _tiny_jit_module()
-        from manifold.training.ema import DoubleEMACallback as _EMA
-        ema = _EMA(module)
         # 5-sample val set -> unbalanced shards under DDP (rank0: 3 samples/2
         # batches; rank1: 2 samples/1 batch). Disable FID (it is rank-0-only).
-        callbacks: list = [TrainLossLogger(), LatentX0MAE(), ema]
+        callbacks: list = [TrainLossLogger(), LatentX0MAE()]
         from manifold.training.cli import _build_checkpoint
         ckpt = _build_checkpoint(model_dir="/tmp/_unused_ckpt_dir", monitor_fid=False, every_n_epochs=1)
         callbacks.append(ckpt)
@@ -534,7 +520,6 @@ def cold_cache_ddp_worker(rank: int, world: int, results_dir: str, port: str, n_
     from manifold.training.cli import _build_checkpoint
     from manifold.training.metrics import LatentX0MAE, TrainLossLogger
     from manifold.training.trainer import build_trainer
-    from manifold.training.ema import DoubleEMACallback
 
     ddp_init(rank, world, port)
     encode_count = [0]
@@ -563,8 +548,7 @@ def cold_cache_ddp_worker(rank: int, world: int, results_dir: str, port: str, n_
 
     torch.manual_seed(0)
     module = _tiny_jit_module()
-    ema = DoubleEMACallback(module)
-    callbacks: list = [TrainLossLogger(), LatentX0MAE(), ema]
+    callbacks: list = [TrainLossLogger(), LatentX0MAE()]
     ckpt = _build_checkpoint(model_dir=results_dir, monitor_fid=False, every_n_epochs=1)
     callbacks.append(ckpt)
     datamodule = LatentWarmDataModule(
@@ -684,7 +668,7 @@ def paired_psnr_ddp_worker(rank: int, world: int, results_dir: str, port: str, _
         )
         pipeline = PairedLatentFlowPipeline(unet, _IdentityVAE(), module.scheduler)
         psnr = PairedPSNRSSIMCallback(
-            pipeline=pipeline, num_inference_steps=2, every_n_epochs=1, ema_callback=None,
+            pipeline=pipeline, num_inference_steps=2, every_n_epochs=1,
         )
         ds = _PairedLatentDS(n=5)
         train = DataLoader(ds, batch_size=2, shuffle=True, num_workers=0)

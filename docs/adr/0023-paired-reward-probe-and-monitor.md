@@ -51,7 +51,6 @@ mirroring the JiT reward (ADR-0010).
 - New `partial_paired_rollout` in `paired_sampler.py` (ADR-0005 single-source-of-truth);
   the probe path constructs `PartialFlowMatchHeunScheduler` explicitly (only the subclass
   has `set_timesteps_partial`).
-- The probe is precomputed once over paired-val subjects (slow-EMA generator frozen ⇒
-  static) and reused across epochs — exactly the JiT probe lifecycle.
+- The probe is precomputed once over paired-val subjects (frozen paired generator (raw optimizer arm) is static) and reused across epochs — exactly the JiT probe lifecycle.
 - `_build_checkpoint` monitors `val/gen_pair_acc` (single-GPU); DDP multi-GPU drops the
   monitor (rank-local selection unreliable), keeping `save_last` + `save_top_k=1`.

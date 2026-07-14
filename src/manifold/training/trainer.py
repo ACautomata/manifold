@@ -7,7 +7,7 @@ labels are dropped), the spt :class:`~stable_pretraining.callbacks.ModuleRegistr
 appended **once** so spt-side ``log()`` reaches the logger, and CSV +
 TensorBoard loggers under the model dir.
 
-The callbacks the trainer needs beyond spt's own (the double-EMA and the
+The callbacks the trainer needs beyond spt's own (the
 train-metrics callbacks) are passed in by the caller; :func:`build_trainer` only
 owns the invariant wiring (precision, strategy, registry callback, loggers).
 """
@@ -51,7 +51,7 @@ def build_trainer(
 
     Args:
         max_epochs: the training epoch horizon.
-        callbacks: project callbacks (EMA, train-metrics, FID, ModelCheckpoint).
+        callbacks: project callbacks (train-metrics, FID, ModelCheckpoint).
             The spt ``ModuleRegistryCallback`` is appended once if absent so
             spt-side ``log()`` reaches the logger.
         model_dir: checkpoint / log output dir; CSV + TensorBoard log under it.

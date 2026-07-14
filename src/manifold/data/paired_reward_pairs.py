@@ -286,7 +286,7 @@ def load_frozen_paired_generator(native_dir: str | Path):
     The native dir is the layout written by
     :meth:`~manifold.PairedLatentFlowPipeline.save_pretrained` /
     :func:`~manifold.training.export_to_native` (with ``pipeline_cls=
-    PairedLatentFlowPipeline``, ``prefer_ema=True`` - the slow-EMA arm, ADR-0021).
+    PairedLatentFlowPipeline`` - the raw arm, ADR-0021).
     The UNet is the trained paired src->tgt generator (``in_channels = 2·C_latent``,
     one source of truth). ADR-0021 sibling of the JiT
     :func:`~manifold.data.reward_pairs.load_frozen_denoiser`, with two inversions:
@@ -294,10 +294,9 @@ def load_frozen_paired_generator(native_dir: str | Path):
     - the scheduler is the **base** :class:`FlowMatchHeunDiscreteScheduler` (the
       loser is a full ``0 -> 1`` rollout), NOT re-instantiated as the Partial
       subclass - only the probe path constructs that (ADR-0023); and
-    - the export baked the **slow-EMA arm** (``prefer_ema=True``), opposite the JiT
-      reward's raw arm - the arm paired checkpoint selection monitors
-      (``val/psnr @ slow-EMA``), so the reward's fakes come from the same weights
-      "the paired model" denotes (ADR-0021).
+    - the export bakes the **raw arm** (no ``prefer_ema``), the arm paired checkpoint
+      selection monitors (``val/psnr``), so the reward's fakes come from the same
+      weights "the paired model" denotes (ADR-0021).
 
     The VAE's ``scaling_factor`` is returned so callers can scale raw paired-cache
     src latents into the generator's training space (the paired latent cache stores

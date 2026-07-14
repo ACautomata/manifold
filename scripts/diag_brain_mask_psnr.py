@@ -1,4 +1,9 @@
 #!/usr/bin/env python3
+# NOTE (post-EMA-removal, 2026-07-14): EMA training was removed from manifold
+# (DoubleEMACallback deleted). This historical diagnostic reads the EMA shadow
+# state from a checkpoint's callbacks['DoubleEMACallback'], which NEW
+# checkpoints no longer carry. It only runs against PRE-removal EMA checkpoints;
+# on a current checkpoint it raises KeyError on 'DoubleEMACallback'.
 """Diagnostic: is val/psnr background-dominated? (BraTS is skull-stripped.)
 
 The copy-src baseline already reaches ~23.8 dB full-volume (diag_paired_ceiling),

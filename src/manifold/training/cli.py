@@ -2,7 +2,7 @@
 
 The console entry (issue #28) composes the OmegaConf experiment config, warms
 the latent cache, builds the Module + the fixed validation subset + the
-callbacks (train metrics, double EMA, FID, ``ModelCheckpoint``), and calls
+callbacks (train metrics, FID, ``ModelCheckpoint``), and calls
 ``Trainer.fit``. From-scratch by default; an optional warm-start path.
 
 The heavy data-warming lives in :func:`main`; the integration core
@@ -32,7 +32,6 @@ from ..config import opt
 from ..data.datamodule import build_datamodule
 from ..metrics import FIDCallback
 from ..modules.latent_flow import LatentFlowModule
-from .ema import DoubleEMACallback
 from .metrics import LatentX0MAE, TrainLossLogger
 from .trainer import build_trainer, is_multi_gpu
 
@@ -79,21 +78,17 @@ def _build_checkpoint(
     model_dir: str,
     *,
     monitor_fid: bool,
-    monitor_metric: str = "val/fid_raw",
+    monitor_metric: str = "val/fid",
     every_n_epochs: int = 1,
     save_top_k: int = 3,
 ) -> ModelCheckpoint:
     """Stock Lightning ``ModelCheckpoint`` (ADR-0006).
 
     Single-GPU + FID: monitor ``monitor_metric`` (top-k, last, full state). The
-    default ``val/fid_raw`` (raw-optimizer arm) tracks whether the model is
-    actually learning — the slow-EMA ``val/fid_avg`` lags on short from-scratch
-    runs (a 0.9999 EMA is still mostly init well before epoch 50). Callers that
-    disable the raw arm (``log_raw_fid=False``) must pass ``val/fid_avg`` here so
-    the monitor matches a metric that is actually logged. Under DDP (FID is
-    rank-0-only, so the metric is not global) fall back to ``save_last`` +
-    ``every_n_epochs`` with no monitor. ``auto_insert_metric_name = False``
-    because the metric key contains a ``/``.
+    default ``val/fid`` (the raw optimizer arm) tracks whether the model is
+    actually learning. Under DDP (FID is rank-0-only, so the metric is not
+    global) fall back to ``save_last`` + ``every_n_epochs`` with no monitor.
+    ``auto_insert_metric_name = False`` because the metric key contains a ``/``.
     """
     if monitor_fid:
         return ModelCheckpoint(
@@ -142,13 +137,11 @@ def run_training(
     every_n_epochs: int = 1,
     center_slices_ratio: float = 0.5,
     cov_ridge: float = 1e-6,
-    log_raw_fid: bool = True,
     val_subset_size: int = 32,
-    ema_decays: tuple[float, ...] = (0.9999, 0.9996),
 ) -> tuple[pl.Trainer, ModelCheckpoint]:
     """Assemble callbacks + ``Trainer`` and ``fit`` the module (the core seam).
 
-    Builds the train-metrics / EMA / (optional) FID callbacks + a stock
+    Builds the train-metrics / (optional) FID callbacks + a stock
     ``ModelCheckpoint`` and runs ``Trainer.fit``. Returns ``(trainer, ckpt)`` so
     callers (and the Export) can find the written ``.ckpt``.
 
@@ -156,8 +149,6 @@ def run_training(
         bundle: the warmed latent dataset + held VAE + fixed real-subset latents.
         feature_net: the FID feature network (RadImageNet, or a test fake).
         ckpt_path: optional warm-start / resume checkpoint passed to ``fit``.
-        ema_decays: EMA decays for the DoubleEMACallback (JiT default ``(0.9999, 0.9996)``);
-            read from ``formulation.ema_decays`` by :func:`main`.
     """
     # Validation requires a held-out set. The regular ``manifold-train`` flow has
     # no val-split plumbing, so production (allow_train_as_val=False) DISABLES
@@ -166,8 +157,7 @@ def run_training(
     # allow_train_as_val=True to exercise the FID + x0-MAE plumbing on the train
     # fixture (it tests wiring, not held-out generalization).
     val_enabled = bundle.allow_train_as_val
-    ema = DoubleEMACallback(module, decays=tuple(ema_decays))
-    callbacks: list = [TrainLossLogger(), ema]
+    callbacks: list = [TrainLossLogger()]
     if val_enabled:
         callbacks.append(LatentX0MAE())
 
@@ -192,7 +182,6 @@ def run_training(
         fid = FIDCallback(
             module=module,
             vae=bundle.vae,
-            ema_callback=ema,
             real_latents=bundle.val_latents,  # F5: None on the cold path -> lazy
             real_latents_source=None,  # set below once the datamodule exists
             feature_net=feature_net,
@@ -208,7 +197,6 @@ def run_training(
             center_slices_ratio=center_slices_ratio,
             cov_ridge=cov_ridge,
             seed=seed,
-            log_raw_fid=log_raw_fid,
         )
         callbacks.append(fid)
     elif not val_enabled:
@@ -222,8 +210,7 @@ def run_training(
     ckpt = _build_checkpoint(
         model_dir,
         monitor_fid=fid_attached and not multi_gpu,
-        # monitor what's logged: raw arm if present, else the slow-EMA avg.
-        monitor_metric="val/fid_raw" if log_raw_fid else "val/fid_avg",
+        monitor_metric="val/fid",
         every_n_epochs=every_n_epochs,
         save_top_k=save_top_k,
     )
@@ -418,11 +405,10 @@ def main(argv: list[str] | None = None, *, data_provider=None) -> int:
 
     # Thread the optional config blocks (from the train recipe) as overrides so
     # fid_eval.* / checkpoint.* knobs are actually reachable via dotlist/YAML.
-    ema_decays = opt(cfg.formulation, "ema_decays", [0.9999, 0.9996])
     fid_cfg = opt(cfg, "fid_eval", {})
     ckpt_cfg = opt(cfg, "checkpoint", {})
     fid_kwargs = _dict_subset(
-        fid_cfg, ("num_synth", "every_n_epochs", "center_slices_ratio", "cov_ridge", "log_raw_fid")
+        fid_cfg, ("num_synth", "every_n_epochs", "center_slices_ratio", "cov_ridge")
     )
     ckpt_save_top_k = fid_cfg.get("save_top_k", ckpt_cfg.get("save_top_k", 3)) if fid_cfg or ckpt_cfg else 3
 
@@ -444,7 +430,6 @@ def main(argv: list[str] | None = None, *, data_provider=None) -> int:
         save_top_k=ckpt_save_top_k,
         limit_val_batches=int(opt(cfg, "val_subset_size", 4)),
         val_subset_size=int(opt(cfg, "val_subset_size", 32)),
-        ema_decays=ema_decays,
         **fid_kwargs,
     )
     print(f"[manifold-train] done; checkpoints under {cfg.model_dir}")

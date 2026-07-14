@@ -125,19 +125,18 @@ _Avoid_: weights file, model file.
 The `manifold-train` console entry + Lightning `Trainer` + `spt.Module` + callbacks that turn
 warmed latents into a trained checkpoint. Built on `spt.Module` (manual
 optimization), never a hand-rolled loop. Owned under the `training/` package
-(cli + trainer + EMA + train-metrics callbacks + export) and `metrics/` (the FID).
+(cli + trainer + train-metrics callbacks + export) and `metrics/` (the FID).
 _Avoid_: train script, run script.
 
 **Training checkpoint** (.ckpt):
 The Lightning `ModelCheckpoint` artifact — full training state (UNet + optimizer +
-LR-schedule + EMA callback state + epoch); the resume and best-by-FID medium.
+LR-schedule + epoch); the resume and best-by-FID medium.
 Distinct from the **native** checkpoint: training writes `.ckpt`, the inference
 Pipeline reads the native per-component dir (reached via export; ADR-0006).
 _Avoid_: weights file (say training-ckpt or native).
 
 **Export**:
-The one-shot `.ckpt → native` per-component conversion that bakes the slowest EMA
-shadow as the inference UNet — the sole bridge from a training checkpoint to the
+The one-shot `.ckpt → native` per-component conversion that bakes the RAW optimizer weights as the inference UNet — the sole bridge from a training checkpoint to the
 inference Pipeline (ADR-0006), now that the hope→native converter is retired
 (ADR-0007).
 _Avoid_: convert (say export).

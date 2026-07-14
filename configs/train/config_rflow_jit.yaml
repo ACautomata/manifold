@@ -1,9 +1,9 @@
 # JiT recipe preset — the x0-denoiser Formulation (ADR-0002). One config that
 # selects the full JiT recipe: clean-latent (x0) prediction, (1-t)^-2-weighted
 # MSE with logit-normal t sampling, the true two-evaluation Heun sampler with
-# denoising-interval CFG, and double EMA. Composed with a BraTS2023 env + the
+# denoising-interval CFG. Composed with a BraTS2023 env + the
 # network config (the architecture and transport are unchanged from velocity
-# RFlow — only the prediction target, loss, sampler, and EMA differ).
+# RFlow — only the prediction target, loss, and sampler differ).
 #
 # Consumed by manifold-train (#28).
 
@@ -33,9 +33,6 @@ formulation:
   noise_scale: 1.0       # noise-std multiplier on the normalized latent
   cfg_interval: [0.1, 1.0]  # guidance applied only for t in (0.1, 1.0)
   ode_solver: heun       # 2nd-order Heun integrator
-  # Double EMA (JiT): shadows at 0.9999 (slow, used for sampling/eval) + 0.9996.
-  ema: true
-  ema_decays: [0.9999, 0.9996]
 
 # Generative validation (issue #27): per-epoch unbiased 2.5D FID on a fixed
 # sample set. All optional — manifold-train falls back to sensible defaults;
@@ -46,7 +43,7 @@ fid_eval:
   center_slices_ratio: 0.5 # 2.5D: fraction of each axis's center slices sampled
   cov_ridge: 1.0e-6        # covariance ridge before the Fréchet matrix square root
 
-# Stock Lightning ModelCheckpoint (ADR-0006). Single-GPU monitors val/fid_avg
+# Stock Lightning ModelCheckpoint (ADR-0006). Single-GPU monitors val/fid
 # (top-3, last, full state); under DDP (FID is rank-0-only) manifold-train falls
 # back to save_last + every_n_epochs with no monitor.
 checkpoint:

@@ -89,11 +89,10 @@ def test_get_features_2p5d_returns_three_planes():
         assert p.shape[0] == 2  # one center slice/volume × 2 volumes
 
 
-def _make_fid_callback(module, vae, ema, real_latents, *, num_synth=3, seed=0, ridge=1e-2):
+def _make_fid_callback(module, vae, real_latents, *, num_synth=3, seed=0, ridge=1e-2):
     return FIDCallback(
         module=module,
         vae=vae,
-        ema_callback=ema,
         real_latents=real_latents,
         feature_net=_FakeFeatureNet(),
         latent_shape=(1, 4, 4, 4, 4),
@@ -139,9 +138,6 @@ def _datamodule(n=6, batch_size=2):
 def _fit_with_fid(module, fid_cb, *, max_epochs=1):
     import lightning.pytorch as pl
 
-    from manifold.training import DoubleEMACallback
-
-    ema = fid_cb.ema_callback if isinstance(fid_cb.ema_callback, DoubleEMACallback) else DoubleEMACallback(module)
     trainer = pl.Trainer(
         accelerator="cpu",
         devices=1,
@@ -150,28 +146,26 @@ def _fit_with_fid(module, fid_cb, *, max_epochs=1):
         enable_progress_bar=False,
         enable_checkpointing=False,
         enable_model_summary=False,
-        callbacks=[ema, fid_cb],
+        callbacks=[fid_cb],
         num_sanity_val_steps=0,
     )
     trainer.fit(module, datamodule=_datamodule())
     return trainer
 
 
-def test_fid_callback_logs_finite_avg(latent_module):
-    """The callback logs a finite val/fid_avg (+ per-plane) on a tiny set."""
+def test_fid_callback_logs_finite(latent_module):
+    """The callback logs a finite val/fid (+ per-plane) on a tiny set."""
     from manifold import AutoencoderKL
-    from manifold.training import DoubleEMACallback
 
     vae = AutoencoderKL(scaling_factor=0.5)
-    ema = DoubleEMACallback(latent_module)
     real_latents = torch.randn(6, 4, 4, 4, 4)
-    cb = _make_fid_callback(latent_module, vae, ema, real_latents, ridge=1e-2)
+    cb = _make_fid_callback(latent_module, vae, real_latents, ridge=1e-2)
 
     trainer = _fit_with_fid(latent_module, cb)
     metrics = trainer.callback_metrics
-    assert "val/fid_avg" in metrics
-    assert torch.isfinite(metrics["val/fid_avg"])
-    assert any(k.startswith("val/fid_") and k != "val/fid_avg" for k in metrics)
+    assert "val/fid" in metrics
+    assert torch.isfinite(metrics["val/fid"])
+    assert any(k.startswith("val/fid_") and k != "val/fid" for k in metrics)
 
 
 def test_fid_callback_same_seed_reproduces(latent_module):
@@ -183,12 +177,10 @@ def test_fid_callback_same_seed_reproduces(latent_module):
     scope here — only the model + the callback's seed must match.)
     """
     from manifold import AutoencoderKL
-    from manifold.training import DoubleEMACallback
 
     vae = AutoencoderKL(scaling_factor=0.5)
-    ema = DoubleEMACallback(latent_module)
     real_latents = torch.randn(6, 4, 4, 4, 4)
-    cb = _make_fid_callback(latent_module, vae, ema, real_latents, seed=42, ridge=1e-2)
+    cb = _make_fid_callback(latent_module, vae, real_latents, seed=42, ridge=1e-2)
 
     first = cb._synth_features()
     second = cb._synth_features()
@@ -200,14 +192,12 @@ def test_fid_callback_same_seed_reproduces(latent_module):
 
 
 def test_fid_callback_no_ema_logs_val_fid(latent_module):
-    """ema_callback=None (the no-EMA regime, e.g. GRPO) → one no-swap arm logged as val/fid.
+    """The callback logs a single val/fid arm (+ per-plane) on a tiny set.
 
-    GRPO policy post-training carries no double-EMA (#59: the supervised-decay shadows
-    are useless under RL and hold ~7 GB the rollout needs). The callback must run a
-    single arm with NO EMA swap and log it as ``val/fid`` (the anti-reward-hacking
-    selection metric, #58) — not ``val/fid_avg`` (no EMA exists to swap in) and not
-    crash on the absent ``ema_callback``. This is the GRPO wiring of the existing
-    JiT FID callback (reused verbatim modulo the optional EMA).
+    Generation samples the live optimizer weights, so the callback logs a single
+    ``val/fid`` (+ ``val/fid_{xy,yz,zx}``) - the anti-reward-hacking selection
+    metric (#58). The two-arm ``val/fid_avg`` / ``val/fid_raw`` metrics no longer
+    exist.
     """
     import lightning.pytorch as pl
 
@@ -215,10 +205,8 @@ def test_fid_callback_no_ema_logs_val_fid(latent_module):
 
     vae = AutoencoderKL(scaling_factor=0.5)
     real_latents = torch.randn(6, 4, 4, 4, 4)
-    cb = _make_fid_callback(latent_module, vae, None, real_latents, ridge=1e-2)  # ema_callback=None
-    assert cb.ema_callback is None
+    cb = _make_fid_callback(latent_module, vae, real_latents, ridge=1e-2)
 
-    # No EMA callback attached — the no-EMA regime. fit must not call swap_in/restore.
     trainer = pl.Trainer(
         accelerator="cpu", devices=1, max_epochs=1, logger=False,
         enable_progress_bar=False, enable_checkpointing=False, enable_model_summary=False,
@@ -226,66 +214,11 @@ def test_fid_callback_no_ema_logs_val_fid(latent_module):
     )
     trainer.fit(latent_module, datamodule=_datamodule())
     metrics = trainer.callback_metrics
-    assert "val/fid" in metrics, "no-EMA arm must log val/fid"
+    assert "val/fid" in metrics, "must log val/fid"
     assert torch.isfinite(metrics["val/fid"])
     assert any(k.startswith("val/fid_") and k != "val/fid" for k in metrics), "per-plane must log"
-    # No EMA ⇒ neither two-arm metric is logged.
+    # The two-arm metrics no longer exist.
     assert "val/fid_avg" not in metrics and "val/fid_raw" not in metrics
-
-
-def test_fid_callback_logs_raw_alongside_slow(latent_module):
-    """log_raw_fid (default) logs val/fid_raw (+ per-plane) alongside val/fid_avg."""
-    from manifold import AutoencoderKL
-    from manifold.training import DoubleEMACallback
-
-    vae = AutoencoderKL(scaling_factor=0.5)
-    ema = DoubleEMACallback(latent_module)
-    real_latents = torch.randn(6, 4, 4, 4, 4)
-    cb = _make_fid_callback(latent_module, vae, ema, real_latents, ridge=1e-2)
-
-    trainer = _fit_with_fid(latent_module, cb)
-    metrics = trainer.callback_metrics
-    assert "val/fid_raw" in metrics, "raw arm must log val/fid_raw"
-    assert torch.isfinite(metrics["val/fid_raw"])
-    assert any(k.startswith("val/fid_raw_") for k in metrics), "raw per-plane must log"
-    # The slow-EMA arm is still logged alongside.
-    assert "val/fid_avg" in metrics
-
-
-def test_synth_features_raw_is_blind_to_ema_shadow(latent_module):
-    """raw=True bypasses ema.swap_in: perturbing the slow shadow moves the
-    slow-arm features but leaves the raw-arm features bit-identical. This is the
-    load-bearing property that lets val/fid_raw track raw learning decoupled from
-    the 0.9999 EMA's convergence lag."""
-    from manifold import AutoencoderKL
-    from manifold.training import DoubleEMACallback
-
-    vae = AutoencoderKL(scaling_factor=0.5)
-    ema = DoubleEMACallback(latent_module)
-    real_latents = torch.randn(6, 4, 4, 4, 4)
-    cb = _make_fid_callback(latent_module, vae, ema, real_latents, seed=0, ridge=1e-2)
-    cb._stage_eval_on_device()
-
-    raw_before = cb._synth_features(raw=True)
-    slow_before = cb._synth_features(raw=False)
-
-    # Replace the slow EMA shadow with fresh random weights — the raw arm must
-    # not see this. (Random replacement, not a 2x mul: the UNet's group norms are
-    # scale-invariant, so a uniform scaling would leave the sample unchanged.
-    # manual_seed + randn_like is device-correct: the seed applies to whichever
-    # device generator owns the shadow tensor, so this is safe on CUDA/MPS too.)
-    torch.manual_seed(123)
-    slow_shadow = ema._shadows.shadows[ema._shadows.slow_index]
-    for n in slow_shadow:
-        slow_shadow[n].copy_(torch.randn_like(slow_shadow[n]))
-
-    raw_after = cb._synth_features(raw=True)
-    slow_after = cb._synth_features(raw=False)
-
-    for a, b in zip(raw_before, raw_after):
-        assert torch.equal(a, b), "raw arm must be blind to the EMA shadow"
-    assert not all(torch.equal(a, b) for a, b in zip(slow_before, slow_after)), \
-        "slow arm must reflect the replaced shadow"
 
 
 def test_fid_callback_feature_net_set_to_eval(latent_module):
@@ -293,12 +226,10 @@ def test_fid_callback_feature_net_set_to_eval(latent_module):
     running stats — otherwise the raw arm (the checkpoint monitor) inherits BN
     stats drifted by the real/slow arms' forwards. Matches hope's net.eval()."""
     from manifold import AutoencoderKL
-    from manifold.training import DoubleEMACallback
 
     vae = AutoencoderKL(scaling_factor=0.5)
-    ema = DoubleEMACallback(latent_module)
     real_latents = torch.randn(6, 4, 4, 4, 4)
-    cb = _make_fid_callback(latent_module, vae, ema, real_latents, ridge=1e-2)
+    cb = _make_fid_callback(latent_module, vae, real_latents, ridge=1e-2)
     assert cb.feature_net.training  # constructed in train mode by default
     cb._stage_eval_on_device()
     assert cb.feature_net.training is False, "staging must set the feature net to eval"

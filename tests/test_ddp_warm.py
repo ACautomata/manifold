@@ -240,7 +240,6 @@ def test_p2_feature_net_factory_failure_skips_fid_and_logs_sentinel(tmp_path):
 
     from manifold import AutoencoderKL, FlowMatchHeunDiscreteScheduler, LatentFlowModule, UNet3DConditionModel
     from manifold.metrics import FIDCallback
-    from manifold.training.ema import DoubleEMACallback
 
     def _failing_factory():
         # Mimic the real fail-safe factory in main(): try make_feature_network,
@@ -255,7 +254,6 @@ def test_p2_feature_net_factory_failure_skips_fid_and_logs_sentinel(tmp_path):
     )
     fid = FIDCallback(
         module=module, vae=AutoencoderKL(scaling_factor=0.5),
-        ema_callback=DoubleEMACallback(module),
         real_latents=torch.randn(2, 4, 4, 4, 4),
         feature_net_factory=_failing_factory,  # returns None (raises -> caught)
         latent_shape=(1, 4, 4, 4, 4), spacing=[1.0, 1.0, 1.0], modality=1,
@@ -274,8 +272,7 @@ def test_p2_feature_net_factory_failure_skips_fid_and_logs_sentinel(tmp_path):
     logged = {}
     module.log = lambda key, value, **k: logged.__setitem__(key, value)  # type: ignore[assignment]
     fid.on_validation_epoch_end(_Tr(), module)
-    assert logged.get("val/fid_avg") == float("inf")
-    assert logged.get("val/fid_raw") == float("inf")
+    assert logged.get("val/fid") == float("inf")
 
 
 def test_p2_raising_factory_caught_and_skips_fid(tmp_path):
@@ -291,7 +288,6 @@ def test_p2_raising_factory_caught_and_skips_fid(tmp_path):
 
     from manifold import AutoencoderKL, FlowMatchHeunDiscreteScheduler, LatentFlowModule, UNet3DConditionModel
     from manifold.metrics import FIDCallback
-    from manifold.training.ema import DoubleEMACallback
 
     def _raising_factory():
         raise RuntimeError("simulated corrupt checkpoint / version mismatch")
@@ -304,7 +300,6 @@ def test_p2_raising_factory_caught_and_skips_fid(tmp_path):
     )
     fid = FIDCallback(
         module=module, vae=AutoencoderKL(scaling_factor=0.5),
-        ema_callback=DoubleEMACallback(module),
         real_latents=torch.randn(2, 4, 4, 4, 4),
         feature_net_factory=_raising_factory,
         latent_shape=(1, 4, 4, 4, 4), spacing=[1.0, 1.0, 1.0], modality=1,
@@ -322,7 +317,7 @@ def test_p2_raising_factory_caught_and_skips_fid(tmp_path):
     logged = {}
     module.log = lambda key, value, **k: logged.__setitem__(key, value)  # type: ignore[assignment]
     fid.on_validation_epoch_end(_Tr(), module)  # no raise; logs inf sentinels
-    assert logged.get("val/fid_avg") == float("inf")
+    assert logged.get("val/fid") == float("inf")
 
     # codex #85 re-review P2: the skip-path early return must NOT leave the VAE on
     # the training GPU. on_validation_epoch_end's finally -> _restore_eval_to_cpu

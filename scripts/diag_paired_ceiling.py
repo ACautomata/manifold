@@ -1,6 +1,13 @@
 #!/usr/bin/env python3
 """Diagnostic: locate the PSNR ceiling of Paired JiT at the ep25 peak ckpt.
 
+NOTE (post-EMA-removal): this historical diagnostic reads
+``callbacks['DoubleEMACallback']['shadows']``, which NEW (post-removal) training
+checkpoints no longer carry. It only runs against PRE-removal EMA checkpoints and
+analyzes the now-reversed +9dB fast-EMA investigation (PR #113). EMA training has
+since been removed from manifold, so the slow/fast-EMA arms below have no
+present-day counterpart. Run only on a legacy EMA checkpoint or expect a KeyError.
+
 Question: can optimizer/scheduler tuning lift val/psnr from ~24.6 toward 29?
 This script isolates WHERE the ceiling lives by comparing, on the same 32 train
 val-batches (val=train in this codebase), the decoded-PSNR of:

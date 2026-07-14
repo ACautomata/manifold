@@ -1,9 +1,7 @@
-"""The trainer stack (issues #26 / #28): trainer + EMA + metrics + CLI + export.
+"""The trainer stack (issues #26 / #28): trainer + metrics + CLI + export.
 
 - :func:`build_trainer` — the invariant Lightning ``Trainer`` wiring (AMP, DDP
   ``find_unused_parameters``, the spt registry callback, CSV+TB loggers);
-- :class:`DoubleEMACallback` — JiT's ``0.9999`` / ``0.9996`` EMA shadows,
-  ``swap_in``/``restore`` for generation on the slow shadow, persisted for resume;
 - :class:`TrainLossLogger` / :class:`LatentX0MAE` — ``train/loss_epoch`` and the
   cheap latent-space ``val/x0_mae``;
 - :func:`run_training` / :func:`cli.main` — the ``manifold-train`` entry + the
@@ -12,7 +10,6 @@
 """
 
 from .cli import run_training
-from .ema import DoubleEMACallback
 from .export import export_to_native
 from .grpo_cli import run_grpo_training
 from .metrics import LatentX0MAE, TrainLossLogger
@@ -21,7 +18,6 @@ from .reward_cli import run_reward_training
 from .trainer import build_trainer
 
 __all__ = [
-    "DoubleEMACallback",
     "LatentX0MAE",
     "TrainLossLogger",
     "build_trainer",

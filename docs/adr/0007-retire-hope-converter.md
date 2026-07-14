@@ -19,8 +19,9 @@ native-only.
 - **Its EMA-selection logic was duplicated.** `convert_hope_checkpoint` and
   `export_to_native` each hand-rolled the "slowest-decay EMA shadow = the
   inference UNet" argmax, with diverging fallbacks (`len−1` vs `None`). Removing
-  the converter collapses three sites to two; this ADR also consolidates the
-  remaining two behind one policy owner (`slowest_shadow_index` in `ema.py`).
+  the converter collapses three sites to two; EMA has since been removed entirely
+  (2026-07-14), so both the converter and the EMA-selection logic are gone, and
+  `export_to_native` now always bakes the raw optimizer weights.
 
 ## Considered options
 
@@ -43,9 +44,9 @@ native-only.
   `convert_hope_checkpoint` export, the `scripts/convert_hope_checkpoint.py` CLI,
   the `--warm-start` hope-flat branch, and the converter test block are gone.
 - Warm-start (`_load_warm_start`) accepts a Lightning `.ckpt` or a bare state dict.
-- The "slowest-decay EMA shadow is the inference model" policy is owned once by
-  `slowest_shadow_index(decays)` in `training/ema.py`, called by both
-  `_EMAShadows.slow_index` (training swap-in) and `export_to_native`.
+- EMA has been removed entirely (2026-07-14); `training/ema.py` and
+  `slowest_shadow_index` are deleted, and `export_to_native` always bakes the raw
+  optimizer weights (no slowest-shadow argmax).
 - A future hope-format `.pt` would require a fresh converter — acceptable, since
   none exist and new runs emit Lightning `.ckpt`.
 - This **supersedes the converter portion of ADR-0003**. ADR-0003's other

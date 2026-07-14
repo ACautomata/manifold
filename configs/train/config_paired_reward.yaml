@@ -17,7 +17,7 @@ paired_reward_train:
   n_epochs: 50
 
 # Offline real-data wiring (issue #95). The frozen paired generator loads from
-# --native-dir (issue #94's paired export bridge, slow-EMA arm); the paired latent
+# --native-dir (issue #94's paired export bridge); the paired latent
 # cache from --latents-dir (the warmed `paired_train` cache). The 2-way subject split
 # reuses the PAIRED split mechanism (_train_val_manifests / val_data_base_dir), NOT
 # JiT reward's partition_subjects (ADR-0022 - different subject-id derivation ⇒ leak).
