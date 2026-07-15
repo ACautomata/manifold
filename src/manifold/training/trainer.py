@@ -19,6 +19,8 @@ import stable_pretraining as spt
 from lightning.pytorch import Trainer
 from lightning.pytorch.loggers import CSVLogger
 
+from ..metrics.metric_plot_callback import MetricsPlotCallback
+
 try:  # TensorBoard is optional — only added when the package is importable.
     from lightning.pytorch.loggers import TensorBoardLogger
 
@@ -33,6 +35,10 @@ def _tensorboard_available() -> bool:
 
 def _have_registry(callbacks) -> bool:
     return any(isinstance(c, spt.callbacks.ModuleRegistryCallback) for c in callbacks)
+
+
+def _have_metrics_plot(callbacks) -> bool:
+    return any(isinstance(c, MetricsPlotCallback) for c in callbacks)
 
 
 def build_trainer(
@@ -66,6 +72,11 @@ def build_trainer(
         # Appended once so spt's own logging (registry/online metrics) reaches
         # the logger — the project callbacks below are independent of it.
         callbacks.append(spt.callbacks.ModuleRegistryCallback())
+    if not _have_metrics_plot(callbacks):
+        # Metrics line-chart PNG under model_dir, re-rendered every epoch +
+        # at fit end (crash-robust on remote DCU). No-op if matplotlib is
+        # absent — the callback swallows the ImportError into a warning.
+        callbacks.append(MetricsPlotCallback())
 
     if precision is None:
         precision = "16-mixed" if __cuda_available() else "32-true"
