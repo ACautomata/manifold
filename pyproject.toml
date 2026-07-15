@@ -40,6 +40,10 @@ dependencies = [
     # ResNet50 backbone factory.
     "scipy",
     "torchvision",
+    # The post-epoch metrics line-chart callback (#119): renders the CSVLogger's
+    # metrics.csv to a PNG under model_dir. Pure-CPU (no DCU/CUDA kernel), so a
+    # plain wheel installs on the sugon cluster too.
+    "matplotlib",
 ]
 
 [project.optional-dependencies]
