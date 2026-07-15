@@ -851,3 +851,17 @@ def test_full_v1_budget_runs_end_to_end(tmp_path):
     ckpts = list(Path(str(tmp_path)).glob("*.ckpt"))
     assert any(p.name == "last.ckpt" for p in ckpts)
     assert ckpt.best_model_path and Path(ckpt.best_model_path).is_file()
+
+
+def test_codex116_val_noise_seeded_by_rank_and_batch():
+    """codex #116 P2 (Comment 5): GRPO ``validation_step`` offsets the validation-noise
+    generator seed by rank + batch, so under DDP each rank's val shard is a distinct
+    draw (not a duplicate of rank 0). Verified by source inspection."""
+    import inspect
+
+    from manifold.modules import grpo
+
+    src = inspect.getsource(grpo.GRPOModule.validation_step)
+    assert "torch.Generator" in src, "validation_step must seed a Generator (not plain randn)"
+    assert "get_rank" in src, "generator seed must offset by rank (Comment 5)"
+    assert "manual_seed" in src

@@ -560,7 +560,20 @@ class GRPOModule(spt.Module):
         """
         batch["batch_idx"] = batch_idx
         spacing_t, class_labels, B = self._conditioning_tensors(batch)
-        noise = torch.randn(B, *self.latent_shape, device=self.device, dtype=self._policy_dtype())
+        # Rank/epoch-strided validation noise (codex #116 P2): under DDP the ranks run
+        # identical RNG-consuming training steps, so a plain torch.randn produces the
+        # SAME noise on every rank - scoring duplicate generations rather than a
+        # rank-wise union. Offset the generator seed by rank + batch so each rank's
+        # val shard is a distinct draw (the synced val/mean_reward then reflects the
+        # full val set, not world x one shard).
+        rank = (
+            torch.distributed.get_rank()
+            if torch.distributed.is_available() and torch.distributed.is_initialized()
+            else 0
+        )
+        gen = torch.Generator(device=self.device)
+        gen.manual_seed(1234 + 1000 * rank + batch_idx)
+        noise = torch.randn(B, *self.latent_shape, generator=gen, device=self.device, dtype=self._policy_dtype())
         z_K = sample_latent_flow(
             self.unet, self.scheduler, noise, spacing_t, int(class_labels[0].item()),
             num_inference_steps=self.num_steps,

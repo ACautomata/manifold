@@ -158,8 +158,14 @@ class LatentWarmDataModule(LightningDataModule):
                 "LatentWarmDataModule: no held-out val; reusing TRAIN as val "
                 "(allow_train_as_val=True, smoke only) - val/* metrics are NOT held-out."
             )
+            # drop_last=True: under DDP Lightning wraps this in a DistributedSampler
+            # (drop_last=False default -> pads shards by REPEATING samples), and a
+            # repeated validation volume is scored twice by the PSNR/SSIM callback,
+            # biasing val/psnr. drop_last drops the last partial batch on each rank
+            # instead of duplicating it - a cleaner eval shard (codex #116 P2).
             return DataLoader(
-                self._latent_ds, batch_size=self._batch_size, shuffle=False, num_workers=self._num_workers
+                self._latent_ds, batch_size=self._batch_size, shuffle=False,
+                num_workers=self._num_workers, drop_last=True,
             )
         return DataLoader(_EmptyDataset(), batch_size=self._batch_size, num_workers=0)
 
@@ -244,8 +250,13 @@ class PairedWarmDataModule(LightningDataModule):
         # empty loader yields 0 batches (validation is also disabled at the Trainer
         # when no held-out val split is configured).
         if self._val_latent_ds is not None:
+            # drop_last=True: under DDP the DistributedSampler pads shards by
+            # REPEATING samples (drop_last=False default), and a repeated val volume is
+            # scored twice by PairedPSNRSSIMCallback, biasing val/psnr / val/ssim.
+            # drop_last drops the partial shard instead of duplicating (codex #116 P2).
             return DataLoader(
-                self._val_latent_ds, batch_size=self._batch_size, shuffle=False, num_workers=self._num_workers
+                self._val_latent_ds, batch_size=self._batch_size, shuffle=False,
+                num_workers=self._num_workers, drop_last=True,
             )
         if self._allow_train_as_val:
             _log.warning(

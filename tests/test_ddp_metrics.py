@@ -227,3 +227,18 @@ def test_paired_psnr_all_ranks(tmp_path):
     assert r1["val_psnr"] == pytest.approx(g_psnr, abs=1e-4), "rank 1 val/psnr != global mean"
     assert r0["val_ssim"] == pytest.approx(g_ssim, abs=1e-4)
     assert r1["val_ssim"] == pytest.approx(g_ssim, abs=1e-4)
+
+
+def test_codex116_val_dataloader_drop_last_avoids_padding_duplication():
+    """codex #116 P2 (Comment 4): under DDP Lightning wraps the val loader in a
+    DistributedSampler (drop_last=False default -> pads shards by REPEATING samples),
+    which would double-count a repeated val volume in the PSNR/SSIM all-reduce mean.
+    The warm datamodules set drop_last=True on the real val loaders so each rank's
+    shard is deduplicated. Verified by source inspection."""
+    import inspect
+
+    from manifold.data.warm_datamodule import LatentWarmDataModule, PairedWarmDataModule
+
+    for cls in (LatentWarmDataModule, PairedWarmDataModule):
+        src = inspect.getsource(cls.val_dataloader)
+        assert "drop_last=True" in src, f"{cls.__name__}.val_dataloader missing drop_last=True (Comment 4)"

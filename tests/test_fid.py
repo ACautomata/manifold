@@ -487,3 +487,91 @@ def test_fid_sufficient_stats_exact():
     r_mu, r_sigma, r_n = global_moments([real[:30], real[30:]])
     dist = float(frechet_from_moments(g_mu, r_mu, g_sigma, r_sigma, g_n, r_n))
     assert dist == pytest.approx(direct, abs=1e-3), f"sufficient-stats FID {dist} != direct {direct}"
+
+
+# -- codex #116 regressions (all-DDP FID) -------------------------------------
+
+
+def test_codex116_n1_shard_contributes_stats_not_zeroed(latent_module):
+    """codex #116 P2 (Comment 1): a rank with a SINGLE feature (n==1) still
+    contributes its valid (sum_x, sum_xxT) to the global moments - it is NOT zeroed
+    before the all_reduce. Only the GLOBAL post-reduce n must be >= 2 for a covariance.
+
+    Pre-fix the code zeroed ``feats.shape[0] < 2`` (i.e. n==1) BEFORE the all_reduce,
+    so two n==1 ranks would combine to n==0 -> None (a valid n==2 covariance lost).
+    Post-fix n==1 contributes; the global n>=2 check is AFTER the reduce.
+
+    Verified two ways: (a) source - the zero branch is ``feats.shape[0] == 0``
+    (empty only, not <2); (b) features_to_sufficient_stats on a single sample yields
+    a non-zero sum_x (the contribution that was previously discarded).
+    """
+    import inspect
+
+    from manifold.metrics.fid_callback import FIDCallback
+    from manifold.metrics.fid import features_to_sufficient_stats
+
+    src = inspect.getsource(FIDCallback._planes_to_global_moments)
+    assert "shape[0] < 2" not in src, "n==1 still zeroed before all_reduce (Comment 1)"
+    assert "shape[0] == 0" in src, "empty-shard guard lost"
+
+    one = torch.randn(1, 6)
+    sum_x, sum_xxT, n = features_to_sufficient_stats(one)
+    assert n == 1
+    assert sum_x.abs().sum() > 0, "n==1 sum_x is zero (would be a no-op contribution)"
+    assert sum_xxT.abs().sum() > 0
+
+
+def test_codex116_empty_real_shard_skips_decode(latent_module, monkeypatch):
+    """codex #116 P2 (Comment 3): when real_latents is shorter than world_size, a
+    rank with no assigned real latents must NOT call _eval_decode on an empty
+    [0,...] batch (MONAI sliding_window_inference raises on a 0-batch). It skips
+    decode and contributes zero stats so the collective stays symmetric.
+
+    Simulated by monkeypatching ``_rank_world`` to (rank=5, world=8) with only 4 real
+    latents (the 8-rank probe with val_subset_size=4): rank 5 owns an empty shard.
+    """
+    from manifold import AutoencoderKL
+
+    vae = AutoencoderKL(scaling_factor=0.5)
+    real = torch.randn(4, 4, 4, 4, 4)  # only 4 real latents -> rank 5 (world=8) is empty
+    cb = _make_fid_callback(latent_module, vae, real, seed=0)
+    cb._stage_eval_on_device()
+
+    decoded = {"n": 0}
+
+    def _spy_decode(latents):
+        decoded["n"] += 1
+        assert latents.shape[0] > 0, "_eval_decode called on an EMPTY shard (crash path)"
+        return torch.zeros(latents.shape[0], 1, 8, 8, 8)
+
+    monkeypatch.setattr(cb, "_eval_decode", _spy_decode)
+    monkeypatch.setattr(cb, "_rank_world", lambda: (5, 8))
+    # _planes_to_global_moments all-reduces when world>1; this is a single-process
+    # test (no PG), so stub the collectives to identity (the empty shard contributes
+    # zeros; the reduce is a no-op on them).
+    import torch.distributed as dist
+
+    monkeypatch.setattr(dist, "all_reduce", lambda *a, **k: None)
+    try:
+        out = cb._real_moments()
+        # Empty shard -> contributes zero stats -> global n==0 (single-process) -> None.
+        assert all(m is None for m in out), "empty shard should yield None moments"
+        assert decoded["n"] == 0, "_eval_decode was called on the empty shard (Comment 3)"
+    finally:
+        cb._restore_eval_to_cpu()
+
+
+def test_codex116_fid_disabled_synchronized_across_ranks():
+    """codex #116 P2 (Comment 2): the rank-local ``_fid_disabled`` flag is all-reduce'd
+    (MAX) before branching, so a single rank's backbone failure makes ALL ranks log
+    +inf together (no rank skips the collective while others block in it). Verified by
+    source inspection of ``on_validation_epoch_end``."""
+    import inspect
+
+    from manifold.metrics.fid_callback import FIDCallback
+
+    src = inspect.getsource(FIDCallback.on_validation_epoch_end)
+    assert "all_reduce" in src and "_fid_disabled" in src, (
+        "on_validation_epoch_end must all_reduce the _fid_disabled flag (Comment 2)"
+    )
+    assert "ReduceOp.MAX" in src, "disabled flag must reduce with MAX (any-disabled-wins)"

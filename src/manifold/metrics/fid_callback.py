@@ -237,7 +237,12 @@ class FIDCallback(pl.Callback):
         dev = self._device()
         out: list[tuple[torch.Tensor, torch.Tensor, int] | None] = []
         for feats in planes:
-            if feats.numel() == 0 or feats.shape[0] < 2:
+            # Contribute stats for any non-empty shard (n>=1): sum_x / sum_xxT are
+            # well-defined for a single sample, and a one-sample rank's stats still
+            # participate in the global (post-all_reduce) moments - only the GLOBAL n
+            # must be >= 2 for a covariance, checked AFTER the reduce. Zero stats are
+            # reserved for a genuinely empty shard (so the collective stays symmetric).
+            if feats.numel() == 0 or feats.shape[0] == 0:
                 sum_x = torch.zeros(d, device=dev, dtype=torch.float32)
                 sum_xxT = torch.zeros(d, d, device=dev, dtype=torch.float32)
                 n = 0
@@ -271,6 +276,13 @@ class FIDCallback(pl.Callback):
             )
         rank, world = self._rank_world()
         shard = self.real_latents[rank::world]
+        if shard.shape[0] == 0:
+            # Empty real shard (the fixed subset is smaller than world_size, e.g. the
+            # 8-rank probe with val_subset_size=4): do NOT feed a [0,...] batch to the
+            # MAISI/MONAI decode path (sliding_window_inference raises on a 0-batch).
+            # Contribute zero stats so the collective stays symmetric; the other ranks
+            # supply the real moments.
+            return self._planes_to_global_moments([torch.empty(0) for _ in range(3)])
         self.vae.eval()
         real_images = self._eval_decode(shard)
         planes = get_features_2p5d(real_images, self.feature_net, center_slices_ratio=self.center_slices_ratio)
@@ -315,9 +327,20 @@ class FIDCallback(pl.Callback):
             return
         self._stage_eval_on_device()
         try:
-            # codex #85 P2: a failed/absent feature_net logs +inf so the checkpoint
-            # monitor (mode='min') falls through to save_last instead of crashing.
-            if getattr(self, "_fid_disabled", False):
+            # codex #85 P2 + #116 P2: a failed/absent feature_net logs +inf so the
+            # checkpoint monitor (mode='min') falls through to save_last. Because FID
+            # now runs a per-plane all_reduce on EVERY rank, a rank-local backbone
+            # failure (one node's bad/missing cache) cannot just `return` here - that
+            # rank would skip the collective while the loaded ranks block in it.
+            # all_reduce the disabled flag so ALL ranks take the same branch (log +inf)
+            # or none (enter the FID collectives) together.
+            disabled_t = torch.tensor(
+                [1.0 if getattr(self, "_fid_disabled", False) else 0.0],
+                device=self._device(), dtype=torch.float32,
+            )
+            if torch.distributed.is_available() and torch.distributed.is_initialized():
+                torch.distributed.all_reduce(disabled_t, op=torch.distributed.ReduceOp.MAX)
+            if bool(disabled_t.item()):
                 module.log("val/fid", float("inf"))
                 return
             if self._real_moments_cache is None:
