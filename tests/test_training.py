@@ -71,3 +71,15 @@ def test_trainer_fit_logs_metrics(latent_module, tmp_path):
     assert "val/x0_mae" in m and torch.isfinite(m["val/x0_mae"])
     # train/grad_norm is logged on step; the last value remains in callback_metrics.
     assert "train/grad_norm" in m and torch.isfinite(m["train/grad_norm"])
+
+
+def test_latent_x0_mae_excludes_padded_rows():
+    """Pad-and-mask: val/x0_mae weights only real rows, not sampler padding."""
+    import torchmetrics
+    cb = LatentX0MAE()
+    cb._mean = torchmetrics.MeanMetric()
+    pred = torch.tensor([[1.0], [100.0]])
+    target = torch.zeros_like(pred)
+    batch = {"_is_padding": torch.tensor([False, True])}
+    cb.on_validation_batch_end(None, None, {"pred": pred, "target": target}, batch, 0)
+    assert float(cb._mean.compute()) == 1.0

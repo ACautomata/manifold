@@ -289,8 +289,8 @@ def _unbalanced_val_worker(rank: int, world: int, results_dir: str, port: str, _
     try:
         torch.manual_seed(0)
         module = _tiny_jit_module()
-        # 5-sample val set -> unbalanced shards under DDP (rank0: 3 samples/2
-        # batches; rank1: 2 samples/1 batch). Disable FID (it is rank-0-only).
+        # 5-sample val set -> equal padded rank forwards (3 each), with the tagged
+        # padding mask preserving real counts (rank0=3, rank1=2). Disable FID.
         callbacks: list = [TrainLossLogger(), LatentX0MAE()]
         from manifold.training.cli import _build_checkpoint
         ckpt = _build_checkpoint(model_dir="/tmp/_unused_ckpt_dir", monitor_fid=False, every_n_epochs=1)
@@ -308,8 +308,10 @@ def _unbalanced_val_worker(rank: int, world: int, results_dir: str, port: str, _
         class _Capture(pl.Callback):
             def on_validation_batch_end(self, tr, pl_module, outputs, batch, batch_idx, *a, **k):
                 if isinstance(outputs, dict) and "pred" in outputs and "target" in outputs:
-                    mae = float((outputs["pred"] - outputs["target"]).abs().mean().item())
-                    per_batch.append((mae, int(outputs["pred"].shape[0])))
+                    per_sample = (outputs["pred"] - outputs["target"]).abs().flatten(1).mean(1)
+                    valid = ~batch["_is_padding"].bool()
+                    if bool(valid.any()):
+                        per_batch.append((float(per_sample[valid].mean()), int(valid.sum())))
 
         trainer.callbacks.append(_Capture())
         trainer.fit(module, datamodule=datamodule)

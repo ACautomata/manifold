@@ -125,13 +125,18 @@ class LatentX0MAE(pl.Callback):
         self._mean.to(module.device if hasattr(module, "device") else "cpu")
 
     def on_validation_batch_end(
-        self, trainer, module, outputs, *args, dataloader_idx: int = 0, **kwargs
+        self, trainer, module, outputs, batch, batch_idx,
+        dataloader_idx: int = 0,
     ) -> None:
         if not isinstance(outputs, dict) or "pred" not in outputs or "target" not in outputs:
             return
-        mae = (outputs["pred"] - outputs["target"]).abs().mean()
-        B = float(outputs["pred"].shape[0])
-        self._mean.update(mae.detach().float(), weight=B)
+        per_sample = (outputs["pred"] - outputs["target"]).abs().flatten(start_dim=1).mean(dim=1)
+        valid = ~batch.get(
+            "_is_padding", torch.zeros(per_sample.shape[0], dtype=torch.bool)
+        ).to(per_sample.device).bool()
+        if not bool(valid.any()):
+            return
+        self._mean.update(per_sample[valid].mean().detach().float(), weight=float(valid.sum()))
 
     def on_validation_epoch_end(self, trainer, module) -> None:
         module.log("val/x0_mae", self._mean)
