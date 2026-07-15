@@ -1,8 +1,13 @@
 ---
-status: proposed
+status: superseded
 ---
 
 # Multi-GPU validation stays rank-0-only; guards made honest, not distributed
+
+> **Superseded by [ADR-0025](0025-all-ddp-validation-no-rank0-gate.md) (2026-07-15):
+> all validation metrics are fully DDP - the rank-0-only revert recorded here is
+> undone.** The deadlock-avoidance now rests on the VAE `num_splits` config (probe-
+> pending on sugon); see ADR-0025's honest caveat.
 
 > **Status: proposed (decided 2026-07-10).** This records the decision from a
 > DDP-correctness audit; the implementation is **not yet landed** (planned PR #1).

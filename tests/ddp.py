@@ -153,15 +153,13 @@ def _tiny_jit_module():
 def _jit_callbacks(module, *, enable_fid: bool, devices, seed: int = 0):
     """Build the JiT callback stack (train metrics + optional FID + ckpt).
 
-    ``devices`` is the value passed to ``build_trainer``; the checkpoint monitor
-    uses the production ``is_multi_gpu`` guard so under DDP (rank-0-only FID)
-    the monitor is dropped - mirroring ``run_training``.
+    ``devices`` is the value passed to ``build_trainer``. Under ADR-0025 the FID
+    monitor STAYS ON under DDP (val/fid is global), mirroring ``run_training``.
     """
     from manifold import AutoencoderKL
     from manifold.metrics import FIDCallback
     from manifold.training.cli import _build_checkpoint, _inference_recipe
     from manifold.training.metrics import LatentX0MAE, TrainLossLogger
-    from manifold.training.trainer import is_multi_gpu
 
     callbacks: list = [TrainLossLogger(), LatentX0MAE()]
     val_latents = torch.randn(5, 4, 4, 4, 4)
@@ -187,7 +185,7 @@ def _jit_callbacks(module, *, enable_fid: bool, devices, seed: int = 0):
         callbacks.append(fid)
     ckpt = _build_checkpoint(
         model_dir="/tmp/_unused_ckpt_dir",
-        monitor_fid=enable_fid and not is_multi_gpu(devices),
+        monitor_fid=enable_fid,
         every_n_epochs=1,
     )
     callbacks.append(ckpt)
@@ -291,8 +289,8 @@ def _unbalanced_val_worker(rank: int, world: int, results_dir: str, port: str, _
     try:
         torch.manual_seed(0)
         module = _tiny_jit_module()
-        # 5-sample val set -> unbalanced shards under DDP (rank0: 3 samples/2
-        # batches; rank1: 2 samples/1 batch). Disable FID (it is rank-0-only).
+        # 5-sample val set -> equal padded rank forwards (3 each), with the tagged
+        # padding mask preserving real counts (rank0=3, rank1=2). Disable FID.
         callbacks: list = [TrainLossLogger(), LatentX0MAE()]
         from manifold.training.cli import _build_checkpoint
         ckpt = _build_checkpoint(model_dir="/tmp/_unused_ckpt_dir", monitor_fid=False, every_n_epochs=1)
@@ -310,8 +308,10 @@ def _unbalanced_val_worker(rank: int, world: int, results_dir: str, port: str, _
         class _Capture(pl.Callback):
             def on_validation_batch_end(self, tr, pl_module, outputs, batch, batch_idx, *a, **k):
                 if isinstance(outputs, dict) and "pred" in outputs and "target" in outputs:
-                    mae = float((outputs["pred"] - outputs["target"]).abs().mean().item())
-                    per_batch.append((mae, int(outputs["pred"].shape[0])))
+                    per_sample = (outputs["pred"] - outputs["target"]).abs().flatten(1).mean(1)
+                    valid = ~batch["_is_padding"].bool()
+                    if bool(valid.any()):
+                        per_batch.append((float(per_sample[valid].mean()), int(valid.sum())))
 
         trainer.callbacks.append(_Capture())
         trainer.fit(module, datamodule=datamodule)

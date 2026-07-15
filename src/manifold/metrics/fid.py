@@ -61,6 +61,48 @@ def _principal_sqrtm(matrix: Tensor) -> Tensor:
     return torch.as_tensor(root.real, dtype=matrix.dtype, device=matrix.device)
 
 
+def frechet_from_moments(
+    mu_g: Tensor, mu_r: Tensor, sigma_g: Tensor, sigma_r: Tensor,
+    n1: int, n2: int, *, ridge: float = 1e-6,
+) -> Tensor:
+    """Unbiased Frechet distance from precomputed per-set moments.
+
+    Identical math to :func:`frechet_distance_unbiased` once each set's mean and
+    unbiased covariance are known. Extracted so a DDP-sharded FID can accumulate
+    sufficient statistics ``(sum_x, sum_xxT, n)`` per rank, all-reduce them to
+    global moments, and call this for the exact global FID (no feature-matrix
+    gather). ``n1``/``n2`` are the GLOBAL per-set counts (the unbiased ``Tr(S)/n``
+    mean-term bias is a function of the global count + global covariance).
+    """
+    mean_term = (mu_g - mu_r).pow(2).sum() - _tr(sigma_g) / n1 - _tr(sigma_r) / n2
+    eye = torch.eye(sigma_g.shape[0], dtype=sigma_g.dtype, device=sigma_g.device) * ridge
+    cov_prod = (sigma_g + eye) @ (sigma_r + eye)
+    cov_term = _tr(sigma_g) + _tr(sigma_r) - 2.0 * _tr(_principal_sqrtm(cov_prod))
+    return (mean_term + cov_term).clamp(min=0.0)
+
+
+def features_to_sufficient_stats(features: Tensor) -> tuple[Tensor, Tensor, int]:
+    """``[N, D]`` feature matrix -> ``(sum_x[D], sum_xxT[D, D], n)`` for distributed FID.
+
+    The sufficient statistics for a per-set mean and unbiased covariance: each rank
+    reduces these three (sum) across ranks to recover the global moments exactly
+    (see :func:`moments_from_sufficient_stats`), avoiding a full ``[N, D]`` gather.
+    """
+    n = features.shape[0]
+    return features.sum(dim=0), features.t() @ features, n
+
+
+def moments_from_sufficient_stats(sum_x: Tensor, sum_xxT: Tensor, n: int) -> tuple[Tensor, Tensor, int]:
+    """All-reduced sufficient stats -> ``(mu, sigma_unbiased, n)`` (exact global moments).
+
+    ``mu = sum_x / n`` and ``sigma = (sum_xxT - n * mu outer mu) / (n - 1)`` ==
+    the raw ``1/(n-1) * sum (x - mu)(x - mu)^T`` over the full (global) feature set.
+    """
+    mu = sum_x / n
+    sigma = (sum_xxT - n * torch.outer(mu, mu)) / (n - 1)
+    return mu, sigma, n
+
+
 def frechet_distance_unbiased(
     gen: Tensor, real: Tensor, *, ridge: float = 1e-6
 ) -> Tensor:
@@ -82,18 +124,11 @@ def frechet_distance_unbiased(
             f"Feature dim mismatch: gen {gen.shape[1]} vs real {real.shape[1]}."
         )
     n1, n2 = gen.shape[0], real.shape[0]
-    mu_g = gen.mean(dim=0)
-    mu_r = real.mean(dim=0)
-    sigma_g = _cov_unbiased(gen)
-    sigma_r = _cov_unbiased(real)
-
-    # Unbiased mean term: ‖μ̂_g − μ̂_r‖² − Tr(Σ_g)/n1 − Tr(Σ_r)/n2.
-    mean_term = (mu_g - mu_r).pow(2).sum() - _tr(sigma_g) / n1 - _tr(sigma_r) / n2
-
-    eye = torch.eye(sigma_g.shape[0], dtype=sigma_g.dtype, device=sigma_g.device) * ridge
-    cov_prod = (sigma_g + eye) @ (sigma_r + eye)
-    cov_term = _tr(sigma_g) + _tr(sigma_r) - 2.0 * _tr(_principal_sqrtm(cov_prod))
-    return (mean_term + cov_term).clamp(min=0.0)
+    return frechet_from_moments(
+        gen.mean(dim=0), real.mean(dim=0),
+        _cov_unbiased(gen), _cov_unbiased(real),
+        n1, n2, ridge=ridge,
+    )
 
 
 def get_features_2p5d(

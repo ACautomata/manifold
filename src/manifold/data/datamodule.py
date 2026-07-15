@@ -1,7 +1,7 @@
 """Build ``spt.data.DataModule`` (train/val) from a :class:`MedicalDataset`.
 
-``spt.data.DataModule`` accepts plain torch ``DataLoader``s directly, so this is
-a thin factory. DDP data distribution is delegated to Lightning's
+``spt.data.DataModule`` accepts plain torch ``DataLoader``s directly, so this is a
+thin factory. DDP data distribution is delegated to Lightning's
 ``DistributedSampler`` (auto-installed by the Trainer when ``strategy="ddp"``);
 per-rank latent *encoding* sharding is handled inside
 :meth:`~manifold.data.LatentDataset.warm_cache`.
@@ -16,8 +16,36 @@ from lightning.pytorch import LightningDataModule
 from torch.utils.data import DataLoader
 
 from .base import MedicalDataset
+from .warm_datamodule import _validation_loader
 
 _log = logging.getLogger(__name__)
+
+
+class _DedupValDataModule(spt.data.DataModule):
+    """``spt.data.DataModule`` with a fit-time (post-PG-init) non-padding val sampler.
+
+    ``build_datamodule`` is called by the CLIs BEFORE ``trainer.fit()`` initializes the
+    process group, so a val sampler built at construction time would see
+    ``dist.is_initialized() == False`` and bake in ``None`` -> Lightning replaces the
+    loader with its default PADDED ``DistributedSampler`` at fit time (codex #116 round-4
+    P2). Deferring the sampler to this ``val_dataloader`` hook (a Lightning hook called
+    during ``fit``, after PG init - the same post-PG property ADR-0017 relies on) lets
+    ``_ddp_eval_sampler`` see the live PG and return the non-padding
+    ``UnrepeatedDistributedSampler``. Mirrors the warm datamodules' ``val_dataloader``.
+    """
+
+    def __init__(self, *, val_dataset, batch_size, num_workers, **kwargs):
+        super().__init__(**kwargs)
+        self._val_dataset = val_dataset
+        self._val_batch_size = batch_size
+        self._val_num_workers = num_workers
+
+    def val_dataloader(self) -> DataLoader:
+        return _validation_loader(
+            self._val_dataset,
+            batch_size=self._val_batch_size,
+            num_workers=self._val_num_workers,
+        )
 
 
 def build_datamodule(
@@ -59,8 +87,10 @@ def build_datamodule(
         val_source = train_dataset
     else:
         val_source = val_dataset
-    val_loader = DataLoader(
-        val_source, batch_size=batch_size, shuffle=False, num_workers=num_workers
-    )
 
-    return spt.data.DataModule(train=train_loader, val=val_loader)
+    return _DedupValDataModule(
+        train=train_loader,
+        val_dataset=val_source,
+        batch_size=batch_size,
+        num_workers=num_workers,
+    )

@@ -39,7 +39,7 @@ from ..metrics import PairedPSNRSSIMCallback
 from ..modules.paired_grpo import PairedGRPOModule
 from ..pipelines.paired_latent_flow import PairedLatentFlowPipeline
 from ..schedulers.scheduling_flow_match_bridge_grpo import FlowMatchBridgeGRPOScheduler
-from .trainer import build_trainer, is_multi_gpu
+from .trainer import build_trainer
 
 _log = logging.getLogger(__name__)
 
@@ -486,7 +486,6 @@ def _build_checkpoint(
     monitor_metric: str = "val/mean_reward",
     mode: str = "max",
     save_top_k: int = 1,
-    multi_gpu: bool = False,
     guardrail_metric: str | None = None,
     guardrail_min: float | None = None,
 ) -> ModelCheckpoint:
@@ -506,15 +505,6 @@ def _build_checkpoint(
         auto_insert_metric_name=False,
         save_weights_only=False,
     )
-    if multi_gpu:
-        # val/mean_reward (validation_step rank-0 gate) AND val/psnr (rank-0-only PSNR
-        # decode - ADR-0016 amendment reverted) are both rank-0-only under DDP, so
-        # neither can drive ModelCheckpoint on the other ranks (codex #115 P1): drop the
-        # monitor under multi-GPU (save_last + save_top_k=1 keep the latest).
-        # Force save_top_k=1 (not the caller's): with no monitor there is no metric to
-        # rank by, so keeping >1 is pointless disk waste - mirrors grpo_cli's DDP
-        # fallback (codex #108).
-        return ModelCheckpoint(filename="paired-grpo-{epoch:03d}", **{**common, "save_top_k": 1})
     ckwt = dict(
         filename=f"paired-grpo-{{epoch:03d}}-{{{monitor_metric}:.3f}}",
         monitor=monitor_metric,
@@ -583,7 +573,6 @@ def run_paired_grpo_training(
         ckpt_path: optional warm-start / resume checkpoint passed to ``fit``.
     """
     pl.seed_everything(seed, workers=True)
-    multi_gpu = is_multi_gpu(devices)
     psnr_active = inputs.vae is not None
     if monitor_metric is None:
         monitor_metric = "val/psnr" if psnr_active else "val/mean_reward"
@@ -592,7 +581,7 @@ def run_paired_grpo_training(
     guardrail = "val/ssim" if (psnr_active and ssim_guardrail is not None) else None
     ckpt = _build_checkpoint(
         model_dir, monitor_metric=monitor_metric, mode=mode, save_top_k=save_top_k,
-        multi_gpu=multi_gpu, guardrail_metric=guardrail, guardrail_min=ssim_guardrail,
+        guardrail_metric=guardrail, guardrail_min=ssim_guardrail,
     )
     callbacks: list[pl.Callback] = [ckpt]
     if eta_min is not None:

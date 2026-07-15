@@ -10,7 +10,7 @@ data-warming lives in :func:`main`, the integration core :func:`run_paired_train
 ``fit``) is split out so a tiny CPU smoke can drive it with a fake latent cache
 (the issue's testing seam) instead of BraTS + a real VAE.
 
-Best-checkpoint selection monitors ``val/psnr`` (``mode="max"``) on **single-GPU** only: the PSNR/SSIM callback decodes on rank 0 only (mirrors FIDCallback; the ADR-0016 "distributed PSNR" amendment is reverted - the concurrent 8-rank full-volume VAE decode deadlocks the DCU runtime), so ``val/psnr`` is a rank-0-only metric. Under multi-GPU it is absent from the other ranks' callback_metrics, so the monitor is DROPPED (save_last + every_n_epochs + offline eval, mirroring the noise->data FID path); single-GPU keeps best-by-PSNR selection
+Best-checkpoint selection monitors ``val/psnr`` (``mode="max"``); under DDP the metric is GLOBAL (all ranks decode + all_reduce the per-volume sums, ADR-0025), so the monitor stays on under multi-GPU too
 """
 
 from __future__ import annotations
@@ -36,7 +36,7 @@ from ..metrics import PairedPSNRSSIMCallback
 from ..modules.paired_latent_flow import PairedLatentFlowModule
 from ..pipelines.paired_latent_flow import PairedLatentFlowPipeline
 from .metrics import LatentX0MAE, TrainLossLogger
-from .trainer import build_trainer, is_multi_gpu
+from .trainer import build_trainer
 
 _log = logging.getLogger(__name__)
 
@@ -72,7 +72,7 @@ def _build_checkpoint(
 ) -> ModelCheckpoint:
     """Stock Lightning ``ModelCheckpoint`` (ADR-0006), monitoring ``val/psnr``.
 
-    ``val/psnr`` is rank-0-only under DDP (the PSNR/SSIM callback decodes on rank 0 only - mirrors FIDCallback; the ADR-0016 "distributed PSNR" amendment is reverted because the concurrent 8-rank full-volume VAE decode deadlocks the DCU runtime). A rank-0-only metric is absent from the other ranks' callback_metrics, so under multi-GPU the monitor is DROPPED (``monitor=False`` -> save_last + every_n_epochs, mirroring FID); single-GPU keeps it on (``monitor=True``). ``mode="max"``, top-k, last, full state; the raw-optimizer metric is sufficient on a short from-scratch run.
+    ``val/psnr`` is GLOBAL under DDP (all ranks decode + all_reduce the per-volume sums, ADR-0025), so the monitor stays on under multi-GPU. ``mode="max"``, top-k, last, full state; the raw-optimizer metric is sufficient on a short from-scratch run.
     ``auto_insert_metric_name = False`` because the metric key contains a ``/``.
 
     ``monitor=False`` (no held-out val -> validation disabled): no metric to
@@ -145,12 +145,6 @@ def run_paired_training(
     # (cold path: from the val manifest; warmed path: inferred from val_latent_ds).
     has_val = bundle.has_val if bundle.has_val is not None else (bundle.val_latent_ds is not None)
     val_enabled = has_val or bundle.allow_train_as_val
-    # val/psnr / val/ssim are rank-0-only under DDP (the PSNR callback decodes on rank
-    # 0 only - mirrors FIDCallback; ADR-0016 "distributed PSNR" amendment reverted). A
-    # rank-0-only metric is absent from the other ranks' callback_metrics, so it can't
-    # drive ModelCheckpoint there: under multi-GPU the monitor is DROPPED (mirrors FID -
-    # save_last + every_n_epochs + offline eval); single-GPU keeps it on.
-    multi_gpu = is_multi_gpu(devices)
     callbacks: list = [TrainLossLogger(), LatentX0MAE()]
     if val_enabled:
         # The PSNR/SSIM pipeline carries the LIVE module UNet by reference, so
@@ -180,12 +174,10 @@ def run_paired_training(
             model_dir,
             monitor_metric=monitor_metric,
             save_top_k=save_top_k,
-            # Drop the rank-0-only val/psnr monitor under DDP (codex #115 P1): a
-            # rank-0-only metric is absent from non-root ranks' callback_metrics, so
-            # ModelCheckpoint(monitor="val/psnr") can't find the key there. Single-GPU
-            # (monitor=True) keeps best-by-PSNR selection; multi-GPU falls back to
-            # save_last + every_n_epochs (mirrors FID - ADR-0016).
-            monitor=not multi_gpu,
+            # val/psnr is now a GLOBAL metric (all ranks decode + all_reduce the
+            # per-volume sums; ADR-0025), so best-by-PSNR selection stays on under
+            # multi-GPU too (no more rank-0-shard workaround).
+            monitor=True,
             every_n_epochs=every_n_epochs,
         )
     else:

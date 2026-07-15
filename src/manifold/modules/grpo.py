@@ -354,6 +354,23 @@ class GRPOModule(spt.Module):
         self.kl_coef = float(kl_coef)
         self.reward_bound = str(reward_bound)
         self.reward_temp = float(reward_temp)
+        self._val_reward_sum = 0.0
+        self._val_reward_count = 0
+
+    def on_validation_epoch_start(self) -> None:
+        self._val_reward_sum = 0.0
+        self._val_reward_count = 0
+
+    def on_validation_epoch_end(self) -> None:
+        agg = torch.tensor(
+            [self._val_reward_sum, float(self._val_reward_count)],
+            device=self.device, dtype=torch.float32,
+        )
+        if torch.distributed.is_available() and torch.distributed.is_initialized():
+            torch.distributed.all_reduce(agg, op=torch.distributed.ReduceOp.SUM)
+        total, count = float(agg[0]), int(agg[1])
+        if count:
+            self.log("val/mean_reward", total / count, prog_bar=True, sync_dist=False)
 
     # -- frozen-reward lifecycle ---------------------------------------------
 
@@ -543,35 +560,38 @@ class GRPOModule(spt.Module):
     # -- validation: deployed-Heun generation + reward (val/mean_reward) ------
 
     def validation_step(self, batch: GRPOBatch, batch_idx: int):
-        """Generate from noise via the deployed Heun sampler, score → ``val/mean_reward``.
+        """Generate from noise via the deployed Heun sampler, score -> ``val/mean_reward``.
 
         The RL progress signal: generate via the deployed two-eval Heun (NOT the
         rollout SDE) so the reward reflects the distribution JiT ships, then score
         with the frozen PatchGAN. The anti-reward-hacking selection metric
         (``val/fid``, #58) is a SEPARATE generation pass driven by the FID callback
-        (:meth:`sample`) — a higher-reward-but-higher-FID checkpoint is thus not
-        selected over a lower-FID one. ``sample_latent_flow`` takes a scalar
-        modality, so a mixed-label val batch is generated under ``label[0]`` (the
-        single-modality regime); per-sample generation is out of scope for v1.
+        (:meth:`sample`). ``sample_latent_flow`` takes a scalar modality, so a
+        mixed-label val batch is generated under ``label[0]`` (single-modality v1).
 
-        **Rank-0-only** (ADR-0016, M3): generation + reward scoring run on
-        ``is_global_zero`` only; the non-root ranks skip and must NOT block on an
-        NCCL collective here. ``val/mean_reward`` is therefore **rank-0-shard-
-        scoped** (no ``sync_dist`` - the rank-0 gate removes the cross-rank
-        quantity). Multi-GPU GRPO *training* is NOT blocked here: an independent
-        codex review (G2=FALSE) confirmed the PPO inner loop is DDP-correct via
-        Lightning's manual-optimization bridge (``prepare_for_backward`` fires on
-        every ``manual_backward``; ``eta_step_list`` is config-identical across
-        ranks), so ``no_sync()`` would be wrong - the algorithm intentionally
-        steps every inner iteration. The rank-asymmetric early-return is safe:
-        generation + scoring are local forward passes with no DDP collective, so
-        no rank blocks waiting on another.
+        **All-rank under DDP** (ADR-0025): every rank generates + scores its own
+        padded ``DistributedSampler`` shard and accumulates only non-padding reward
+        sums/counts. Epoch end all-reduces ``(sum, count)`` for the exact global mean;
+        padded forwards keep rank symmetry but contribute zero metric weight. The prior
+        rank-0-only gate (PR #115) is removed; the rank-asymmetric early-return is gone,
+        so no rank blocks.
         """
-        if not self.trainer.is_global_zero:
-            return
         batch["batch_idx"] = batch_idx
         spacing_t, class_labels, B = self._conditioning_tensors(batch)
-        noise = torch.randn(B, *self.latent_shape, device=self.device, dtype=self._policy_dtype())
+        # Rank/epoch-strided validation noise (codex #116 P2): under DDP the ranks run
+        # identical RNG-consuming training steps, so a plain torch.randn produces the
+        # SAME noise on every rank - scoring duplicate generations rather than a
+        # rank-wise union. Offset the generator seed by rank + batch so each rank's
+        # val shard is a distinct draw (the synced val/mean_reward then reflects the
+        # full val set, not world x one shard).
+        rank = (
+            torch.distributed.get_rank()
+            if torch.distributed.is_available() and torch.distributed.is_initialized()
+            else 0
+        )
+        gen = torch.Generator(device=self.device)
+        gen.manual_seed(1234 + 1000 * rank + batch_idx)
+        noise = torch.randn(B, *self.latent_shape, generator=gen, device=self.device, dtype=self._policy_dtype())
         z_K = sample_latent_flow(
             self.unet, self.scheduler, noise, spacing_t, int(class_labels[0].item()),
             num_inference_steps=self.num_steps,
@@ -579,5 +599,9 @@ class GRPOModule(spt.Module):
         # The same bound the rollout applies (ADR-0015) — val/mean_reward is reported on
         # the bounded scale so it tracks the training signal (raw logit otherwise).
         rewards = self._bound_reward(self.reward_model(z_K).float())
-        self.log("val/mean_reward", rewards.mean(), on_epoch=True, prog_bar=True, batch_size=B)
-        return {"mean_reward": rewards.mean()}
+        valid = ~batch.get(
+            "_is_padding", torch.zeros(B, dtype=torch.bool, device=rewards.device)
+        ).to(rewards.device).bool()
+        self._val_reward_sum += float(rewards[valid].sum())
+        self._val_reward_count += int(valid.sum())
+        return {"mean_reward": rewards[valid].mean() if bool(valid.any()) else rewards.new_zeros(())}

@@ -124,15 +124,15 @@ def test_f3_no_rank_world_kwargs_at_cli_call_sites():
 
 def test_f5_fidcallback_real_latents_lazy():
     """``FIDCallback`` accepts ``real_latents=None`` at construction and pulls it
-    lazily from ``real_latents_source`` at the first ``_real_features`` call (F5 -
+    lazily from ``real_latents_source`` at the first ``_real_moments`` call (F5 -
     the val reference does not exist until ``DataModule.setup()`` runs)."""
     from manifold.metrics.fid_callback import FIDCallback
 
     sig = inspect.signature(FIDCallback.__init__)
     assert "real_latents_source" in sig.parameters, "FIDCallback missing real_latents_source"
-    # The lazy pull lives in _real_features.
-    src = inspect.getsource(FIDCallback._real_features)
-    assert "real_latents is None" in src, "_real_features does not lazy-pull real_latents (F5)"
+    # The lazy pull lives in _real_moments.
+    src = inspect.getsource(FIDCallback._real_moments)
+    assert "real_latents is None" in src, "_real_moments does not lazy-pull real_latents (F5)"
 
 
 def test_f5_inference_recipe_latent_shape_is_lazy():

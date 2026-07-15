@@ -33,7 +33,7 @@ from ..data.datamodule import build_datamodule
 from ..metrics import FIDCallback
 from ..modules.latent_flow import LatentFlowModule
 from .metrics import LatentX0MAE, TrainLossLogger
-from .trainer import build_trainer, is_multi_gpu
+from .trainer import build_trainer
 
 _log = logging.getLogger(__name__)
 
@@ -86,9 +86,7 @@ def _build_checkpoint(
 
     Single-GPU + FID: monitor ``monitor_metric`` (top-k, last, full state). The
     default ``val/fid`` (the raw optimizer arm) tracks whether the model is
-    actually learning. Under DDP (FID is rank-0-only, so the metric is not
-    global) fall back to ``save_last`` + ``every_n_epochs`` with no monitor.
-    ``auto_insert_metric_name = False`` because the metric key contains a ``/``.
+    actually learning. ``val/fid`` is GLOBAL under DDP (sufficient-stats all_reduce, ADR-0025), so the monitor stays on under multi-GPU. ``auto_insert_metric_name = False`` because the metric key contains a ``/``.
     """
     if monitor_fid:
         return ModelCheckpoint(
@@ -161,7 +159,6 @@ def run_training(
     if val_enabled:
         callbacks.append(LatentX0MAE())
 
-    multi_gpu = is_multi_gpu(devices)
     fid_attached = enable_fid and val_enabled
     if fid_attached:
         # F5: latent_shape derives from val_latents when present (warmed path);
@@ -209,7 +206,7 @@ def run_training(
 
     ckpt = _build_checkpoint(
         model_dir,
-        monitor_fid=fid_attached and not multi_gpu,
+        monitor_fid=fid_attached,
         monitor_metric="val/fid",
         every_n_epochs=every_n_epochs,
         save_top_k=save_top_k,
@@ -234,7 +231,7 @@ def run_training(
         allow_train_as_val=bundle.allow_train_as_val,
     )
     if fid_attached and fid.real_latents is None:
-        fid._real_latents_source = datamodule  # F5: lazy pull at first _real_features
+        fid._real_latents_source = datamodule  # F5: lazy pull at first _real_moments
     # When validation is disabled, ``limit_val_batches=0`` makes every validation
     # epoch a 0-batch no-op (the empty val_dataloader yields nothing) and
     # ``num_sanity_val_steps=0`` skips the fit-start sanity probes; no val

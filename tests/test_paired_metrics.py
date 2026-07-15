@@ -299,18 +299,17 @@ def test_gate_single_process_always_active(identity_vae):
     assert cb._gated(_fake_trainer(is_global_zero=True, current_epoch=0)) is True
 
 
-def test_gate_skips_non_rank0_under_ddp(identity_vae, monkeypatch):
-    """Under DDP only rank 0 runs the decode (mirrors FIDCallback); non-rank-0 is
-    skipped so the 8-way concurrent full-volume VAE decode that deadlocks the DCU
-    runtime is avoided (ADR-0016 "distributed PSNR" amendment reverted). There is no
-    cross-rank collective, so a skipped rank cannot block.
+def test_gate_active_all_ranks_under_ddp(identity_vae, monkeypatch):
+    """Under DDP ALL ranks run the decode (ADR-0025): the rank-0 gate is removed, so
+    ``_gated`` returns True on every rank (cadence-only). The per-volume sums are
+    all-reduced in ``on_validation_epoch_end`` for the global mean.
     """
     cb = _make_callback(_FakePipeline(_FakeUNet(), identity_vae))
     monkeypatch.setattr(torch.distributed, "is_initialized", lambda: True)
     monkeypatch.setattr(torch.distributed, "get_world_size", lambda: 2)
 
     assert cb._gated(_fake_trainer(is_global_zero=True)) is True
-    assert cb._gated(_fake_trainer(is_global_zero=False)) is False
+    assert cb._gated(_fake_trainer(is_global_zero=False)) is True
 
 
 def test_gate_cadence_every_n_epochs(identity_vae):
@@ -509,3 +508,18 @@ def test_rollout_deterministic_given_x_src_no_reseed():
     import inspect
 
     assert "seed" not in inspect.signature(PairedPSNRSSIMCallback.__init__).parameters
+
+
+def test_padding_mask_excludes_repeated_psnr_rows(identity_vae):
+    """Padded rows still decode but do not contribute to PSNR/SSIM sum or count."""
+    cb = _make_callback(_FakePipeline(_FakeUNet(), identity_vae))
+    pred = torch.stack([torch.zeros(1, 8, 8, 8), torch.ones(1, 8, 8, 8)])
+    tgt = torch.stack([
+        torch.linspace(0, 1, 512).reshape(1, 8, 8, 8),
+        torch.linspace(0, 1, 512).reshape(1, 8, 8, 8),
+    ])
+    full = cb._batch_metrics(pred, tgt)
+    masked = cb._batch_metrics(pred, tgt, torch.tensor([True, False]))
+    first = cb._batch_metrics(pred[:1], tgt[:1])
+    assert full[2] == 2
+    assert masked == pytest.approx(first)

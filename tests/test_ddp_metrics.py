@@ -197,31 +197,121 @@ def test_l5_grpo_train_loss_has_sync_dist():
     assert 'self.log("train/loss"' in src
 
 
-# -- Paired PSNR: rank-0-only decode (mirrors FIDCallback) --------------------
+# -- Paired PSNR: all-rank decode + all_reduce global mean (ADR-0025) ----------
 
 
-def test_paired_psnr_rank0_only(tmp_path):
-    """2-rank: only rank 0 decodes its ``DistributedSampler`` val shard; rank 1 skips
-    (the rank-0-only gate - mirrors FIDCallback). The ADR-0016 "distributed PSNR"
-    amendment (all-rank decode + epoch-end ``all_gather``) is reverted because the
-    concurrent 8-rank full-volume VAE decode deadlocks the DCU runtime.
+def test_paired_psnr_all_ranks(tmp_path):
+    """2-rank: BOTH ranks decode their own ``DistributedSampler`` val shard and
+    ``all_reduce`` the per-volume ``(psnr_sum, ssim_sum, count)`` for the global mean
+    (ADR-0025; the PR #115 rank-0-only revert is undone - the VAE ``num_splits``
+    config addresses the per-batch decode stall instead).
 
-    Asserts: (a) rank 0 decoded (``_count > 0``) and rank 1 did NOT (``_count == 0``) -
-    the load-bearing rank-0-only gate that removes the 7/8 concurrent decode; (b)
-    ``val/psnr`` + ``val/ssim`` are logged on rank 0 ONLY (rank 1 logs nothing - no
-    collective is called, so a skipped rank cannot block); (c) the rank-0 value is its
-    OWN shard mean (``psnr_sum_local / count_local`` - no cross-rank ``all_gather``);
-    (d) no deadlock (the spawn joined -> both ranks wrote a result).
+    Asserts: (a) both ranks decoded (``count_local > 0`` on each); (b) ``val/psnr`` +
+    ``val/ssim`` logged on BOTH ranks to the SAME value; (c) that value is the GLOBAL
+    mean ``(r0_sum + r1_sum) / (r0_count + r1_count)``, not either rank's own shard
+    mean; (d) no deadlock (the spawn joined -> both ranks wrote a result).
     """
     results = run_ddp_two_rank(paired_psnr_ddp_worker, results_dir=str(tmp_path), args=(False,))
     r0, r1 = results
-    # (a) Rank-0-only decode: rank 0 decoded, rank 1 did not.
-    assert r0["is_global_zero"] is True and r1["is_global_zero"] is False
+    # (a) Both ranks decode their own shard.
     assert r0["count_local"] > 0, "rank 0 did not decode"
-    assert r1["count_local"] == 0, "rank 1 decoded (rank-0-only gate not applied?)"
-    # (b) val/psnr + val/ssim logged on rank 0 only (rank 1 logs nothing).
+    assert r1["count_local"] > 0, "rank 1 did not decode (all-rank gate not applied?)"
+    # (b) val/psnr + val/ssim logged on both ranks.
     assert r0["val_psnr"] is not None and r0["val_ssim"] is not None, "rank 0 did not log"
-    assert r1["val_psnr"] is None and r1["val_ssim"] is None, "rank 1 logged (should be rank-0-only)"
-    # (c) The rank-0 value is its OWN shard mean (no cross-rank all_gather).
-    assert r0["val_psnr"] == pytest.approx(r0["psnr_sum_local"] / r0["count_local"], abs=1e-4)
-    assert r0["val_ssim"] == pytest.approx(r0["ssim_sum_local"] / r0["count_local"], abs=1e-4)
+    assert r1["val_psnr"] is not None and r1["val_ssim"] is not None, "rank 1 did not log"
+    # (c) The logged value is the GLOBAL mean (all-reduced), identical on both ranks.
+    g_count = r0["count_local"] + r1["count_local"]
+    g_psnr = (r0["psnr_sum_local"] + r1["psnr_sum_local"]) / g_count
+    g_ssim = (r0["ssim_sum_local"] + r1["ssim_sum_local"]) / g_count
+    assert r0["val_psnr"] == pytest.approx(g_psnr, abs=1e-4), "rank 0 val/psnr != global mean"
+    assert r1["val_psnr"] == pytest.approx(g_psnr, abs=1e-4), "rank 1 val/psnr != global mean"
+    assert r0["val_ssim"] == pytest.approx(g_ssim, abs=1e-4)
+    assert r1["val_ssim"] == pytest.approx(g_ssim, abs=1e-4)
+
+
+def test_codex116_padding_sampler_equal_batches_no_data_loss():
+    """Pad-and-mask: equal sampler lengths, all real indices retained, padding tagged."""
+    import torch
+    from torch.utils.data import TensorDataset
+    from manifold.data.warm_datamodule import _TaggedDistributedSampler, _ValidationDataset
+
+    wrapped = _ValidationDataset(TensorDataset(torch.arange(5)))
+    tagged, counts = [], []
+    for rank in range(2):
+        sampler = _TaggedDistributedSampler(
+            wrapped, num_replicas=2, rank=rank, shuffle=False, drop_last=False
+        )
+        rows = list(sampler)
+        counts.append(len(rows))
+        tagged.extend(rows)
+    assert counts == [3, 3]  # equal forwards/batches on both ranks
+    real = [index for index, padding in tagged if not padding]
+    padding = [index for index, is_padding in tagged if is_padding]
+    assert sorted(real) == list(range(5))  # no real validation sample dropped
+    assert len(padding) == 1  # total_size - N
+
+
+def test_codex116_padding_sampler_handles_n_lt_world():
+    """N < world: every rank gets one equal-length forward; only N rows are real."""
+    import torch
+    from torch.utils.data import TensorDataset
+    from manifold.data.warm_datamodule import _TaggedDistributedSampler, _ValidationDataset
+
+    wrapped = _ValidationDataset(TensorDataset(torch.arange(4)))
+    tagged = []
+    for rank in range(8):
+        rows = list(_TaggedDistributedSampler(
+            wrapped, num_replicas=8, rank=rank, shuffle=False, drop_last=False
+        ))
+        assert len(rows) == 1
+        tagged.extend(rows)
+    assert sum(not padding for _, padding in tagged) == 4
+    assert sum(padding for _, padding in tagged) == 4
+
+
+def test_codex116_validation_wrapper_collates_padding_mask():
+    """Integer indexing marks real; tagged indexing marks padding; bool collates."""
+    import torch
+    from torch.utils.data import Dataset, DataLoader
+    from manifold.data.warm_datamodule import _ValidationDataset
+
+    class _DS(Dataset):
+        def __len__(self): return 2
+        def __getitem__(self, i): return {"x": torch.tensor(i)}
+
+    wrapped = _ValidationDataset(_DS())
+    assert wrapped[0]["_is_padding"] is False
+    assert wrapped[(0, True)]["_is_padding"] is True
+    batch = next(iter(DataLoader(wrapped, batch_size=2)))
+    assert batch["_is_padding"].dtype == torch.bool
+    assert not batch["_is_padding"].any()
+
+
+def test_codex116_r4_build_datamodule_defers_val_sampler_to_post_pg():
+    import inspect
+    from manifold.data.datamodule import _DedupValDataModule
+    hook_src = inspect.getsource(_DedupValDataModule.val_dataloader)
+    init_src = inspect.getsource(_DedupValDataModule.__init__)
+    assert "_validation_loader(" in hook_src
+    assert "_validation_loader" not in init_src
+
+
+def test_codex116_r4_dedup_val_module_val_dataloader_resolves_sampler(monkeypatch):
+    import torch
+    import torch.distributed as dist
+    from torch.utils.data import TensorDataset, DataLoader
+    from manifold.data.datamodule import _DedupValDataModule
+    from manifold.data.warm_datamodule import _TaggedDistributedSampler
+
+    ds = TensorDataset(torch.arange(8))
+    dm = _DedupValDataModule(
+        val_dataset=ds, batch_size=2, num_workers=0,
+        train=DataLoader(TensorDataset(torch.arange(4)), batch_size=2),
+    )
+    assert not isinstance(dm.val_dataloader().sampler, _TaggedDistributedSampler)
+    monkeypatch.setattr(dist, "is_initialized", lambda: True)
+    monkeypatch.setattr(dist, "get_world_size", lambda: 2)
+    monkeypatch.setattr(dist, "get_rank", lambda: 0)
+    loader = dm.val_dataloader()
+    assert isinstance(loader.sampler, _TaggedDistributedSampler)
+    assert not loader.sampler.drop_last

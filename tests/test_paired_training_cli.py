@@ -280,13 +280,12 @@ def test_run_paired_training_skips_validation_when_no_held_out_val(tmp_path):
     assert trainer.check_val_every_n_epoch is not None
 
 
-def test_run_paired_training_drops_psnr_monitor_under_ddp(tmp_path, monkeypatch):
-    """Under multi-GPU the rank-0-only ``val/psnr`` monitor is DROPPED (mirrors FID):
-    a rank-0-only metric is absent from the non-root ranks' ``callback_metrics``, so
-    ``ModelCheckpoint(monitor="val/psnr")`` can't find the key there (codex #115 P1).
-    Single-GPU keeps the monitor on (``val/psnr`` is the rank's own metric). Verified
-    by spying on ``_build_checkpoint``'s ``monitor`` kwarg with ``build_trainer``
-    stubbed so ``devices=2`` does not spawn a real DDP fit.
+def test_run_paired_training_keeps_psnr_monitor_under_ddp(tmp_path, monkeypatch):
+    """Under multi-GPU the ``val/psnr`` monitor STAYS ON (ADR-0025): val/psnr is now a
+    GLOBAL metric (all ranks decode + all_reduce the per-volume sums), present on every
+    rank's ``callback_metrics``, so ``ModelCheckpoint(monitor="val/psnr")`` works under
+    DDP. Verified by spying on ``_build_checkpoint``'s ``monitor`` kwarg with
+    ``build_trainer`` stubbed so ``devices=2`` does not spawn a real DDP fit.
     """
     import manifold.training.paired_cli as cli
 
@@ -319,14 +318,13 @@ def test_run_paired_training_drops_psnr_monitor_under_ddp(tmp_path, monkeypatch)
         )
         return module, bundle
 
-    # multi-GPU -> monitor dropped (rank-0-only val/psnr can't drive ModelCheckpoint
-    # on the other ranks).
+    # multi-GPU -> monitor KEPT ON (val/psnr is now global; present on all ranks).
     module, bundle = _bundle()
     run_paired_training(
         module=module, bundle=bundle, model_dir=str(tmp_path / "ddp"),
         max_epochs=1, batch_size=2, devices=2, num_inference_steps=2, every_n_epochs=1,
     )
-    assert captured["monitor"] is False, "multi-GPU must drop the rank-0-only val/psnr monitor"
+    assert captured["monitor"] is True, "multi-GPU must keep the (now-global) val/psnr monitor"
 
     # single-GPU -> monitor kept on (val/psnr is the rank's own metric).
     module, bundle = _bundle()

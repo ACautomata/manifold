@@ -400,6 +400,23 @@ class PairedGRPOModule(spt.Module):
         self.kl_coef = float(kl_coef)
         self.reward_bound = str(reward_bound)
         self.reward_temp = float(reward_temp)
+        self._val_reward_sum = 0.0
+        self._val_reward_count = 0
+
+    def on_validation_epoch_start(self) -> None:
+        self._val_reward_sum = 0.0
+        self._val_reward_count = 0
+
+    def on_validation_epoch_end(self) -> None:
+        agg = torch.tensor(
+            [self._val_reward_sum, float(self._val_reward_count)],
+            device=self.device, dtype=torch.float32,
+        )
+        if torch.distributed.is_available() and torch.distributed.is_initialized():
+            torch.distributed.all_reduce(agg, op=torch.distributed.ReduceOp.SUM)
+        total, count = float(agg[0]), int(agg[1])
+        if count:
+            self.log("val/mean_reward", total / count, prog_bar=True, sync_dist=False)
 
     # -- frozen-reward lifecycle ---------------------------------------------
 
@@ -577,22 +594,19 @@ class PairedGRPOModule(spt.Module):
     # -- validation: deployed-Heun generation + reward (val/mean_reward) --------
 
     def validation_step(self, batch: PairedGRPOBatch, batch_idx: int):
-        """Generate from ``x_src`` via the deployed Heun, score → ``val/mean_reward``.
+        """Generate from ``x_src`` via the deployed Heun, score -> ``val/mean_reward``.
 
         The RL progress signal: generate via the deployed two-eval Heun (NOT the
         bridge SDE) so the reward reflects the deterministic distribution Paired JiT
         ships, then score with the frozen paired PatchGAN over ``cat([x_src, z_K])``.
+        Single sample per source at val (no G-expansion).
 
-        **Rank-0-only** (ADR-0016, M3): generation + reward scoring run on
-        ``is_global_zero`` only; the non-root ranks skip and must NOT block on an
-        NCCL collective here. ``val/mean_reward`` is therefore rank-0-shard-scoped
-        (no ``sync_dist`` — the rank-0 gate removes the cross-rank quantity), the
-        same convention as the noise→data GRPOModule. (The PSNR callback, attached
-        separately, runs on all ranks + all_gathers — that is the global selection
-        metric; this is the rank-0 progress signal.)
+        **All-rank under DDP** (ADR-0025): every rank generates + scores its own
+        padded ``DistributedSampler`` shard and accumulates only non-padding reward
+        sums/counts. Epoch end all-reduces ``(sum, count)`` for the exact global mean.
+        The prior rank-0-only gate (PR #115) is removed. The PSNR callback (attached
+        separately) uses the same pad-and-mask all-rank contract.
         """
-        if not self.trainer.is_global_zero:
-            return
         batch["batch_idx"] = batch_idx
         spacing_t, src_labels, tgt_labels, x_src, B = self._conditioning_tensors(batch)
         z_K = sample_paired_latent_flow(
@@ -603,8 +617,12 @@ class PairedGRPOModule(spt.Module):
         rewards = self._bound_reward(
             self.reward_model(torch.cat([x_src, z_K], dim=1)).float()
         )
-        self.log("val/mean_reward", rewards.mean(), on_epoch=True, prog_bar=True, batch_size=B)
-        return {"mean_reward": rewards.mean()}
+        valid = ~batch.get(
+            "_is_padding", torch.zeros(B, dtype=torch.bool, device=rewards.device)
+        ).to(rewards.device).bool()
+        self._val_reward_sum += float(rewards[valid].sum())
+        self._val_reward_count += int(valid.sum())
+        return {"mean_reward": rewards[valid].mean() if bool(valid.any()) else rewards.new_zeros(())}
 
 
 __all__ = [

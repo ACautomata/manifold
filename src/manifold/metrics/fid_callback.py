@@ -34,7 +34,13 @@ try:
 except ImportError:  # pragma: no cover — lightning is a hard dep via spt
     import pytorch_lightning as pl  # type: ignore
 
-from .fid import frechet_distance_unbiased, get_features_2p5d
+from .fid import (
+    frechet_from_moments,
+    features_to_sufficient_stats,
+    moments_from_sufficient_stats,
+    get_features_2p5d,
+)
+
 
 _log = logging.getLogger(__name__)
 
@@ -91,7 +97,7 @@ class FIDCallback(pl.Callback):
         # has moved into DataModule.setup(), so the val reference does not exist
         # until the first validation epoch). ``real_latents_source`` is a callable
         # ``() -> Tensor`` (or an object exposing ``.val_latents``) pulled lazily at
-        # the first ``_real_features`` call. Both are populated before any FID math.
+        # the first ``_real_moments`` call. Both are populated before any FID math.
         self._real_latents_source = real_latents_source
         self.real_latents = real_latents
         self.feature_net = feature_net
@@ -111,28 +117,17 @@ class FIDCallback(pl.Callback):
         self.center_slices_ratio = float(center_slices_ratio)
         self.cov_ridge = float(cov_ridge)
         self.seed = int(seed)
-        self._real_planes: list[torch.Tensor] | None = None
+        self._real_moments_cache: list | None = None
+        self._feat_dim: int | None = None
 
     # -- internals -----------------------------------------------------------
 
     def _gated(self, trainer) -> bool:
-        """Rank-0 + cadence gate; warn loudly under DDP and skip otherwise.
-
-        The warning is hoisted BELOW the ``is_global_zero`` guard so it fires
-        only on rank 0 (L1, ADR-0016) - emitting it on every rank every val
-        epoch was noise.
+        """Cadence gate only. All ranks generate + decode + extract features for
+        their own shard and per-plane sufficient statistics are all-reduced in
+        :meth:`_planes_to_global_moments` for the exact global FID (ADR-0025). The
+        prior rank-0 / single-GPU-only gate is removed.
         """
-        world = 1
-        if torch.distributed.is_available() and torch.distributed.is_initialized():
-            world = torch.distributed.get_world_size()
-        if world > 1:
-            if not trainer.is_global_zero:
-                return False
-            _log.warning(
-                "FIDCallback: running only on rank 0 (world_size=%d). The other "
-                "ranks skip the generative FID and must NOT block on an NCCL "
-                "collective here — single-GPU is the supported config.", world
-            )
         epoch = trainer.current_epoch
         if self.every_n_epochs <= 1 or (epoch % self.every_n_epochs == 0):
             return True
@@ -182,6 +177,14 @@ class FIDCallback(pl.Callback):
                 # since the raw arm is the checkpoint monitor, that contamination
                 # would distort selection. Also matches hope (net.eval().to()).
                 self.feature_net.eval()
+            # ADR-0025: the feature dim is needed to size zero sufficient-stats
+            # buffers for empty per-plane shards (symmetric all_reduce). Probed
+            # once on the staged device; deterministic across ranks.
+            if self._feat_dim is None:
+                with torch.no_grad():
+                    self._feat_dim = int(self.feature_net(
+                        torch.zeros(1, 1, 64, 64, device=self._device())
+                    ).shape[1])
             # _eval_staged was set right after staging the VAE (above), so the
             # finally's _restore_eval_to_cpu() always restores it - even on the
             # skip-path early return.
@@ -214,37 +217,87 @@ class FIDCallback(pl.Callback):
         return self.vae.decode(latents.float().to(vae_device))
 
     @torch.no_grad()
-    def _real_features(self) -> list[torch.Tensor]:
-        """Decode the fixed real subset once and cache its per-plane features.
+    def _rank_world(self) -> tuple[int, int]:
+        if torch.distributed.is_available() and torch.distributed.is_initialized():
+            return int(torch.distributed.get_rank()), int(torch.distributed.get_world_size())
+        return 0, 1
 
-        F5: if ``real_latents`` was ``None`` at construction (the warm moved into
-        ``DataModule.setup()``, so the val reference did not exist yet), pull it
-        from the ``real_latents_source`` here - the first ``_real_features`` call
-        runs inside the first validation epoch, after ``setup()`` populated it.
+    def _planes_to_global_moments(
+        self, planes: list[torch.Tensor]
+    ) -> list[tuple[torch.Tensor, torch.Tensor, int] | None]:
+        """Per-plane local features -> all-reduce sufficient stats -> global (mu, sigma, n).
+
+        Every rank enters one all_reduce per plane (symmetric over the always-3
+        planes), contributing zero stats for an empty local shard so the collective
+        cannot deadlock; ``_feat_dim`` (probed once at stage time) sizes the zero
+        buffers. A plane with a global count < 2 yields None (FID undefined).
         """
+        _, world = self._rank_world()
+        d = self._feat_dim
+        dev = self._device()
+        out: list[tuple[torch.Tensor, torch.Tensor, int] | None] = []
+        for feats in planes:
+            # Contribute stats for any non-empty shard (n>=1): sum_x / sum_xxT are
+            # well-defined for a single sample, and a one-sample rank's stats still
+            # participate in the global (post-all_reduce) moments - only the GLOBAL n
+            # must be >= 2 for a covariance, checked AFTER the reduce. Zero stats are
+            # reserved for a genuinely empty shard (so the collective stays symmetric).
+            if feats.numel() == 0 or feats.shape[0] == 0:
+                sum_x = torch.zeros(d, device=dev, dtype=torch.float32)
+                sum_xxT = torch.zeros(d, d, device=dev, dtype=torch.float32)
+                n = 0
+            else:
+                sum_x, sum_xxT, n = features_to_sufficient_stats(feats.float())
+            if world > 1:
+                torch.distributed.all_reduce(sum_x)
+                torch.distributed.all_reduce(sum_xxT)
+                n_t = torch.tensor([float(n)], device=dev, dtype=torch.float32)
+                torch.distributed.all_reduce(n_t)
+                n = int(n_t.item())
+            if n >= 2:
+                mu, sigma, _ = moments_from_sufficient_stats(sum_x, sum_xxT, n)
+                out.append((mu, sigma, n))
+            else:
+                out.append(None)
+        return out
+
+    @torch.no_grad()
+    def _real_moments(self) -> list[tuple[torch.Tensor, torch.Tensor, int] | None]:
+        """Decode this rank's strided shard of the fixed real subset once; all-reduce
+        per-plane sufficient stats; cache the global (mu, sigma, n). F5: real_latents
+        may be None until the DataModule warm populates it (pulled lazily here)."""
         if self.real_latents is None and self._real_latents_source is not None:
             src = self._real_latents_source
             self.real_latents = src() if callable(src) else getattr(src, "val_latents")
         if self.real_latents is None:
             raise RuntimeError(
-                "FIDCallback.real_latents is None at the first _real_features call - "
+                "FIDCallback.real_latents is None at the first _real_moments call - "
                 "the DataModule.setup() warm has not populated it (F5 wiring bug)."
             )
+        rank, world = self._rank_world()
+        shard = self.real_latents[rank::world]
+        if shard.shape[0] == 0:
+            # Empty real shard (the fixed subset is smaller than world_size, e.g. the
+            # 8-rank probe with val_subset_size=4): do NOT feed a [0,...] batch to the
+            # MAISI/MONAI decode path (sliding_window_inference raises on a 0-batch).
+            # Contribute zero stats so the collective stays symmetric; the other ranks
+            # supply the real moments.
+            return self._planes_to_global_moments([torch.empty(0) for _ in range(3)])
         self.vae.eval()
-        real_images = self._eval_decode(self.real_latents)
-        return get_features_2p5d(real_images, self.feature_net, center_slices_ratio=self.center_slices_ratio)
+        real_images = self._eval_decode(shard)
+        planes = get_features_2p5d(real_images, self.feature_net, center_slices_ratio=self.center_slices_ratio)
+        return self._planes_to_global_moments(planes)
 
     @torch.no_grad()
-    def _synth_features(self) -> list[torch.Tensor]:
-        """Generate num_synth volumes + held-VAE decode (raw optimizer weights).
-
-        Generation samples the live optimizer weights (``Module.sample`` shares
-        ``self.unet`` with training) — no EMA swap occurs (EMA training was
-        removed; ADR-0006).
-        """
+    def _synth_moments(self) -> list[tuple[torch.Tensor, torch.Tensor, int] | None]:
+        """Generate this rank's rank-strided slice of num_synth (seeds ``seed + i`` for
+        ``i % world == rank`` so the global synth set is the union, not world x
+        rank-0), decode, extract features, all-reduce -> global (mu, sigma, n).
+        Generation samples the live optimizer weights (no EMA swap; EMA removed)."""
         self.vae.eval()
-        planes: list[list[torch.Tensor]] = [[], [], []]
-        for i in range(self.num_synth):
+        rank, world = self._rank_world()
+        per_plane: list[list[torch.Tensor]] = [[], [], []]
+        for i in range(rank, self.num_synth, world):
             gen = torch.Generator(device=self._device()).manual_seed(self.seed + i)
             latent = self.module.sample(
                 self.latent_shape,
@@ -260,8 +313,9 @@ class FIDCallback(pl.Callback):
                 get_features_2p5d(image, self.feature_net, center_slices_ratio=self.center_slices_ratio)
             ):
                 if feats.numel():
-                    planes[axis].append(feats)
-        return [torch.cat(p, dim=0) if p else torch.empty(0) for p in planes]
+                    per_plane[axis].append(feats)
+        planes = [torch.cat(p, dim=0) if p else torch.empty(0) for p in per_plane]
+        return self._planes_to_global_moments(planes)
 
     def _device(self):
         return next(self.module.unet.parameters()).device
@@ -273,47 +327,48 @@ class FIDCallback(pl.Callback):
             return
         self._stage_eval_on_device()
         try:
-            # codex #85 P2: the lazy feature_net factory is fail-safe; if it returned
-            # None (bad/corrupt cache, no network), FID is unavailable. Log the
-            # monitored metric as +inf ONCE so ModelCheckpoint(monitor='val/fid',
-            # mode='min') does not crash on a never-logged metric (inf is never the
-            # best, so selection falls through to save_last) instead of aborting the
-            # run mid-fit. The online torch.hub fallback stays reachable on hosts
-            # with network (no launch-time pre-disable on a missing cache).
-            if getattr(self, "_fid_disabled", False):
+            # codex #85 P2 + #116 P2: a failed/absent feature_net logs +inf so the
+            # checkpoint monitor (mode='min') falls through to save_last. Because FID
+            # now runs a per-plane all_reduce on EVERY rank, a rank-local backbone
+            # failure (one node's bad/missing cache) cannot just `return` here - that
+            # rank would skip the collective while the loaded ranks block in it.
+            # all_reduce the disabled flag so ALL ranks take the same branch (log +inf)
+            # or none (enter the FID collectives) together.
+            disabled_t = torch.tensor(
+                [1.0 if getattr(self, "_fid_disabled", False) else 0.0],
+                device=self._device(), dtype=torch.float32,
+            )
+            if torch.distributed.is_available() and torch.distributed.is_initialized():
+                torch.distributed.all_reduce(disabled_t, op=torch.distributed.ReduceOp.MAX)
+            if bool(disabled_t.item()):
                 module.log("val/fid", float("inf"))
                 return
-            if self._real_planes is None:
-                self._real_planes = self._real_features()
-            # Single raw arm — the anti-reward-hacking selection metric (#58):
-            # generation samples the live optimizer weights, no EMA swap.
+            if self._real_moments_cache is None:
+                self._real_moments_cache = self._real_moments()
             self._compute_and_log(module, total_key="val/fid", plane_key="val/fid")
         finally:
             self._restore_eval_to_cpu()
 
     def _compute_and_log(self, module, *, total_key: str, plane_key: str) -> None:
-        """Generate one arm + log its per-plane unbiased FID vs the cached real.
-
-        ``total_key`` is the metric logged for the mean FID; ``plane_key`` is the
-        prefix for the per-plane diagnostics (``f"{plane_key}_{xy,yz,zx}"``). The
-        sole regime logs ``val/fid`` (+ ``val/fid_{axis}``) on the raw optimizer
-        weights (the anti-reward-hacking selection metric, #58). No-op when no
-        plane has ≥2 features.
-        """
-        synth_planes = self._synth_features()
+        """Generate one arm, all-reduce its per-plane sufficient stats vs the cached
+        real moments, log the global per-plane unbiased FID. No-op on planes with
+        <2 global samples in either set (the single raw arm; ADR-0006)."""
+        synth = self._synth_moments()
         per_plane: dict[str, float] = {}
         total = 0.0
-        n = 0
-        for axis, (rp, sp) in enumerate(zip(self._real_planes, synth_planes)):
-            name = ("xy", "yz", "zx")[axis]
-            if rp.numel() == 0 or sp.numel() == 0 or rp.shape[0] < 2 or sp.shape[0] < 2:
+        counted = 0
+        for axis, (real_m, synth_m) in enumerate(zip(self._real_moments_cache, synth)):
+            if real_m is None or synth_m is None:
                 continue
-            fid = float(frechet_distance_unbiased(sp.float(), rp.float(), ridge=self.cov_ridge))
+            mu_r, sigma_r, n_r = real_m
+            mu_g, sigma_g, n_g = synth_m
+            fid = float(frechet_from_moments(mu_g, mu_r, sigma_g, sigma_r, n_g, n_r, ridge=self.cov_ridge))
+            name = ("xy", "yz", "zx")[axis]
             per_plane[name] = fid
             total += fid
-            n += 1
-        if not n:
+            counted += 1
+        if not counted:
             return
-        module.log(total_key, total / n)
+        module.log(total_key, total / counted)
         for name, val in per_plane.items():
             module.log(f"{plane_key}_{name}", val)

@@ -1,24 +1,21 @@
-"""DDP rank-0-only validation honesty (issue #83).
+"""DDP all-rank validation (ADR-0025; supersedes the issue #83 rank-0-only tests).
 
-- **M3**: GRPO ``validation_step`` generation + scoring runs on ``is_global_zero``
-  only (the rank-asymmetric early-return must not deadlock). ``sample_latent_flow``
-  call counts are ``>0`` on rank 0 and exactly ``0`` on rank 1; ``val/mean_reward``
-  is logged exactly once (rank 0).
-- **M4**: ``val/mean_reward`` scope documented in the ``validation_step``
-  docstring (rank-0-shard-scoped; no ``sync_dist``).
-- **M5** (reverted to rank-0-only): ``val/psnr`` / ``val/ssim`` are logged on rank 0
-  ONLY (mirrors FIDCallback). The ADR-0016 "distributed PSNR" amendment (all-rank
-  decode + epoch-end ``all_gather``) is reverted - the concurrent 8-rank full-volume
-  VAE decode deadlocks the DCU runtime. Metric names unchanged; non-root ranks do not
-  log them (a benign "monitor not found" note)
-- **L1**: the FID "running only on rank 0" DDP warning is hoisted below the
-  ``is_global_zero`` guard (fires rank-0 only). (PSNR is rank-0-only too - mirrors FIDCallback.)
-- **L3**: the RadImageNet ``feature_net`` is lazy-built inside the rank-0-gated
-  FID stage path (``make_feature_network`` call_count == 1 on rank 0, == 0 on rank 1).
+Validation is fully distributed: every rank decodes / generates / scores its own
+``DistributedSampler`` shard and the metric is reduced to a global value. The prior
+rank-0-only gates (PR #115, the DCU-deadlock workaround) are removed - the VAE
+``num_splits``/``save_mem`` config addresses the per-batch decode stall instead.
 
-Note: GRPO multi-GPU *training* is NOT blocked - codex G2=FALSE confirmed the PPO
-inner loop is DDP-correct; ``no_sync()`` would be wrong (the algorithm steps every
-inner iteration). M3 only makes the *validation* rank-0-honest.
+- **M3**: GRPO ``validation_step`` generation + scoring runs on BOTH ranks;
+  ``sample_latent_flow`` call count is ``>0`` on rank 0 AND rank 1; ``val/mean_reward``
+  is logged on both ranks (``sync_dist=True``) to the SAME global value.
+- **M4**: ``val/mean_reward`` is logged with ``sync_dist=True`` (no ``is_global_zero`` gate).
+- **L1**: the FID callback ``_gated`` is cadence-only (no ``is_global_zero`` guard, no warning).
+- **L3**: the RadImageNet ``feature_net`` is built on BOTH ranks (every rank extracts
+  features for its shard) - ``make_feature_network`` call_count == 1 on rank 0 AND rank 1.
+- **M5**: PSNR/SSIM ``_gated`` is cadence-only (no rank-0 guard/warning) and
+  ``on_validation_epoch_end`` ``all_reduce``s ``(psnr_sum, ssim_sum, count)`` for the
+  global mean; metric names unchanged; PSNR ``log(...)`` calls carry no ``sync_dist``
+  (the manual ``all_reduce`` already produced the global value).
 
 All 2-rank gates reuse :func:`tests.ddp.run_ddp_two_rank`.
 """
@@ -29,132 +26,115 @@ import inspect
 
 import pytest
 
-from tests.ddp import grpo_ddp_worker, jit_ddp_worker, run_ddp_two_rank
+from tests.ddp import grpo_ddp_worker, run_ddp_two_rank
 
 
-# -- M3: GRPO validation_step is rank-0-only ----------------------------------
+# -- M3: GRPO validation_step runs on all ranks --------------------------------
 
 
-def test_m3_grpo_validation_step_runs_rank0_only(tmp_path):
-    """2-rank: ``sample_latent_flow`` call count is ``>0`` on rank 0 and exactly
-    ``0`` on rank 1 (the generation rollout is gated to ``is_global_zero``).
-    ``val/mean_reward`` is logged exactly once (rank 0). The val epoch completes
-    with exit 0 (no deadlock - the load-bearing no-hang gate for the rank-
-    asymmetric early-return inside ``validation_step``).
-    """
+def test_m3_grpo_validation_step_runs_all_ranks(tmp_path):
+    """2-rank: ``sample_latent_flow`` is called ``>0`` on BOTH ranks (the generation
+    rollout is no longer gated to ``is_global_zero``). ``val/mean_reward`` is logged
+    on both ranks and, being ``sync_dist=True``, carries the SAME global value. The
+    val epoch completes with exit 0 on both ranks (no deadlock)."""
     results = run_ddp_two_rank(grpo_ddp_worker, results_dir=str(tmp_path), args=(False,))
     r0, r1 = results
-    # The no-hang gate: both ranks wrote a result (spawn joined, no timeout).
+    # No-hang gate: both ranks wrote a result (spawn joined, no timeout).
     assert r0["global_step"] > 0 and r1["global_step"] > 0
-    # Generation runs rank-0-only; rank 1 does no generation.
+    # Generation runs on both ranks now.
     assert r0["sample_latent_flow_calls"] > 0, "rank 0 should generate"
-    assert r1["sample_latent_flow_calls"] == 0, "rank 1 should NOT generate"
-    # val/mean_reward logged exactly once (rank 0).
+    assert r1["sample_latent_flow_calls"] > 0, "rank 1 should ALSO generate (all-rank)"
+    # val/mean_reward logged on both ranks (sync_dist) to the same global value.
     assert r0["val_mean_reward_logged"] is True
-    assert r1["val_mean_reward_logged"] is False
-    assert r0["is_global_zero"] is True
-    assert r1["is_global_zero"] is False
-
-
-def test_m3_m4_grpo_validation_step_has_no_sync_dist():
-    """No ``sync_dist=`` argument on any ``self.log(...)`` call inside
-    ``validation_step`` (M4: the rank-0 gate removes the cross-rank quantity - no
-    ``sync_dist`` needed). The docstring may mention ``sync_dist`` by name (it
-    documents the scope), so this checks the actual log-call arguments, not the
-    raw string."""
-    import re
-
-    from manifold.modules import grpo
-
-    src = inspect.getsource(grpo.GRPOModule.validation_step)
-    log_calls = re.findall(r"self\.log\([^)]*\)", src, re.DOTALL)
-    assert log_calls, "validation_step logs nothing (unexpected)"
-    for call in log_calls:
-        assert "sync_dist" not in call, f"log call has sync_dist (M4 forbids): {call}"
-    assert "is_global_zero" in src, "validation_step missing the is_global_zero gate (M3)"
-
-
-def test_m4_grpo_validation_step_docs_rank0_scope():
-    """The ``validation_step`` docstring names the rank-0-shard scope (M4 review-only)."""
-    from manifold.modules import grpo
-
-    doc = grpo.GRPOModule.validation_step.__doc__ or ""
-    assert "rank-0-shard" in doc.lower() or "rank 0" in doc.lower(), (
-        "validation_step docstring should document the rank-0-shard scope (M4)"
+    assert r1["val_mean_reward_logged"] is True
+    assert r0["val_mean_reward"] is not None and r1["val_mean_reward"] is not None
+    assert r0["val_mean_reward"] == pytest.approx(r1["val_mean_reward"], abs=1e-4), (
+        "val/mean_reward should be the GLOBAL mean (sync_dist): both ranks equal"
     )
 
 
-# -- L3: feature_net lazy-built on rank 0 only ---------------------------------
+def test_m3_m4_grpo_validation_step_uses_global_sum_count():
+    """GRPO excludes padding per step and all-reduces global sum/count at epoch end."""
+    from manifold.modules import grpo
+
+    step = inspect.getsource(grpo.GRPOModule.validation_step)
+    end = inspect.getsource(grpo.GRPOModule.on_validation_epoch_end)
+    assert "is_global_zero" not in step
+    assert "_is_padding" in step
+    assert "all_reduce" in end and "ReduceOp.SUM" in end
+    assert "self.log(" not in step
 
 
-def test_l3_feature_net_built_rank0_only(tmp_path):
-    """2-rank: ``make_feature_network`` (the ``feature_net_factory``) is invoked
-    ``==1`` time on rank 0 and ``==0`` on rank 1 (lazy build inside the rank-0-
-    gated FID stage path). Rank 1 does no ``torch.hub``/disk load."""
+def test_m4_grpo_validation_step_docs_all_rank_scope():
+    """The ``validation_step`` docstring names the all-rank / distributed scope."""
+    from manifold.modules import grpo
+
+    doc = (grpo.GRPOModule.validation_step.__doc__ or "").lower()
+    assert "all-rank" in doc or "all rank" in doc or "sync_dist" in doc, (
+        "validation_step docstring should document the all-rank DDP scope (M4)"
+    )
+
+
+# -- L3: feature_net built on all ranks ----------------------------------------
+
+
+def test_l3_feature_net_built_all_ranks(tmp_path):
+    """2-rank: ``make_feature_network`` (the ``feature_net_factory``) is invoked once
+    on rank 0 AND once on rank 1 - every rank extracts features for its own shard."""
     results = run_ddp_two_rank(grpo_ddp_worker, results_dir=str(tmp_path), args=(False,))
     r0, r1 = results
     assert r0["feature_net_builds"] == 1, f"rank 0 should build feature_net once, got {r0['feature_net_builds']}"
-    assert r1["feature_net_builds"] == 0, f"rank 1 should NOT build feature_net, got {r1['feature_net_builds']}"
+    assert r1["feature_net_builds"] == 1, f"rank 1 should ALSO build feature_net, got {r1['feature_net_builds']}"
 
 
 def test_l3_fidcallback_supports_feature_net_factory():
     """``FIDCallback`` accepts ``feature_net_factory`` and builds it lazily in
-    ``_stage_eval_on_device`` (the rank-0-gated path)."""
+    ``_stage_eval_on_device`` (now on every rank)."""
     from manifold.metrics.fid_callback import FIDCallback
 
     sig = inspect.signature(FIDCallback.__init__)
     assert "feature_net_factory" in sig.parameters, "FIDCallback missing feature_net_factory"
-    # The build lives in _stage_eval_on_device (rank-0-gated).
     stage_src = inspect.getsource(FIDCallback._stage_eval_on_device)
     assert "feature_net_factory" in stage_src, "lazy build not in _stage_eval_on_device"
 
 
-# -- L1: DDP warnings hoisted below is_global_zero (fire rank-0 only) ----------
+# -- L1: FID _gated is cadence-only (no rank-0 guard/warning) -------------------
 
 
-def test_l1_fid_warning_below_guard():
-    """The FID ``_log.warning`` is hoisted BELOW the ``is_global_zero: return``
-    guard (fires rank-0 only). FID-only: the PSNR callback no longer has a guard or
-    warning (it is distributed under DDP - ADR-0016 amendment). Verified by source
-    order in the FID callback file."""
+def test_l1_fid_no_rank0_gate():
+    """The FID ``_gated`` is cadence-only under ADR-0025: no ``is_global_zero`` guard
+    and no rank-0 warning (every rank generates + extracts features for its shard)."""
     from manifold.metrics import fid_callback
 
     src = inspect.getsource(fid_callback.FIDCallback._gated)
-    guard_idx = src.find("if not trainer.is_global_zero")
-    warn_idx = src.find("_log.warning")
-    assert guard_idx >= 0 and warn_idx >= 0, "FIDCallback._gated missing guard or warning"
-    assert guard_idx < warn_idx, (
-        "FIDCallback: warning is BEFORE the is_global_zero guard (should be below - L1)"
-    )
+    assert "is_global_zero" not in src, "FIDCallback._gated still has a rank-0 guard"
+    assert "_log.warning" not in src, "FIDCallback._gated still has a rank-0 warning"
+    assert "every_n_epochs" in src, "FIDCallback._gated lost its cadence check"
 
 
-# -- M5: PSNR is rank-0-only (mirrors FIDCallback) ----------------------------
+# -- M5: PSNR is all-rank (all_reduce global mean) -----------------------------
 
 
-def test_m5_psnr_gate_is_rank0_only():
-    """The PSNR callback's ``_gated`` is rank-0-only under DDP (mirrors FIDCallback):
-    an ``is_global_zero`` guard + a rank-0 scope warning. The ADR-0016 "distributed
-    PSNR" amendment (all-rank decode + epoch-end ``all_gather``) is reverted - the
-    concurrent 8-rank full-volume VAE decode deadlocks the DCU runtime. Metric names
-    (``val/psnr`` / ``val/ssim``) are unchanged (the consumer keys on them)."""
+def test_m5_psnr_all_ranks():
+    """The PSNR callback's ``_gated`` is cadence-only (no rank-0 guard/warning), and
+    ``on_validation_epoch_end`` ``all_reduce``s ``(psnr_sum, ssim_sum, count)`` for the
+    global mean. Metric names (``val/psnr`` / ``val/ssim``) are unchanged."""
     from manifold.metrics import psnr_ssim_callback
 
     src = inspect.getsource(psnr_ssim_callback.PairedPSNRSSIMCallback._gated)
-    assert "is_global_zero" in src, "PSNR _gated lost the rank-0 guard (should be rank-0-only)"
-    assert "_log.warning" in src, "PSNR _gated lost the rank-0 warning (should be rank-0-only)"
+    assert "is_global_zero" not in src, "PSNR _gated still has the rank-0 guard"
+    assert "_log.warning" not in src, "PSNR _gated still has the rank-0 warning"
     end_src = inspect.getsource(psnr_ssim_callback.PairedPSNRSSIMCallback.on_validation_epoch_end)
-    # The epoch-end all_gather call is gone (rank-0 logs its shard estimate directly).
-    assert "all_gather(" not in end_src, "PSNR on_validation_epoch_end still calls all_gather"
-    # Metric names unchanged (the log calls stay val/psnr / val/ssim).
+    assert "all_reduce" in end_src, "PSNR on_validation_epoch_end lost the global all_reduce"
     assert 'log("val/psnr"' in end_src
     assert 'log("val/ssim"' in end_src
+
+
 def test_m5_metric_names_unchanged():
-    """``val/psnr`` / ``val/ssim`` metric names are unchanged (the ``monitor_psnr`` /
-    GRPO monitor consumers key on them). No ``sync_dist=`` argument on any ``log(...)``
-    call in the PSNR callback: rank 0 logs its rank-0-shard estimate locally (no
-    cross-rank ``all_gather`` after the ADR-0016 amendment revert), so ``sync_dist``
-    would be wrong (a plain-float ``sync_dist`` gives a mean-of-per-rank-means, and
-    non-root ranks have nothing to sync)."""
+    """``val/psnr`` / ``val/ssim`` metric names are unchanged (the consumers key on
+    them). No ``sync_dist=`` on the PSNR ``log(...)`` calls: the manual ``all_reduce``
+    already produced the global value, so a plain-float ``sync_dist`` would re-reduce
+    (a double reduce)."""
     import re
 
     from manifold.metrics import psnr_ssim_callback
@@ -164,4 +144,4 @@ def test_m5_metric_names_unchanged():
     assert 'log("val/ssim"' in src
     log_calls = re.findall(r"\.log\([^)]*\)", src, re.DOTALL)
     for call in log_calls:
-        assert "sync_dist" not in call, f"PSNR log call has sync_dist (M5 forbids): {call}"
+        assert "sync_dist" not in call, f"PSNR log call has sync_dist (double-reduce): {call}"
