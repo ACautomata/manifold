@@ -176,14 +176,15 @@ def test_no_else_auto_fallback_remains():
 # -- M1a/M1b: 2-rank DDP monitor gate (uses the #80 fixture) -------------------
 
 
-def test_jit_checkpoint_monitor_dropped_under_ddp(tmp_path):
-    """2-rank run: the JiT ``ModelCheckpoint.monitor`` is ``None`` (rank-0-only FID
-    not monitored under DDP). Reuses :func:`tests.ddp.jit_ddp_worker`."""
+def test_jit_checkpoint_monitor_kept_under_ddp(tmp_path):
+    """2-rank run: the JiT ``ModelCheckpoint.monitor`` is ``val/fid`` under DDP
+    (ADR-0025 - val/fid is now GLOBAL via sufficient-stats all_reduce, so the monitor
+    stays on). Reuses :func:`tests.ddp.jit_ddp_worker`."""
     from tests.ddp import jit_ddp_worker, run_ddp_two_rank
 
     results = run_ddp_two_rank(jit_ddp_worker, results_dir=str(tmp_path), args=(True,))
-    assert results[0]["ckpt_monitor"] is None, "rank-0 monitor must be dropped under DDP"
-    assert results[1]["ckpt_monitor"] is None
+    assert results[0]["ckpt_monitor"] == "val/fid", "FID monitor must stay on under DDP (now global)"
+    assert results[1]["ckpt_monitor"] == "val/fid"
 
 
 def test_jit_checkpoint_monitor_set_on_single_gpu(tmp_path):

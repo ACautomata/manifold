@@ -543,32 +543,21 @@ class GRPOModule(spt.Module):
     # -- validation: deployed-Heun generation + reward (val/mean_reward) ------
 
     def validation_step(self, batch: GRPOBatch, batch_idx: int):
-        """Generate from noise via the deployed Heun sampler, score → ``val/mean_reward``.
+        """Generate from noise via the deployed Heun sampler, score -> ``val/mean_reward``.
 
         The RL progress signal: generate via the deployed two-eval Heun (NOT the
         rollout SDE) so the reward reflects the distribution JiT ships, then score
         with the frozen PatchGAN. The anti-reward-hacking selection metric
         (``val/fid``, #58) is a SEPARATE generation pass driven by the FID callback
-        (:meth:`sample`) — a higher-reward-but-higher-FID checkpoint is thus not
-        selected over a lower-FID one. ``sample_latent_flow`` takes a scalar
-        modality, so a mixed-label val batch is generated under ``label[0]`` (the
-        single-modality regime); per-sample generation is out of scope for v1.
+        (:meth:`sample`). ``sample_latent_flow`` takes a scalar modality, so a
+        mixed-label val batch is generated under ``label[0]`` (single-modality v1).
 
-        **Rank-0-only** (ADR-0016, M3): generation + reward scoring run on
-        ``is_global_zero`` only; the non-root ranks skip and must NOT block on an
-        NCCL collective here. ``val/mean_reward`` is therefore **rank-0-shard-
-        scoped** (no ``sync_dist`` - the rank-0 gate removes the cross-rank
-        quantity). Multi-GPU GRPO *training* is NOT blocked here: an independent
-        codex review (G2=FALSE) confirmed the PPO inner loop is DDP-correct via
-        Lightning's manual-optimization bridge (``prepare_for_backward`` fires on
-        every ``manual_backward``; ``eta_step_list`` is config-identical across
-        ranks), so ``no_sync()`` would be wrong - the algorithm intentionally
-        steps every inner iteration. The rank-asymmetric early-return is safe:
-        generation + scoring are local forward passes with no DDP collective, so
-        no rank blocks waiting on another.
+        **All-rank under DDP** (ADR-0025): every rank generates + scores its own
+        ``DistributedSampler`` val shard and logs ``val/mean_reward`` with
+        ``sync_dist=True``. The val dataloader is evenly sharded, so the synced
+        epoch mean is the global mean. The prior rank-0-only gate (PR #115) is
+        removed; the rank-asymmetric early-return is gone, so no rank blocks.
         """
-        if not self.trainer.is_global_zero:
-            return
         batch["batch_idx"] = batch_idx
         spacing_t, class_labels, B = self._conditioning_tensors(batch)
         noise = torch.randn(B, *self.latent_shape, device=self.device, dtype=self._policy_dtype())
@@ -579,5 +568,5 @@ class GRPOModule(spt.Module):
         # The same bound the rollout applies (ADR-0015) — val/mean_reward is reported on
         # the bounded scale so it tracks the training signal (raw logit otherwise).
         rewards = self._bound_reward(self.reward_model(z_K).float())
-        self.log("val/mean_reward", rewards.mean(), on_epoch=True, prog_bar=True, batch_size=B)
+        self.log("val/mean_reward", rewards.mean(), on_epoch=True, prog_bar=True, batch_size=B, sync_dist=True)
         return {"mean_reward": rewards.mean()}

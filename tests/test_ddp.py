@@ -45,9 +45,10 @@ def _state_dict(model_dir: str | Path) -> dict:
 def test_ddp_cpu_two_rank_fit_completes(tmp_path):
     """The fixture runs a 2-rank Lightning fit on CPU (gloo), exits 0, no hang.
 
-    Both ranks reach the same ``global_step``, the checkpoint monitor is dropped
-    under DDP (``is_multi_gpu`` -> rank-0-only FID is not monitored). Downstream
-    2-rank gates reuse this runner.
+    Both ranks reach the same ``global_step``. Validation is fully DDP (ADR-0025):
+    the FID monitor STAYS ON under DDP (val/fid is global) and both ranks run FID
+    generation + extraction + the sufficient-stats all_reduce. Downstream 2-rank
+    gates reuse this runner.
     """
     results = run_ddp_two_rank(jit_ddp_worker, results_dir=str(tmp_path), args=(True,))
 
@@ -56,13 +57,12 @@ def test_ddp_cpu_two_rank_fit_completes(tmp_path):
     assert results[0]["global_step"] == results[1]["global_step"] > 0
     assert results[0]["is_global_zero"] is True
     assert results[1]["is_global_zero"] is False
-    # M1a (validated here so the fixture smoke is self-checking): under DDP the
-    # rank-0-only FID monitor is dropped on BOTH ranks.
-    assert results[0]["ckpt_monitor"] is None
-    assert results[1]["ckpt_monitor"] is None
-    # Rank 0 ran FID (val/fid_*); rank 1 skipped it (rank-0-only generation).
+    # M1a (ADR-0025): under DDP the FID monitor STAYS ON (val/fid is now global) on both ranks.
+    assert results[0]["ckpt_monitor"] == "val/fid"
+    assert results[1]["ckpt_monitor"] == "val/fid"
+    # Both ranks run FID (all-rank generation + sufficient-stats all_reduce).
     assert "val/fid" in results[0]["metrics"]
-    assert not any(k.startswith("val/fid") for k in results[1]["metrics"])
+    assert "val/fid" in results[1]["metrics"]
 
 
 # -- SG1: single-GPU regression gate (pre-PR baseline) ------------------------

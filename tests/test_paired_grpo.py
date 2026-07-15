@@ -1187,23 +1187,18 @@ def test_ssim_guardrail_none_disables_guardrail(tmp_path, vae):
     assert not isinstance(ckpt, GuardedModelCheckpoint), "None guardrail => stock ModelCheckpoint"
 
 
-def test_grpo_checkpoint_drops_psnr_monitor_under_ddp():
-    """Under multi-GPU BOTH val/mean_reward and val/psnr are rank-0-only (the
-    validation_step gate / the rank-0-only PSNR decode - ADR-0016 amendment reverted,
-    mirrors FIDCallback), so neither can drive ModelCheckpoint on the non-root ranks:
-    the monitor is DROPPED (codex #115 P1). Single-GPU keeps it on the selected metric.
-    """
+def test_grpo_checkpoint_keeps_monitor_under_ddp():
+    """The G2RPO checkpoint monitor stays on under DDP (ADR-0025): ``val/psnr`` and
+    ``val/mean_reward`` are now GLOBAL metrics (all-rank PSNR decode + per-volume
+    ``all_reduce``; ``validation_step`` runs on all ranks + ``sync_dist``), so
+    ``ModelCheckpoint`` can drive on them on every rank. There is no longer a
+    multi-GPU monitor drop."""
     from manifold.training.paired_grpo_cli import _build_checkpoint
 
-    # multi-GPU + val/psnr -> dropped (rank-0-only metric absent on non-root ranks).
-    ckpt = _build_checkpoint("/tmp/_unused_", monitor_metric="val/psnr", multi_gpu=True)
-    assert ckpt.monitor is None, "multi-GPU must drop the rank-0-only val/psnr monitor"
-    # multi-GPU + val/mean_reward -> dropped (unchanged: validation_step is rank-0-only).
-    ckpt_mr = _build_checkpoint("/tmp/_unused_", monitor_metric="val/mean_reward", multi_gpu=True)
-    assert ckpt_mr.monitor is None
-    # single-GPU + val/psnr -> kept (rank 0 owns the metric).
-    ckpt_single = _build_checkpoint("/tmp/_unused_", monitor_metric="val/psnr", multi_gpu=False)
-    assert ckpt_single.monitor == "val/psnr"
+    ckpt = _build_checkpoint("/tmp/_unused_", monitor_metric="val/psnr")
+    assert ckpt.monitor == "val/psnr", "val/psnr monitor must stay on (now global)"
+    ckpt_mr = _build_checkpoint("/tmp/_unused_", monitor_metric="val/mean_reward")
+    assert ckpt_mr.monitor == "val/mean_reward", "val/mean_reward monitor must stay on (now global)"
 
 
 # -- Slice 2 (#104): real budget + committed recipe + numerics ------------------

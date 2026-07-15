@@ -153,15 +153,13 @@ def _tiny_jit_module():
 def _jit_callbacks(module, *, enable_fid: bool, devices, seed: int = 0):
     """Build the JiT callback stack (train metrics + optional FID + ckpt).
 
-    ``devices`` is the value passed to ``build_trainer``; the checkpoint monitor
-    uses the production ``is_multi_gpu`` guard so under DDP (rank-0-only FID)
-    the monitor is dropped - mirroring ``run_training``.
+    ``devices`` is the value passed to ``build_trainer``. Under ADR-0025 the FID
+    monitor STAYS ON under DDP (val/fid is global), mirroring ``run_training``.
     """
     from manifold import AutoencoderKL
     from manifold.metrics import FIDCallback
     from manifold.training.cli import _build_checkpoint, _inference_recipe
     from manifold.training.metrics import LatentX0MAE, TrainLossLogger
-    from manifold.training.trainer import is_multi_gpu
 
     callbacks: list = [TrainLossLogger(), LatentX0MAE()]
     val_latents = torch.randn(5, 4, 4, 4, 4)
@@ -187,7 +185,7 @@ def _jit_callbacks(module, *, enable_fid: bool, devices, seed: int = 0):
         callbacks.append(fid)
     ckpt = _build_checkpoint(
         model_dir="/tmp/_unused_ckpt_dir",
-        monitor_fid=enable_fid and not is_multi_gpu(devices),
+        monitor_fid=enable_fid,
         every_n_epochs=1,
     )
     callbacks.append(ckpt)

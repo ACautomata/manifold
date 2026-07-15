@@ -18,7 +18,13 @@ from manifold.metrics import (
     frechet_distance_unbiased,
     get_features_2p5d,
 )
-from manifold.metrics.fid import _cov_unbiased, _tr
+from manifold.metrics.fid import (
+    _cov_unbiased,
+    _tr,
+    features_to_sufficient_stats,
+    frechet_from_moments,
+    moments_from_sufficient_stats,
+)
 
 
 def _plug_in_fid(gen: torch.Tensor, real: torch.Tensor, ridge: float = 1e-6) -> float:
@@ -169,26 +175,37 @@ def test_fid_callback_logs_finite(latent_module):
 
 
 def test_fid_callback_same_seed_reproduces(latent_module):
-    """Same model + same seed -> identical synth features each epoch (fixed samples).
+    """Same model + same seed -> identical synth moments each pass (fixed samples).
 
-    The re-seeded generation noise makes the synthetic arm a deterministic
-    function of the model: two passes over the same (frozen) module produce
-    bit-identical per-plane features. (The training RNG is intentionally out of
-    scope here — only the model + the callback's seed must match.)
+    The rank-strided re-seeded generation (``seed + i`` for ``i % world == rank``)
+    makes the synthetic arm a deterministic function of the model: two passes over
+    the same (frozen) module produce identical per-plane ``(mu, sigma, n)``.
+    Single-process (world=1) so every strided index is generated on this rank.
     """
     from manifold import AutoencoderKL
 
     vae = AutoencoderKL(scaling_factor=0.5)
     real_latents = torch.randn(6, 4, 4, 4, 4)
     cb = _make_fid_callback(latent_module, vae, real_latents, seed=42, ridge=1e-2)
-
-    first = cb._synth_features()
-    second = cb._synth_features()
-    assert len(first) == len(second) == 3
-    for a, b in zip(first, second):
-        assert torch.equal(a, b)
-    # The real arm is cached identically across calls too.
-    assert all(torch.equal(a, b) for a, b in zip(cb._real_features(), cb._real_features()))
+    cb._stage_eval_on_device()
+    try:
+        first = cb._synth_moments()
+        second = cb._synth_moments()
+        assert len(first) == len(second) == 3
+        for a, b in zip(first, second):
+            assert (a is None) == (b is None)
+            if a is not None:
+                assert torch.equal(a[0], b[0]), "synth mu differs across passes"
+                assert torch.equal(a[1], b[1]), "synth sigma differs across passes"
+                assert a[2] == b[2]
+        # The real arm moments are reproducible across calls too.
+        r1, r2 = cb._real_moments(), cb._real_moments()
+        for a, b in zip(r1, r2):
+            assert (a is None) == (b is None)
+            if a is not None:
+                assert torch.equal(a[0], b[0]), "real mu differs across passes"
+    finally:
+        cb._restore_eval_to_cpu()
 
 
 def test_fid_callback_no_ema_logs_val_fid(latent_module):
@@ -429,3 +446,44 @@ def test_radimagenet_features_preprocessing_minmax_then_mean_bgr():
     # Scale invariance: feeding 3x the input yields identical features (min-max
     # cancels the scale) — the property the old mean-only preprocessing lacked.
     assert torch.allclose(wrapped(x * 3.0), out, atol=1e-6)
+
+
+def test_frechet_from_moments_matches_raw():
+    """frechet_from_moments on raw per-set moments == frechet_distance_unbiased on the
+    raw feature matrices (the refactor preserves the math exactly)."""
+    torch.manual_seed(0)
+    gen = torch.randn(40, 64)
+    real = torch.randn(55, 64)
+    direct = frechet_distance_unbiased(gen, real)
+    from_moments = frechet_from_moments(
+        gen.mean(dim=0), real.mean(dim=0),
+        _cov_unbiased(gen), _cov_unbiased(real),
+        gen.shape[0], real.shape[0],
+    )
+    assert torch.allclose(direct, from_moments, atol=1e-4)
+
+
+def test_fid_sufficient_stats_exact():
+    """Distributed FID via sufficient statistics == the single-process FID on the full
+    feature set. Simulates a 2-rank all_reduce by SUMMING the per-rank
+    (sum_x, sum_xxT, n); the recovered global moments yield the exact global FID - no
+    feature-matrix gather needed (ADR-0025)."""
+    torch.manual_seed(1)
+    gen = torch.randn(40, 64)
+    real = torch.randn(55, 64)
+    direct = float(frechet_distance_unbiased(gen, real))
+
+    def global_moments(shards):
+        sxs, sxxs, ns = [], [], []
+        for f in shards:
+            sx, sxx, n = features_to_sufficient_stats(f)
+            sxs.append(sx); sxxs.append(sxx); ns.append(n)
+        sum_x = sum(sxs); sum_xxT = sum(sxxs); n = sum(ns)
+        mu, sigma, _ = moments_from_sufficient_stats(sum_x, sum_xxT, n)
+        return mu, sigma, n
+
+    # Split each set across 2 simulated ranks (non-overlapping); all_reduce == sum.
+    g_mu, g_sigma, g_n = global_moments([gen[:20], gen[20:]])
+    r_mu, r_sigma, r_n = global_moments([real[:30], real[30:]])
+    dist = float(frechet_from_moments(g_mu, r_mu, g_sigma, r_sigma, g_n, r_n))
+    assert dist == pytest.approx(direct, abs=1e-3), f"sufficient-stats FID {dist} != direct {direct}"

@@ -577,22 +577,19 @@ class PairedGRPOModule(spt.Module):
     # -- validation: deployed-Heun generation + reward (val/mean_reward) --------
 
     def validation_step(self, batch: PairedGRPOBatch, batch_idx: int):
-        """Generate from ``x_src`` via the deployed Heun, score → ``val/mean_reward``.
+        """Generate from ``x_src`` via the deployed Heun, score -> ``val/mean_reward``.
 
         The RL progress signal: generate via the deployed two-eval Heun (NOT the
         bridge SDE) so the reward reflects the deterministic distribution Paired JiT
         ships, then score with the frozen paired PatchGAN over ``cat([x_src, z_K])``.
+        Single sample per source at val (no G-expansion).
 
-        **Rank-0-only** (ADR-0016, M3): generation + reward scoring run on
-        ``is_global_zero`` only; the non-root ranks skip and must NOT block on an
-        NCCL collective here. ``val/mean_reward`` is therefore rank-0-shard-scoped
-        (no ``sync_dist`` — the rank-0 gate removes the cross-rank quantity), the
-        same convention as the noise→data GRPOModule. (The PSNR callback, attached
-        separately, runs on all ranks + all_gathers — that is the global selection
-        metric; this is the rank-0 progress signal.)
+        **All-rank under DDP** (ADR-0025): every rank generates + scores its own
+        ``DistributedSampler`` val shard and logs ``val/mean_reward`` with
+        ``sync_dist=True`` (even shard -> synced epoch mean is the global mean). The
+        prior rank-0-only gate (PR #115) is removed. The PSNR callback (attached
+        separately) is also all-rank + all-reduce - the global pixel-fidelity metric.
         """
-        if not self.trainer.is_global_zero:
-            return
         batch["batch_idx"] = batch_idx
         spacing_t, src_labels, tgt_labels, x_src, B = self._conditioning_tensors(batch)
         z_K = sample_paired_latent_flow(
@@ -603,7 +600,7 @@ class PairedGRPOModule(spt.Module):
         rewards = self._bound_reward(
             self.reward_model(torch.cat([x_src, z_K], dim=1)).float()
         )
-        self.log("val/mean_reward", rewards.mean(), on_epoch=True, prog_bar=True, batch_size=B)
+        self.log("val/mean_reward", rewards.mean(), on_epoch=True, prog_bar=True, batch_size=B, sync_dist=True)
         return {"mean_reward": rewards.mean()}
 
 

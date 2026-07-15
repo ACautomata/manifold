@@ -37,7 +37,7 @@ from ..data.datamodule import build_datamodule
 from ..metrics import FIDCallback
 from ..modules.grpo import GRPOModule
 from ..schedulers.scheduling_flow_match_grpo import FlowMatchGRPOScheduler
-from .trainer import build_trainer, is_multi_gpu
+from .trainer import build_trainer
 
 _log = logging.getLogger(__name__)
 
@@ -81,29 +81,17 @@ def _build_checkpoint(
     monitor_metric: str = "val/mean_reward",
     mode: str = "max",
     save_top_k: int = 1,
-    multi_gpu: bool = False,
 ) -> ModelCheckpoint:
     """Stock Lightning ``ModelCheckpoint`` monitoring the GRPO progress signal.
 
-    #58 selects on ``val/fid`` (mode ``min``) — the anti-reward-hacking screen (a
+    #58 selects on ``val/fid`` (mode ``min``) - the anti-reward-hacking screen (a
     reward-hacked checkpoint scores high reward but high FID, so it is not selected)
-    — when the FID callback is attached; #56 monitored ``val/mean_reward`` (mode
+    - when the FID callback is attached; #56 monitored ``val/mean_reward`` (mode
     ``max``) for the reward-only tracer. ``auto_insert_metric_name = False`` because
-    the metric key contains a ``/``. ``save_last=True`` for resume. Under DDP the
-    metric is rank-local, so monitoring is dropped (``save_last`` +
-    ``save_top_k=1`` keep the latest) — mirroring the JiT / reward checkpoint DDP
-    fallback.
+    the metric key contains a ``/``. ``save_last=True`` for resume. ``val/fid`` /
+    ``val/mean_reward`` are GLOBAL under DDP now (FID sufficient-stats + mean_reward
+    ``sync_dist``; ADR-0025), so the monitor stays on under multi-GPU.
     """
-    if multi_gpu:
-        return ModelCheckpoint(
-            dirpath=model_dir,
-            filename="grpo-{epoch:03d}",
-            save_last=True,
-            save_top_k=1,
-            save_on_train_epoch_end=True,
-            auto_insert_metric_name=False,
-            save_weights_only=False,
-        )
     return ModelCheckpoint(
         dirpath=model_dir,
         filename=f"grpo-{{epoch:03d}}-{{{monitor_metric}:.3f}}",
@@ -156,11 +144,6 @@ def run_grpo_training(
         ckpt_path: optional warm-start / resume checkpoint passed to ``fit``.
     """
     pl.seed_everything(seed, workers=True)
-    # Mirror build_trainer's DDP detection via the shared accessor: ``devices="auto"``
-    # on a multi-GPU host also selects DDP, so the rank-local FID monitor must be
-    # dropped there too (else the checkpoint would monitor a rank-0-only metric
-    # under DDP). ``is_multi_gpu`` reuses the ``is_available()``-guarded device count.
-    multi_gpu = is_multi_gpu(devices)
     fid_active = (
         inputs.vae is not None
         and inputs.real_latents is not None
@@ -173,7 +156,7 @@ def run_grpo_training(
         # monitor_metric back to val/mean_reward must get mode=max, not the FID min.
         mode = "min" if monitor_metric == "val/fid" else "max"
     ckpt = _build_checkpoint(
-        model_dir, monitor_metric=monitor_metric, mode=mode, save_top_k=save_top_k, multi_gpu=multi_gpu
+        model_dir, monitor_metric=monitor_metric, mode=mode, save_top_k=save_top_k
     )
     callbacks: list[pl.Callback] = [ckpt]
     if fid_active:
@@ -515,7 +498,7 @@ def _real_inputs(
             }
 
     # Cap the FID real-reference subset (mirrors the JiT cli): FIDCallback decodes the
-    # whole ``real_latents`` tensor in ONE _real_features() pass, so an unbounded val
+    # whole ``real_latents`` tensor in ONE _real_moments() pass, so an unbounded val
     # set would OOM the FID phase. Seeded prefix ⇒ the reference is fixed across runs.
     val_subset_size = int(opt(cfg, "val_subset_size", 32))
     g = torch.Generator().manual_seed(0)
