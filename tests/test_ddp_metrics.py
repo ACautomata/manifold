@@ -253,3 +253,55 @@ def test_codex116_val_dataloader_drop_last_avoids_padding_duplication():
     # The helper guards the tiny-val probe (len < world -> padded fallback), so it
     # does not crash on the 8-rank val_subset_size=4 probe.
     assert "len(dataset) < world" in helper_src, "helper missing the empty-shard probe guard"
+
+
+def test_codex116_r4_build_datamodule_defers_val_sampler_to_post_pg():
+    """codex #116 round-4 P2: ``build_datamodule`` is called pre-``fit`` (before the PG
+    is initialized), so a sampler baked in at construction sees
+    ``dist.is_initialized()==False`` and returns None -> Lightning re-wraps with the
+    PADDED default. The fix: ``_DedupValDataModule.val_dataloader`` is a Lightning hook
+    that calls ``_ddp_eval_sampler`` at fit-time (post-PG). Verified by source: the
+    hook (not the constructor) resolves the sampler."""
+    import inspect
+
+    from manifold.data.datamodule import _DedupValDataModule
+
+    hook_src = inspect.getsource(_DedupValDataModule.val_dataloader)
+    init_src = inspect.getsource(_DedupValDataModule.__init__)
+    assert "_ddp_eval_sampler(" in hook_src, "sampler must be resolved in val_dataloader (post-PG)"
+    assert "_ddp_eval_sampler" not in init_src, "sampler must NOT be baked in at construction (pre-PG)"
+
+
+def test_codex116_r4_dedup_val_module_val_dataloader_resolves_sampler(monkeypatch):
+    """The ``_DedupValDataModule.val_dataloader`` hook returns a loader whose sampler is
+    whatever ``_ddp_eval_sampler`` yields at call time (post-PG). With the PG
+    uninitialized (pre-fit), it returns None (Lightning's padded default); with a stubbed
+    PG it returns the non-padding sampler - so the deferred resolution works."""
+    from torch.utils.data import TensorDataset, DataLoader
+
+    from manifold.data.datamodule import _DedupValDataModule
+    from lightning.pytorch.overrides.distributed import UnrepeatedDistributedSampler
+
+    ds = TensorDataset(torch.arange(8))
+    train_loader = DataLoader(TensorDataset(torch.arange(4)), batch_size=2)
+    dm = _DedupValDataModule(val_dataset=ds, batch_size=2, num_workers=0, train=train_loader)
+    # PG not initialized -> _ddp_eval_sampler returns None -> sampler None.
+    import torch.distributed as dist
+
+    assert not dist.is_initialized()
+    loader = dm.val_dataloader()
+    # PG not initialized -> _ddp_eval_sampler returns None -> DataLoader defaults to
+    # SequentialSampler (single-process, pre-PG). Definitely NOT the non-padding
+    # distributed sampler (which needs a live PG).
+    assert not isinstance(loader.sampler, UnrepeatedDistributedSampler), (
+        "pre-PG val_dataloader should not build a distributed sampler"
+    )
+
+    # Stub a live PG (world=2, 8 >= 2) -> non-padding sampler returned.
+    monkeypatch.setattr(dist, "is_initialized", lambda: True)
+    monkeypatch.setattr(dist, "get_world_size", lambda: 2)
+    monkeypatch.setattr(dist, "get_rank", lambda: 0)
+    loader2 = dm.val_dataloader()
+    assert isinstance(loader2.sampler, UnrepeatedDistributedSampler), (
+        f"post-PG val_dataloader must use the non-padding sampler, got {type(loader2.sampler)}"
+    )
