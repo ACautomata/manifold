@@ -230,11 +230,11 @@ def test_paired_psnr_all_ranks(tmp_path):
 
 
 def test_codex116_val_dataloader_drop_last_avoids_padding_duplication():
-    """codex #116 P2 (Comment 4): under DDP Lightning's default val DistributedSampler
-    pads shards by REPEATING samples, which would double-count a repeated val volume
-    in the PSNR/SSIM all-reduce mean. The warm datamodules wire a non-padding
-    ``UnrepeatedDistributedSampler`` (via ``_ddp_eval_sampler``) so each rank's shard is
-    deduplicated. Verified by source inspection of the val_dataloader + helper."""
+    """codex #116 (Comment 4 + round-5): under DDP Lightning's default val
+    DistributedSampler pads shards by REPEATING samples, double-counting a val volume.
+    The fix is ``DistributedSampler(drop_last=True)`` - equal per-rank shard sizes (no
+    off-by-one batch counts -> no DDP per-forward deadlock) AND no duplicates (no
+    bias). Verified by source inspection of the val_dataloader + helper."""
     import inspect
 
     from manifold.data.warm_datamodule import (
@@ -249,10 +249,36 @@ def test_codex116_val_dataloader_drop_last_avoids_padding_duplication():
             f"{cls.__name__}.val_dataloader missing _ddp_eval_sampler (Comment 4)"
         )
     helper_src = inspect.getsource(_ddp_eval_sampler)
-    assert "UnrepeatedDistributedSampler" in helper_src, "helper must use the non-padding sampler"
-    # The helper guards the tiny-val probe (len < world -> padded fallback), so it
-    # does not crash on the 8-rank val_subset_size=4 probe.
-    assert "len(dataset) < world" in helper_src, "helper missing the empty-shard probe guard"
+    assert "DistributedSampler" in helper_src, "helper must use DistributedSampler"
+    assert "drop_last=True" in helper_src, "sampler must drop_last (no padding + equal batches)"
+    # round-5 Comment 1: no len<world *fallback branch* in the code (drop_last handles
+    # the tiny-val probe with empty shards). Check the code (after the docstring), not
+    # the prose which legitimately mentions the probe case.
+    code_src = helper_src.split('"""')[-1]  # body after the closing docstring quotes
+    assert "len(dataset) < world" not in code_src, "stale len<world fallback (drop_last handles it)"
+    assert "return None" not in code_src.replace("return None", "", 1) or "if len" not in code_src, (
+        "no len-based early-return fallback"
+    )
+
+
+def test_codex116_r5_eval_sampler_equal_batches_no_duplicates():
+    """codex #116 round-5: the eval sampler is equal-batch (no DDP deadlock) AND
+    non-duplicating (no bias). Empirically: 7 samples / 2 ranks -> 3 per rank (equal),
+    6 unique (no dup), vs the padded default's [0,0,1,2,3,4,5,6] = 1 duplicate."""
+    import torch
+    from torch.utils.data import TensorDataset
+    from torch.utils.data.distributed import DistributedSampler
+
+    ds = TensorDataset(torch.arange(7))
+    counts, seen = [], []
+    for rank in range(2):
+        s = DistributedSampler(ds, num_replicas=2, rank=rank, shuffle=False, drop_last=True)
+        idx = list(s)
+        counts.append(len(idx))
+        seen.extend(idx)
+    assert counts[0] == counts[1], f"unequal batch counts -> DDP deadlock: {counts}"
+    assert len(seen) == len(set(seen)), f"duplicates: {seen}"
+    assert len(seen) == 6  # floor(7/2) * 2
 
 
 def test_codex116_r4_build_datamodule_defers_val_sampler_to_post_pg():
@@ -278,9 +304,9 @@ def test_codex116_r4_dedup_val_module_val_dataloader_resolves_sampler(monkeypatc
     uninitialized (pre-fit), it returns None (Lightning's padded default); with a stubbed
     PG it returns the non-padding sampler - so the deferred resolution works."""
     from torch.utils.data import TensorDataset, DataLoader
+    from torch.utils.data.distributed import DistributedSampler
 
     from manifold.data.datamodule import _DedupValDataModule
-    from lightning.pytorch.overrides.distributed import UnrepeatedDistributedSampler
 
     ds = TensorDataset(torch.arange(8))
     train_loader = DataLoader(TensorDataset(torch.arange(4)), batch_size=2)
@@ -291,17 +317,17 @@ def test_codex116_r4_dedup_val_module_val_dataloader_resolves_sampler(monkeypatc
     assert not dist.is_initialized()
     loader = dm.val_dataloader()
     # PG not initialized -> _ddp_eval_sampler returns None -> DataLoader defaults to
-    # SequentialSampler (single-process, pre-PG). Definitely NOT the non-padding
-    # distributed sampler (which needs a live PG).
-    assert not isinstance(loader.sampler, UnrepeatedDistributedSampler), (
+    # SequentialSampler (single-process, pre-PG). Definitely NOT a distributed sampler.
+    assert not isinstance(loader.sampler, DistributedSampler), (
         "pre-PG val_dataloader should not build a distributed sampler"
     )
 
-    # Stub a live PG (world=2, 8 >= 2) -> non-padding sampler returned.
+    # Stub a live PG (world=2, 8 >= 2) -> non-padding drop_last sampler returned.
     monkeypatch.setattr(dist, "is_initialized", lambda: True)
     monkeypatch.setattr(dist, "get_world_size", lambda: 2)
     monkeypatch.setattr(dist, "get_rank", lambda: 0)
     loader2 = dm.val_dataloader()
-    assert isinstance(loader2.sampler, UnrepeatedDistributedSampler), (
-        f"post-PG val_dataloader must use the non-padding sampler, got {type(loader2.sampler)}"
+    assert isinstance(loader2.sampler, DistributedSampler), (
+        f"post-PG val_dataloader must use a distributed sampler, got {type(loader2.sampler)}"
     )
+    assert loader2.sampler.drop_last, "eval sampler must drop_last (no padding + equal batches)"

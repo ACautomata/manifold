@@ -46,30 +46,26 @@ _log = logging.getLogger(__name__)
 
 
 def _ddp_eval_sampler(dataset) -> object:
-    """A non-padding DDP eval sampler, or None to keep Lightning's default.
+    """A non-padding, equal-batch-count DDP eval sampler, or None for single-process.
 
-    Under DDP Lightning's default val ``DistributedSampler`` pads shards by
-    REPEATING samples (so a repeated val volume is scored twice -> biased
-    ``val/psnr`` / ``val/mean_reward``). ``UnrepeatedDistributedSampler``
-    distributes without repeating (off-by-one shard sizes, which the
-    ``(sum, count)`` / ``sync_dist`` reduces handle correctly). It subclasses
-    ``DistributedSampler``, so Lightning's ``_requires_distributed_sampler``
-    returns False and preserves it (does not re-wrap).
+    Under DDP Lightning's default val ``DistributedSampler`` pads shards by REPEATING
+    samples (so a repeated val volume is scored twice -> biased ``val/psnr`` /
+    ``val/mean_reward``; codex #116). The fix is ``DistributedSampler(drop_last=True)``:
+    each rank drops its tail to an equal shard (``floor(N / world)`` samples per rank)
+    instead of padding - so no samples are duplicated (no bias) AND every rank gets
+    the same number of batches (no DDP per-forward sync deadlock from off-by-one
+    batch counts - the hazard ``UnrepeatedDistributedSampler`` risks, per Lightning's
+    own warning). Handles ``len(dataset) < world_size`` cleanly (empty shards, no
+    crash - the tiny-val probe degrades to 0 scored samples rather than padding).
 
-    Falls back to None (Lightning's padded default) when the dataset is smaller
-    than ``world_size`` - ``UnrepeatedDistributedSampler`` asserts every rank gets
-    >=1 sample, so the tiny-val probe (``val_subset_size < world``) must use the
-    padded default (the probe is diagnostic-only; the <= world-1 duplicated samples
-    are negligible vs the production val set). (codex #116 P2)
+    Subclasses ``DistributedSampler``, so Lightning's ``_requires_distributed_sampler``
+    returns False and preserves it (does not re-wrap). (codex #116 round-5 P2)
     """
     if not (dist.is_available() and dist.is_initialized()):
         return None
-    world = dist.get_world_size()
-    if len(dataset) < world:
-        return None
-    from lightning.pytorch.overrides.distributed import UnrepeatedDistributedSampler
+    from torch.utils.data.distributed import DistributedSampler
 
-    return UnrepeatedDistributedSampler(dataset, shuffle=False)
+    return DistributedSampler(dataset, shuffle=False, drop_last=True)
 
 
 
