@@ -38,9 +38,40 @@ import torch.distributed as dist
 from lightning.pytorch import LightningDataModule
 from torch.utils.data import DataLoader, Dataset
 
+import torch.distributed as dist
+
 from .latent_pipeline import LatentPipeline, warm_latent_pipeline
 
 _log = logging.getLogger(__name__)
+
+
+def _ddp_eval_sampler(dataset) -> object:
+    """A non-padding DDP eval sampler, or None to keep Lightning's default.
+
+    Under DDP Lightning's default val ``DistributedSampler`` pads shards by
+    REPEATING samples (so a repeated val volume is scored twice -> biased
+    ``val/psnr`` / ``val/mean_reward``). ``UnrepeatedDistributedSampler``
+    distributes without repeating (off-by-one shard sizes, which the
+    ``(sum, count)`` / ``sync_dist`` reduces handle correctly). It subclasses
+    ``DistributedSampler``, so Lightning's ``_requires_distributed_sampler``
+    returns False and preserves it (does not re-wrap).
+
+    Falls back to None (Lightning's padded default) when the dataset is smaller
+    than ``world_size`` - ``UnrepeatedDistributedSampler`` asserts every rank gets
+    >=1 sample, so the tiny-val probe (``val_subset_size < world``) must use the
+    padded default (the probe is diagnostic-only; the <= world-1 duplicated samples
+    are negligible vs the production val set). (codex #116 P2)
+    """
+    if not (dist.is_available() and dist.is_initialized()):
+        return None
+    world = dist.get_world_size()
+    if len(dataset) < world:
+        return None
+    from lightning.pytorch.overrides.distributed import UnrepeatedDistributedSampler
+
+    return UnrepeatedDistributedSampler(dataset, shuffle=False)
+
+
 
 
 class _EmptyDataset(Dataset):
@@ -158,14 +189,9 @@ class LatentWarmDataModule(LightningDataModule):
                 "LatentWarmDataModule: no held-out val; reusing TRAIN as val "
                 "(allow_train_as_val=True, smoke only) - val/* metrics are NOT held-out."
             )
-            # drop_last=True: under DDP Lightning wraps this in a DistributedSampler
-            # (drop_last=False default -> pads shards by REPEATING samples), and a
-            # repeated validation volume is scored twice by the PSNR/SSIM callback,
-            # biasing val/psnr. drop_last drops the last partial batch on each rank
-            # instead of duplicating it - a cleaner eval shard (codex #116 P2).
             return DataLoader(
                 self._latent_ds, batch_size=self._batch_size, shuffle=False,
-                num_workers=self._num_workers, drop_last=True,
+                num_workers=self._num_workers, sampler=_ddp_eval_sampler(self._latent_ds),
             )
         return DataLoader(_EmptyDataset(), batch_size=self._batch_size, num_workers=0)
 
@@ -250,13 +276,9 @@ class PairedWarmDataModule(LightningDataModule):
         # empty loader yields 0 batches (validation is also disabled at the Trainer
         # when no held-out val split is configured).
         if self._val_latent_ds is not None:
-            # drop_last=True: under DDP the DistributedSampler pads shards by
-            # REPEATING samples (drop_last=False default), and a repeated val volume is
-            # scored twice by PairedPSNRSSIMCallback, biasing val/psnr / val/ssim.
-            # drop_last drops the partial shard instead of duplicating (codex #116 P2).
             return DataLoader(
                 self._val_latent_ds, batch_size=self._batch_size, shuffle=False,
-                num_workers=self._num_workers, drop_last=True,
+                num_workers=self._num_workers, sampler=_ddp_eval_sampler(self._val_latent_ds),
             )
         if self._allow_train_as_val:
             _log.warning(

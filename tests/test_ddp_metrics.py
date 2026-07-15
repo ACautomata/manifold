@@ -230,15 +230,26 @@ def test_paired_psnr_all_ranks(tmp_path):
 
 
 def test_codex116_val_dataloader_drop_last_avoids_padding_duplication():
-    """codex #116 P2 (Comment 4): under DDP Lightning wraps the val loader in a
-    DistributedSampler (drop_last=False default -> pads shards by REPEATING samples),
-    which would double-count a repeated val volume in the PSNR/SSIM all-reduce mean.
-    The warm datamodules set drop_last=True on the real val loaders so each rank's
-    shard is deduplicated. Verified by source inspection."""
+    """codex #116 P2 (Comment 4): under DDP Lightning's default val DistributedSampler
+    pads shards by REPEATING samples, which would double-count a repeated val volume
+    in the PSNR/SSIM all-reduce mean. The warm datamodules wire a non-padding
+    ``UnrepeatedDistributedSampler`` (via ``_ddp_eval_sampler``) so each rank's shard is
+    deduplicated. Verified by source inspection of the val_dataloader + helper."""
     import inspect
 
-    from manifold.data.warm_datamodule import LatentWarmDataModule, PairedWarmDataModule
+    from manifold.data.warm_datamodule import (
+        LatentWarmDataModule,
+        PairedWarmDataModule,
+        _ddp_eval_sampler,
+    )
 
     for cls in (LatentWarmDataModule, PairedWarmDataModule):
         src = inspect.getsource(cls.val_dataloader)
-        assert "drop_last=True" in src, f"{cls.__name__}.val_dataloader missing drop_last=True (Comment 4)"
+        assert "_ddp_eval_sampler(" in src, (
+            f"{cls.__name__}.val_dataloader missing _ddp_eval_sampler (Comment 4)"
+        )
+    helper_src = inspect.getsource(_ddp_eval_sampler)
+    assert "UnrepeatedDistributedSampler" in helper_src, "helper must use the non-padding sampler"
+    # The helper guards the tiny-val probe (len < world -> padded fallback), so it
+    # does not crash on the 8-rank val_subset_size=4 probe.
+    assert "len(dataset) < world" in helper_src, "helper missing the empty-shard probe guard"

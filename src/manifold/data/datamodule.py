@@ -16,6 +16,7 @@ from lightning.pytorch import LightningDataModule
 from torch.utils.data import DataLoader
 
 from .base import MedicalDataset
+from .warm_datamodule import _ddp_eval_sampler
 
 _log = logging.getLogger(__name__)
 
@@ -60,7 +61,8 @@ def build_datamodule(
     else:
         val_source = val_dataset
     val_loader = DataLoader(
-        val_source, batch_size=batch_size, shuffle=False, num_workers=num_workers
+        val_source, batch_size=batch_size, shuffle=False, num_workers=num_workers,
+        sampler=_ddp_eval_sampler(val_source),
     )
 
     return spt.data.DataModule(train=train_loader, val=val_loader)
