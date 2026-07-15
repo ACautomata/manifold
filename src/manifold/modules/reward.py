@@ -314,11 +314,13 @@ class RewardModule(spt.Module):
                     "clean-latent batch — route clean latents to fit."
                 )
             r_w, r_l = self._score_pair(batch["winner"], batch["loser"])
-            # sync_dist: under DDP, all-reduce so ModelCheckpoint sees a global metric
-            # (not rank 0's shard). pair_acc is a linear mean → synced averaging is exact.
-            self.log("val/pair_acc", (r_w > r_l).float().mean(), on_epoch=True, prog_bar=True, sync_dist=True)
-            self._val_r_w.append(r_w.detach().cpu())
-            self._val_r_l.append(r_l.detach().cpu())
+            valid = ~batch.get(
+                "_is_padding", torch.zeros(r_w.shape[0], dtype=torch.bool, device=r_w.device)
+            ).to(r_w.device).bool()
+            # Keep all-rank forward symmetry, but exclude padded duplicates from the
+            # metric sufficient statistics. Pair accuracy is logged once at epoch end.
+            self._val_r_w.append(r_w[valid].detach().cpu())
+            self._val_r_l.append(r_l[valid].detach().cpu())
             return {"r_w": r_w, "r_l": r_l}
         raise ValueError(f"unknown stage {stage!r}; use 'fit' or 'validate'.")
 
@@ -357,7 +359,9 @@ class RewardModule(spt.Module):
         if self._val_r_w:
             r_w = self._gather_global(torch.cat(self._val_r_w))
             r_l = self._gather_global(torch.cat(self._val_r_l))
-            self.log("val/roc_auc", reward_roc_auc(r_w, r_l))  # already global (gathered across ranks)
+            if r_w.numel():
+                self.log("val/pair_acc", (r_w > r_l).float().mean(), prog_bar=True)
+                self.log("val/roc_auc", reward_roc_auc(r_w, r_l))  # already global
         if self.val_probe is not None:
             winner, loser = self.val_probe
             probe_w = winner.to(self.device)

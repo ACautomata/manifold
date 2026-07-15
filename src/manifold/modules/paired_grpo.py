@@ -400,6 +400,23 @@ class PairedGRPOModule(spt.Module):
         self.kl_coef = float(kl_coef)
         self.reward_bound = str(reward_bound)
         self.reward_temp = float(reward_temp)
+        self._val_reward_sum = 0.0
+        self._val_reward_count = 0
+
+    def on_validation_epoch_start(self) -> None:
+        self._val_reward_sum = 0.0
+        self._val_reward_count = 0
+
+    def on_validation_epoch_end(self) -> None:
+        agg = torch.tensor(
+            [self._val_reward_sum, float(self._val_reward_count)],
+            device=self.device, dtype=torch.float32,
+        )
+        if torch.distributed.is_available() and torch.distributed.is_initialized():
+            torch.distributed.all_reduce(agg, op=torch.distributed.ReduceOp.SUM)
+        total, count = float(agg[0]), int(agg[1])
+        if count:
+            self.log("val/mean_reward", total / count, prog_bar=True, sync_dist=False)
 
     # -- frozen-reward lifecycle ---------------------------------------------
 
@@ -585,10 +602,10 @@ class PairedGRPOModule(spt.Module):
         Single sample per source at val (no G-expansion).
 
         **All-rank under DDP** (ADR-0025): every rank generates + scores its own
-        ``DistributedSampler`` val shard and logs ``val/mean_reward`` with
-        ``sync_dist=True`` (even shard -> synced epoch mean is the global mean). The
-        prior rank-0-only gate (PR #115) is removed. The PSNR callback (attached
-        separately) is also all-rank + all-reduce - the global pixel-fidelity metric.
+        padded ``DistributedSampler`` shard and accumulates only non-padding reward
+        sums/counts. Epoch end all-reduces ``(sum, count)`` for the exact global mean.
+        The prior rank-0-only gate (PR #115) is removed. The PSNR callback (attached
+        separately) uses the same pad-and-mask all-rank contract.
         """
         batch["batch_idx"] = batch_idx
         spacing_t, src_labels, tgt_labels, x_src, B = self._conditioning_tensors(batch)
@@ -600,8 +617,12 @@ class PairedGRPOModule(spt.Module):
         rewards = self._bound_reward(
             self.reward_model(torch.cat([x_src, z_K], dim=1)).float()
         )
-        self.log("val/mean_reward", rewards.mean(), on_epoch=True, prog_bar=True, batch_size=B, sync_dist=True)
-        return {"mean_reward": rewards.mean()}
+        valid = ~batch.get(
+            "_is_padding", torch.zeros(B, dtype=torch.bool, device=rewards.device)
+        ).to(rewards.device).bool()
+        self._val_reward_sum += float(rewards[valid].sum())
+        self._val_reward_count += int(valid.sum())
+        return {"mean_reward": rewards[valid].mean() if bool(valid.any()) else rewards.new_zeros(())}
 
 
 __all__ = [

@@ -53,16 +53,16 @@ def test_m3_grpo_validation_step_runs_all_ranks(tmp_path):
     )
 
 
-def test_m3_m4_grpo_validation_step_uses_sync_dist():
-    """``val/mean_reward`` is logged with ``sync_dist=True`` (the all-rank global
-    mean), and there is no ``is_global_zero`` gate in ``validation_step``."""
+def test_m3_m4_grpo_validation_step_uses_global_sum_count():
+    """GRPO excludes padding per step and all-reduces global sum/count at epoch end."""
     from manifold.modules import grpo
 
-    src = inspect.getsource(grpo.GRPOModule.validation_step)
-    assert "is_global_zero" not in src, "validation_step still has the rank-0 gate (M3)"
-    assert "sync_dist=True" in src, (
-        "val/mean_reward log missing sync_dist=True (all-rank global mean)"
-    )
+    step = inspect.getsource(grpo.GRPOModule.validation_step)
+    end = inspect.getsource(grpo.GRPOModule.on_validation_epoch_end)
+    assert "is_global_zero" not in step
+    assert "_is_padding" in step
+    assert "all_reduce" in end and "ReduceOp.SUM" in end
+    assert "self.log(" not in step
 
 
 def test_m4_grpo_validation_step_docs_all_rank_scope():

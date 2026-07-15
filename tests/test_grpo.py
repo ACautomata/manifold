@@ -865,3 +865,15 @@ def test_codex116_val_noise_seeded_by_rank_and_batch():
     assert "torch.Generator" in src, "validation_step must seed a Generator (not plain randn)"
     assert "get_rank" in src, "generator seed must offset by rank (Comment 5)"
     assert "manual_seed" in src
+
+
+def test_codex116_padding_mask_uses_global_sum_count():
+    """GRPO excludes padded rewards then logs one globally reduced sum/count ratio."""
+    import inspect
+    from manifold.modules import grpo
+    step = inspect.getsource(grpo.GRPOModule.validation_step)
+    end = inspect.getsource(grpo.GRPOModule.on_validation_epoch_end)
+    assert "_is_padding" in step
+    assert "_val_reward_sum" in step and "_val_reward_count" in step
+    assert "all_reduce" in end and "ReduceOp.SUM" in end
+    assert "self.log(" not in step

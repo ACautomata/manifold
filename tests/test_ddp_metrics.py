@@ -229,105 +229,89 @@ def test_paired_psnr_all_ranks(tmp_path):
     assert r1["val_ssim"] == pytest.approx(g_ssim, abs=1e-4)
 
 
-def test_codex116_val_dataloader_drop_last_avoids_padding_duplication():
-    """codex #116 (Comment 4 + round-5): under DDP Lightning's default val
-    DistributedSampler pads shards by REPEATING samples, double-counting a val volume.
-    The fix is ``DistributedSampler(drop_last=True)`` - equal per-rank shard sizes (no
-    off-by-one batch counts -> no DDP per-forward deadlock) AND no duplicates (no
-    bias). Verified by source inspection of the val_dataloader + helper."""
-    import inspect
-
-    from manifold.data.warm_datamodule import (
-        LatentWarmDataModule,
-        PairedWarmDataModule,
-        _ddp_eval_sampler,
-    )
-
-    for cls in (LatentWarmDataModule, PairedWarmDataModule):
-        src = inspect.getsource(cls.val_dataloader)
-        assert "_ddp_eval_sampler(" in src, (
-            f"{cls.__name__}.val_dataloader missing _ddp_eval_sampler (Comment 4)"
-        )
-    helper_src = inspect.getsource(_ddp_eval_sampler)
-    assert "DistributedSampler" in helper_src, "helper must use DistributedSampler"
-    assert "drop_last=True" in helper_src, "sampler must drop_last (no padding + equal batches)"
-    # round-5 Comment 1: no len<world *fallback branch* in the code (drop_last handles
-    # the tiny-val probe with empty shards). Check the code (after the docstring), not
-    # the prose which legitimately mentions the probe case.
-    code_src = helper_src.split('"""')[-1]  # body after the closing docstring quotes
-    assert "len(dataset) < world" not in code_src, "stale len<world fallback (drop_last handles it)"
-    assert "return None" not in code_src.replace("return None", "", 1) or "if len" not in code_src, (
-        "no len-based early-return fallback"
-    )
-
-
-def test_codex116_r5_eval_sampler_equal_batches_no_duplicates():
-    """codex #116 round-5: the eval sampler is equal-batch (no DDP deadlock) AND
-    non-duplicating (no bias). Empirically: 7 samples / 2 ranks -> 3 per rank (equal),
-    6 unique (no dup), vs the padded default's [0,0,1,2,3,4,5,6] = 1 duplicate."""
+def test_codex116_padding_sampler_equal_batches_no_data_loss():
+    """Pad-and-mask: equal sampler lengths, all real indices retained, padding tagged."""
     import torch
     from torch.utils.data import TensorDataset
-    from torch.utils.data.distributed import DistributedSampler
+    from manifold.data.warm_datamodule import _TaggedDistributedSampler, _ValidationDataset
 
-    ds = TensorDataset(torch.arange(7))
-    counts, seen = [], []
+    wrapped = _ValidationDataset(TensorDataset(torch.arange(5)))
+    tagged, counts = [], []
     for rank in range(2):
-        s = DistributedSampler(ds, num_replicas=2, rank=rank, shuffle=False, drop_last=True)
-        idx = list(s)
-        counts.append(len(idx))
-        seen.extend(idx)
-    assert counts[0] == counts[1], f"unequal batch counts -> DDP deadlock: {counts}"
-    assert len(seen) == len(set(seen)), f"duplicates: {seen}"
-    assert len(seen) == 6  # floor(7/2) * 2
+        sampler = _TaggedDistributedSampler(
+            wrapped, num_replicas=2, rank=rank, shuffle=False, drop_last=False
+        )
+        rows = list(sampler)
+        counts.append(len(rows))
+        tagged.extend(rows)
+    assert counts == [3, 3]  # equal forwards/batches on both ranks
+    real = [index for index, padding in tagged if not padding]
+    padding = [index for index, is_padding in tagged if is_padding]
+    assert sorted(real) == list(range(5))  # no real validation sample dropped
+    assert len(padding) == 1  # total_size - N
+
+
+def test_codex116_padding_sampler_handles_n_lt_world():
+    """N < world: every rank gets one equal-length forward; only N rows are real."""
+    import torch
+    from torch.utils.data import TensorDataset
+    from manifold.data.warm_datamodule import _TaggedDistributedSampler, _ValidationDataset
+
+    wrapped = _ValidationDataset(TensorDataset(torch.arange(4)))
+    tagged = []
+    for rank in range(8):
+        rows = list(_TaggedDistributedSampler(
+            wrapped, num_replicas=8, rank=rank, shuffle=False, drop_last=False
+        ))
+        assert len(rows) == 1
+        tagged.extend(rows)
+    assert sum(not padding for _, padding in tagged) == 4
+    assert sum(padding for _, padding in tagged) == 4
+
+
+def test_codex116_validation_wrapper_collates_padding_mask():
+    """Integer indexing marks real; tagged indexing marks padding; bool collates."""
+    import torch
+    from torch.utils.data import Dataset, DataLoader
+    from manifold.data.warm_datamodule import _ValidationDataset
+
+    class _DS(Dataset):
+        def __len__(self): return 2
+        def __getitem__(self, i): return {"x": torch.tensor(i)}
+
+    wrapped = _ValidationDataset(_DS())
+    assert wrapped[0]["_is_padding"] is False
+    assert wrapped[(0, True)]["_is_padding"] is True
+    batch = next(iter(DataLoader(wrapped, batch_size=2)))
+    assert batch["_is_padding"].dtype == torch.bool
+    assert not batch["_is_padding"].any()
 
 
 def test_codex116_r4_build_datamodule_defers_val_sampler_to_post_pg():
-    """codex #116 round-4 P2: ``build_datamodule`` is called pre-``fit`` (before the PG
-    is initialized), so a sampler baked in at construction sees
-    ``dist.is_initialized()==False`` and returns None -> Lightning re-wraps with the
-    PADDED default. The fix: ``_DedupValDataModule.val_dataloader`` is a Lightning hook
-    that calls ``_ddp_eval_sampler`` at fit-time (post-PG). Verified by source: the
-    hook (not the constructor) resolves the sampler."""
     import inspect
-
     from manifold.data.datamodule import _DedupValDataModule
-
     hook_src = inspect.getsource(_DedupValDataModule.val_dataloader)
     init_src = inspect.getsource(_DedupValDataModule.__init__)
-    assert "_ddp_eval_sampler(" in hook_src, "sampler must be resolved in val_dataloader (post-PG)"
-    assert "_ddp_eval_sampler" not in init_src, "sampler must NOT be baked in at construction (pre-PG)"
+    assert "_validation_loader(" in hook_src
+    assert "_validation_loader" not in init_src
 
 
 def test_codex116_r4_dedup_val_module_val_dataloader_resolves_sampler(monkeypatch):
-    """The ``_DedupValDataModule.val_dataloader`` hook returns a loader whose sampler is
-    whatever ``_ddp_eval_sampler`` yields at call time (post-PG). With the PG
-    uninitialized (pre-fit), it returns None (Lightning's padded default); with a stubbed
-    PG it returns the non-padding sampler - so the deferred resolution works."""
+    import torch
+    import torch.distributed as dist
     from torch.utils.data import TensorDataset, DataLoader
-    from torch.utils.data.distributed import DistributedSampler
-
     from manifold.data.datamodule import _DedupValDataModule
+    from manifold.data.warm_datamodule import _TaggedDistributedSampler
 
     ds = TensorDataset(torch.arange(8))
-    train_loader = DataLoader(TensorDataset(torch.arange(4)), batch_size=2)
-    dm = _DedupValDataModule(val_dataset=ds, batch_size=2, num_workers=0, train=train_loader)
-    # PG not initialized -> _ddp_eval_sampler returns None -> sampler None.
-    import torch.distributed as dist
-
-    assert not dist.is_initialized()
-    loader = dm.val_dataloader()
-    # PG not initialized -> _ddp_eval_sampler returns None -> DataLoader defaults to
-    # SequentialSampler (single-process, pre-PG). Definitely NOT a distributed sampler.
-    assert not isinstance(loader.sampler, DistributedSampler), (
-        "pre-PG val_dataloader should not build a distributed sampler"
+    dm = _DedupValDataModule(
+        val_dataset=ds, batch_size=2, num_workers=0,
+        train=DataLoader(TensorDataset(torch.arange(4)), batch_size=2),
     )
-
-    # Stub a live PG (world=2, 8 >= 2) -> non-padding drop_last sampler returned.
+    assert not isinstance(dm.val_dataloader().sampler, _TaggedDistributedSampler)
     monkeypatch.setattr(dist, "is_initialized", lambda: True)
     monkeypatch.setattr(dist, "get_world_size", lambda: 2)
     monkeypatch.setattr(dist, "get_rank", lambda: 0)
-    loader2 = dm.val_dataloader()
-    assert isinstance(loader2.sampler, DistributedSampler), (
-        f"post-PG val_dataloader must use a distributed sampler, got {type(loader2.sampler)}"
-    )
-    assert loader2.sampler.drop_last, "eval sampler must drop_last (no padding + equal batches)"
+    loader = dm.val_dataloader()
+    assert isinstance(loader.sampler, _TaggedDistributedSampler)
+    assert not loader.sampler.drop_last

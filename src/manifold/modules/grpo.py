@@ -354,6 +354,23 @@ class GRPOModule(spt.Module):
         self.kl_coef = float(kl_coef)
         self.reward_bound = str(reward_bound)
         self.reward_temp = float(reward_temp)
+        self._val_reward_sum = 0.0
+        self._val_reward_count = 0
+
+    def on_validation_epoch_start(self) -> None:
+        self._val_reward_sum = 0.0
+        self._val_reward_count = 0
+
+    def on_validation_epoch_end(self) -> None:
+        agg = torch.tensor(
+            [self._val_reward_sum, float(self._val_reward_count)],
+            device=self.device, dtype=torch.float32,
+        )
+        if torch.distributed.is_available() and torch.distributed.is_initialized():
+            torch.distributed.all_reduce(agg, op=torch.distributed.ReduceOp.SUM)
+        total, count = float(agg[0]), int(agg[1])
+        if count:
+            self.log("val/mean_reward", total / count, prog_bar=True, sync_dist=False)
 
     # -- frozen-reward lifecycle ---------------------------------------------
 
@@ -553,10 +570,11 @@ class GRPOModule(spt.Module):
         mixed-label val batch is generated under ``label[0]`` (single-modality v1).
 
         **All-rank under DDP** (ADR-0025): every rank generates + scores its own
-        ``DistributedSampler`` val shard and logs ``val/mean_reward`` with
-        ``sync_dist=True``. The val dataloader is evenly sharded, so the synced
-        epoch mean is the global mean. The prior rank-0-only gate (PR #115) is
-        removed; the rank-asymmetric early-return is gone, so no rank blocks.
+        padded ``DistributedSampler`` shard and accumulates only non-padding reward
+        sums/counts. Epoch end all-reduces ``(sum, count)`` for the exact global mean;
+        padded forwards keep rank symmetry but contribute zero metric weight. The prior
+        rank-0-only gate (PR #115) is removed; the rank-asymmetric early-return is gone,
+        so no rank blocks.
         """
         batch["batch_idx"] = batch_idx
         spacing_t, class_labels, B = self._conditioning_tensors(batch)
@@ -581,5 +599,9 @@ class GRPOModule(spt.Module):
         # The same bound the rollout applies (ADR-0015) — val/mean_reward is reported on
         # the bounded scale so it tracks the training signal (raw logit otherwise).
         rewards = self._bound_reward(self.reward_model(z_K).float())
-        self.log("val/mean_reward", rewards.mean(), on_epoch=True, prog_bar=True, batch_size=B, sync_dist=True)
-        return {"mean_reward": rewards.mean()}
+        valid = ~batch.get(
+            "_is_padding", torch.zeros(B, dtype=torch.bool, device=rewards.device)
+        ).to(rewards.device).bool()
+        self._val_reward_sum += float(rewards[valid].sum())
+        self._val_reward_count += int(valid.sum())
+        return {"mean_reward": rewards[valid].mean() if bool(valid.any()) else rewards.new_zeros(())}

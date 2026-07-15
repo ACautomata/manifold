@@ -169,7 +169,8 @@ class PairedPSNRSSIMCallback(pl.Callback):
     # -- per-batch metric ----------------------------------------------------
 
     def _batch_metrics(
-        self, pred_vol: torch.Tensor, tgt_vol: torch.Tensor
+        self, pred_vol: torch.Tensor, tgt_vol: torch.Tensor,
+        valid_mask: torch.Tensor | None = None,
     ) -> tuple[float, float, int]:
         """Per-sample full-volume 3D PSNR + SSIM over a decoded batch.
 
@@ -192,6 +193,8 @@ class PairedPSNRSSIMCallback(pl.Callback):
         ssim_sum = 0.0
         n = 0
         for i in range(pred_vol.shape[0]):
+            if valid_mask is not None and not bool(valid_mask[i]):
+                continue
             p = pred_vol[i : i + 1].float()
             t = tgt_vol[i : i + 1].float()
             data_range = float(t.max() - t.min())
@@ -258,7 +261,10 @@ class PairedPSNRSSIMCallback(pl.Callback):
         # PSNR/SSIM invariant to per-volume gain+offset — blind to exactly the
         # brightness/contrast errors a contrast-translation model must be penalized
         # for. ``data_range`` is read from the raw target inside ``_batch_metrics``.
-        psnr_sum, ssim_sum, n = self._batch_metrics(pred_vol, tgt_vol)
+        valid_mask = ~batch.get(
+            "_is_padding", torch.zeros(pred_vol.shape[0], dtype=torch.bool)
+        ).bool()
+        psnr_sum, ssim_sum, n = self._batch_metrics(pred_vol, tgt_vol, valid_mask)
         self._psnr_sum += psnr_sum
         self._ssim_sum += ssim_sum
         self._count += n

@@ -30,6 +30,7 @@ Two construction modes:
 from __future__ import annotations
 
 import logging
+import math
 import os
 from typing import Any
 
@@ -37,37 +38,75 @@ import torch
 import torch.distributed as dist
 from lightning.pytorch import LightningDataModule
 from torch.utils.data import DataLoader, Dataset
+from torch.utils.data.distributed import DistributedSampler
 
-import torch.distributed as dist
 
 from .latent_pipeline import LatentPipeline, warm_latent_pipeline
 
 _log = logging.getLogger(__name__)
 
 
-def _ddp_eval_sampler(dataset) -> object:
-    """A non-padding, equal-batch-count DDP eval sampler, or None for single-process.
+class _ValidationDataset(Dataset):
+    """Validation-only wrapper that adds a reserved ``_is_padding`` sample flag."""
 
-    Under DDP Lightning's default val ``DistributedSampler`` pads shards by REPEATING
-    samples (so a repeated val volume is scored twice -> biased ``val/psnr`` /
-    ``val/mean_reward``; codex #116). The fix is ``DistributedSampler(drop_last=True)``:
-    each rank drops its tail to an equal shard (``floor(N / world)`` samples per rank)
-    instead of padding - so no samples are duplicated (no bias) AND every rank gets
-    the same number of batches (no DDP per-forward sync deadlock from off-by-one
-    batch counts - the hazard ``UnrepeatedDistributedSampler`` risks, per Lightning's
-    own warning). Handles ``len(dataset) < world_size`` cleanly (empty shards, no
-    crash - the tiny-val probe degrades to 0 scored samples rather than padding).
+    def __init__(self, dataset):
+        self.dataset = dataset
 
-    Subclasses ``DistributedSampler``, so Lightning's ``_requires_distributed_sampler``
-    returns False and preserves it (does not re-wrap). (codex #116 round-5 P2)
-    """
+    def __len__(self) -> int:
+        return len(self.dataset)
+
+    def __getitem__(self, index):
+        is_padding = False
+        if isinstance(index, tuple):
+            index, is_padding = index
+        item = self.dataset[index]
+        if not isinstance(item, dict):
+            raise TypeError("validation datasets must yield mappings for padding masks")
+        if "_is_padding" in item:
+            raise KeyError("validation sample uses reserved key '_is_padding'")
+        return {**item, "_is_padding": bool(is_padding)}
+
+
+class _TaggedDistributedSampler(DistributedSampler):
+    """Default equal-length DDP padding, with padded rows tagged for metric masking."""
+
+    def __iter__(self):
+        n = len(self.dataset)
+        if self.shuffle:
+            g = torch.Generator()
+            g.manual_seed(self.seed + self.epoch)
+            real = torch.randperm(n, generator=g).tolist()
+        else:
+            real = list(range(n))
+        tagged = [(index, False) for index in real]
+        padding_size = self.total_size - n
+        if padding_size:
+            if n == 0:
+                return iter([])
+            repeated = (real * math.ceil(padding_size / n))[:padding_size]
+            tagged.extend((index, True) for index in repeated)
+        tagged = tagged[self.rank : self.total_size : self.num_replicas]
+        if len(tagged) != self.num_samples:
+            raise AssertionError("tagged sampler produced the wrong per-rank length")
+        return iter(tagged)
+
+
+def _validation_dataset_and_sampler(dataset):
+    """Wrap validation samples and attach an equal-length tagged sampler post-PG."""
+    wrapped = _ValidationDataset(dataset)
     if not (dist.is_available() and dist.is_initialized()):
-        return None
-    from torch.utils.data.distributed import DistributedSampler
-
-    return DistributedSampler(dataset, shuffle=False, drop_last=True)
+        return wrapped, None
+    return wrapped, _TaggedDistributedSampler(wrapped, shuffle=False, drop_last=False)
 
 
+
+
+def _validation_loader(dataset, *, batch_size: int, num_workers: int) -> DataLoader:
+    wrapped, sampler = _validation_dataset_and_sampler(dataset)
+    return DataLoader(
+        wrapped, batch_size=batch_size, shuffle=False, num_workers=num_workers,
+        sampler=sampler,
+    )
 
 
 class _EmptyDataset(Dataset):
@@ -185,9 +224,8 @@ class LatentWarmDataModule(LightningDataModule):
                 "LatentWarmDataModule: no held-out val; reusing TRAIN as val "
                 "(allow_train_as_val=True, smoke only) - val/* metrics are NOT held-out."
             )
-            return DataLoader(
-                self._latent_ds, batch_size=self._batch_size, shuffle=False,
-                num_workers=self._num_workers, sampler=_ddp_eval_sampler(self._latent_ds),
+            return _validation_loader(
+                self._latent_ds, batch_size=self._batch_size, num_workers=self._num_workers
             )
         return DataLoader(_EmptyDataset(), batch_size=self._batch_size, num_workers=0)
 
@@ -272,16 +310,15 @@ class PairedWarmDataModule(LightningDataModule):
         # empty loader yields 0 batches (validation is also disabled at the Trainer
         # when no held-out val split is configured).
         if self._val_latent_ds is not None:
-            return DataLoader(
-                self._val_latent_ds, batch_size=self._batch_size, shuffle=False,
-                num_workers=self._num_workers, sampler=_ddp_eval_sampler(self._val_latent_ds),
+            return _validation_loader(
+                self._val_latent_ds, batch_size=self._batch_size, num_workers=self._num_workers
             )
         if self._allow_train_as_val:
             _log.warning(
                 "PairedWarmDataModule: no held-out val_latent_ds; reusing TRAIN as val "
                 "(allow_train_as_val=True, smoke only) - val/* metrics are NOT held-out."
             )
-            return DataLoader(
-                self._latent_ds, batch_size=self._batch_size, shuffle=False, num_workers=self._num_workers
+            return _validation_loader(
+                self._latent_ds, batch_size=self._batch_size, num_workers=self._num_workers
             )
         return DataLoader(_EmptyDataset(), batch_size=self._batch_size, num_workers=0)

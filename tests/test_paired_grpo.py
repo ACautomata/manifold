@@ -2296,3 +2296,15 @@ def test_main_probe_n_samples_cli_override(tmp_path):
     assert captured.get("n_probe") == 32, (
         f"--probe-n-samples 32 must flow into _run_probe, got {captured.get('n_probe')}"
     )
+
+
+def test_codex116_padding_mask_uses_global_sum_count_paired():
+    """Paired GRPO excludes padded rewards and reduces sum/count at epoch end."""
+    import inspect
+    from manifold.modules import paired_grpo
+    step = inspect.getsource(paired_grpo.PairedGRPOModule.validation_step)
+    end = inspect.getsource(paired_grpo.PairedGRPOModule.on_validation_epoch_end)
+    assert "_is_padding" in step
+    assert "_val_reward_sum" in step and "_val_reward_count" in step
+    assert "all_reduce" in end and "ReduceOp.SUM" in end
+    assert "self.log(" not in step

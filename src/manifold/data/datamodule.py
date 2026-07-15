@@ -16,7 +16,7 @@ from lightning.pytorch import LightningDataModule
 from torch.utils.data import DataLoader
 
 from .base import MedicalDataset
-from .warm_datamodule import _ddp_eval_sampler
+from .warm_datamodule import _validation_loader
 
 _log = logging.getLogger(__name__)
 
@@ -41,14 +41,10 @@ class _DedupValDataModule(spt.data.DataModule):
         self._val_num_workers = num_workers
 
     def val_dataloader(self) -> DataLoader:
-        return DataLoader(
+        return _validation_loader(
             self._val_dataset,
             batch_size=self._val_batch_size,
-            shuffle=False,
             num_workers=self._val_num_workers,
-            # post-PG: returns the non-padding sampler (or None -> Lightning's padded
-            # default for the tiny-val probe where len < world).
-            sampler=_ddp_eval_sampler(self._val_dataset),
         )
 
 

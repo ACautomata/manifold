@@ -508,3 +508,18 @@ def test_rollout_deterministic_given_x_src_no_reseed():
     import inspect
 
     assert "seed" not in inspect.signature(PairedPSNRSSIMCallback.__init__).parameters
+
+
+def test_padding_mask_excludes_repeated_psnr_rows(identity_vae):
+    """Padded rows still decode but do not contribute to PSNR/SSIM sum or count."""
+    cb = _make_callback(_FakePipeline(_FakeUNet(), identity_vae))
+    pred = torch.stack([torch.zeros(1, 8, 8, 8), torch.ones(1, 8, 8, 8)])
+    tgt = torch.stack([
+        torch.linspace(0, 1, 512).reshape(1, 8, 8, 8),
+        torch.linspace(0, 1, 512).reshape(1, 8, 8, 8),
+    ])
+    full = cb._batch_metrics(pred, tgt)
+    masked = cb._batch_metrics(pred, tgt, torch.tensor([True, False]))
+    first = cb._batch_metrics(pred[:1], tgt[:1])
+    assert full[2] == 2
+    assert masked == pytest.approx(first)
