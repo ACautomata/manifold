@@ -26,9 +26,10 @@ For each validation batch the callback:
    frozen VAE (staged to the UNet's device) — pixel space, not latent space
    (the VAE owns ``scaling_factor`` and undoes the scaling internally,
    ADR-0003);
-3. computes full-volume 3D PSNR and SSIM per sample with
-   ``data_range = target[max − min]`` and averages over the val set; logs
-   ``val/psnr`` and ``val/ssim``.
+3. computes **brain-masked** 3D PSNR and SSIM per sample (skull-stripped BraTS
+   background excluded — see :meth:`_batch_metrics`) with
+   ``data_range = target[max − min]`` clamped to the ``[0, 1]`` VAE convention,
+   and averages over the val set; logs ``val/psnr`` and ``val/ssim``.
 
 Best-checkpoint selection is configurable on either metric via a stock
 Lightning ``ModelCheckpoint(monitor="val/psnr" | "val/ssim")`` — the same pattern
@@ -166,28 +167,52 @@ class PairedPSNRSSIMCallback(pl.Callback):
         vae_device = next(self.pipeline.vae.parameters()).device
         return self.pipeline.vae.decode(latents.float().to(vae_device))
 
+    def _masked_ssim(self, p: torch.Tensor, t: torch.Tensor, brain: torch.Tensor, data_range: float) -> float:
+        """3D SSIM restricted to the brain (skull-stripped background excluded).
+
+        torchmetrics' ``structural_similarity_index_measure`` has no mask arg, so
+        the background is excluded by multiplying **both** pred and tgt by the
+        brain mask before SSIM: background voxels become 0 in both, so their
+        (background↔brain) local windows collapse to the identical-constant SSIM
+        of 1 while the brain structure drives the score below 1 only when pred
+        mismatches. ``tgt == tgt`` still gives exactly 1.0, preserving the
+        torchmetrics identity contract the tests pin. This is materially more
+        background-robust than a full-volume SSIM (where ~80–90% zero voxels
+        inflate the score), though its absolute value is not the classical
+        full-volume SSIM.
+        """
+        m = brain.to(p.dtype)
+        ssim = float(structural_similarity_index_measure(p * m, t * m, data_range=data_range))
+        # Masked-window means can push SSIM marginally outside [0, 1]; clamp to the
+        # bounded range the SSIM contract (and downstream tests/monitors) assume.
+        return min(max(ssim, 0.0), 1.0)
+
     # -- per-batch metric ----------------------------------------------------
 
     def _batch_metrics(
         self, pred_vol: torch.Tensor, tgt_vol: torch.Tensor,
         valid_mask: torch.Tensor | None = None,
     ) -> tuple[float, float, int]:
-        """Per-sample full-volume 3D PSNR + SSIM over a decoded batch.
+        """Per-sample **brain-masked** 3D PSNR + SSIM over a decoded batch.
 
         Inputs are the RAW float32 VAE decodes of pred and tgt (C2): both passed
         through the same frozen VAE, so they share one image space and the
         comparison is true pixel fidelity — per-volume gain/offset/contrast errors
-        are visible. ``data_range`` is the raw target's ``[max − min]`` (standard
-        for float medical data with no fixed intensity ceiling). PSNR is
-        ``10·log10(data_range² / mse)``. SSIM uses torchmetrics'
-        :func:`structural_similarity_index_measure` (true **3D SSIM** on the
-        ``[1,C,D,H,W]`` volume — ``is_3d`` → ``_gaussian_kernel_3d`` +
-        ``F.conv3d`` with 3D reflection padding).
+        are visible. BraTS is skull-stripped (~80–90% background zeros), so both
+        metrics are computed over the **brain mask** (``tgt > 0``) rather than the
+        full volume — otherwise the trivially-matched background dominates MSE and
+        inflates the score toward the copy-src ceiling (~23.8 dB full-volume).
+        ``data_range`` is the raw target's ``[max − min]`` (computed over the full
+        volume so the masked metric stays comparable), clamped to ``>= 1.0`` to
+        match the VAE's ``[0, 1]`` intensity convention (BraTS MR percentile
+        normalization is ``clip=False`` so the bright tail can exceed 1.0). PSNR is
+        ``10·log10(data_range² / mse_brain)``; SSIM is the brain-masked variant in
+        :meth:`_masked_ssim`.
 
-        Samples with a degenerate target (zero data range) are skipped —
-        ``data_range <= 0`` means a constant target where PSNR/SSIM are
-        undefined. Returns ``(psnr_sum, ssim_sum, n_valid)``; the caller keeps a
-        running sum + count to average over the whole val set.
+        Samples with a degenerate target (zero data range, or an empty brain mask)
+        are skipped — PSNR/SSIM are undefined there. Returns ``(psnr_sum,
+        ssim_sum, n_valid)``; the caller keeps a running sum + count to average
+        over the whole val set.
         """
         psnr_sum = 0.0
         ssim_sum = 0.0
@@ -197,14 +222,18 @@ class PairedPSNRSSIMCallback(pl.Callback):
                 continue
             p = pred_vol[i : i + 1].float()
             t = tgt_vol[i : i + 1].float()
-            data_range = float(t.max() - t.min())
+            data_range = max(float(t.max() - t.min()), 1.0)  # fix #3: clamp to [0,1] VAE convention
             if data_range <= 0.0:
                 continue  # constant target — PSNR/SSIM undefined
-            mse = float((p - t).pow(2).mean())
-            # Bit-exact pred == tgt → mse == 0 → PSNR is +inf. Cap at 100 dB and
-            # SSIM = 1.0 so the checkpoint monitor sees a finite value (guards
-            # math.log10(0) too). Affine errors (gain/offset) are NOT collapsed
-            # any more — they raise mse and lower PSNR, as a fidelity metric should.
+            brain = t > 0  # skull-stripped BraTS: restrict the metric to the brain
+            if not bool(brain.any()):
+                continue  # empty brain — masked MSE/SSIM undefined
+            mse = float((p - t).pow(2)[brain].mean())
+            # Bit-exact pred == tgt over the brain → mse == 0 → PSNR is +inf. Cap
+            # at 100 dB and SSIM = 1.0 so the checkpoint monitor sees a finite
+            # value (guards math.log10(0) too). Affine errors (gain/offset) are NOT
+            # collapsed any more — they raise mse and lower PSNR, as a fidelity
+            # metric should.
             if mse == 0.0:
                 psnr_sum += 100.0
                 ssim_sum += 1.0
@@ -212,7 +241,7 @@ class PairedPSNRSSIMCallback(pl.Callback):
                 continue
             psnr = 10.0 * math.log10((data_range * data_range) / mse)
             psnr_sum += min(psnr, 100.0)
-            ssim_sum += float(structural_similarity_index_measure(p, t, data_range=data_range))
+            ssim_sum += self._masked_ssim(p, t, brain, data_range)
             n += 1
         return psnr_sum, ssim_sum, n
 
@@ -260,7 +289,8 @@ class PairedPSNRSSIMCallback(pl.Callback):
         # side applied different affine maps (pred's own min/max vs tgt's), making
         # PSNR/SSIM invariant to per-volume gain+offset — blind to exactly the
         # brightness/contrast errors a contrast-translation model must be penalized
-        # for. ``data_range`` is read from the raw target inside ``_batch_metrics``.
+        # for. ``data_range`` is read from the raw target inside ``_batch_metrics``
+        # (clamped to >= 1.0, the [0, 1] VAE convention).
         valid_mask = ~batch.get(
             "_is_padding", torch.zeros(pred_vol.shape[0], dtype=torch.bool)
         ).bool()
