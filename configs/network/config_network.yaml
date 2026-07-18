@@ -53,6 +53,7 @@ diffusion_unet:
   include_bottom_region_index_input: false
   num_class_embeds: 128
   num_train_timesteps: 1000
+  paired_direction_offset: 0   # shift target contrast embedding rows; 0 = symmetric
 
 scheduler:
   num_train_timesteps: 1000

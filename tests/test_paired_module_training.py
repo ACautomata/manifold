@@ -399,6 +399,69 @@ def test_paired_labels_must_be_passed_together(paired_unet):
                     class_labels_src=torch.tensor([0]))
 
 
+def _paired_unet_with_offset(offset: int) -> UNet3DConditionModel:
+    """A paired UNet (in_channels = 2*C_latent) with a direction offset set."""
+    torch.manual_seed(0)
+    return UNet3DConditionModel(
+        in_channels=2 * C_LATENT,
+        out_channels=C_LATENT,
+        num_class_embeds=4,
+        include_spacing_input=True,
+        paired_direction_offset=offset,
+    )
+
+
+def test_paired_direction_offset_breaks_ab_symmetry():
+    """With paired_direction_offset>0, A->B and B->A use distinct target rows,
+    so their summed conditions differ (the A<->B symmetry is broken). With
+    offset=0 they are identical (the symmetric ADR-0014 behaviour)."""
+    def cond_rows(unet, src, tgt):
+        table = unet.unet.class_embedding.weight
+        off = unet.paired_direction_offset
+        return table[src] + table[tgt + off]
+
+    off0 = _paired_unet_with_offset(0)
+    off2 = _paired_unet_with_offset(2)
+    # offset 0: A->B (rows 0,1) == B->A (rows 1,0) - symmetric sum
+    assert torch.allclose(cond_rows(off0, 0, 1), cond_rows(off0, 1, 0), atol=1e-6)
+    # offset 2: A->B (rows 0,3) != B->A (rows 1,2) - symmetry broken
+    assert not torch.allclose(cond_rows(off2, 0, 1), cond_rows(off2, 1, 0), atol=1e-6)
+
+
+def test_paired_direction_offset_injects_shifted_target():
+    """A non-zero offset injects embed(src) + embed(tgt + offset): the paired call
+    with (src, tgt) equals a single-label call whose precomputed row is the
+    shifted sum (the offset-aware analogue of test_summed_label_conditioning_injected)."""
+    unet = _paired_unet_with_offset(offset=2)
+    torch.manual_seed(0)
+    sample = torch.randn(1, 2 * C_LATENT, 4, 4, 4)
+    timestep = torch.tensor([0.5])
+    spacing = torch.tensor([1.0, 1.0, 1.0])
+    src, tgt = torch.tensor([0]), torch.tensor([1])
+    table = unet.unet.class_embedding.weight
+    L = 3  # distinct from src(0) and tgt+offset(3) so the injection is non-trivial
+    with torch.no_grad():
+        table[L] = table[src.item()] + table[tgt.item() + unet.paired_direction_offset]
+    paired_out = unet(
+        sample=sample, timestep=timestep, spacing=spacing,
+        class_labels_src=src, class_labels_tgt=tgt,
+    )
+    single_out = unet(
+        sample=sample, timestep=timestep, spacing=spacing, class_labels=torch.tensor([L]),
+    )
+    assert torch.allclose(paired_out, single_out, atol=1e-6)
+
+
+def test_paired_direction_offset_out_of_range_raises():
+    """A shifted target row outside the embedding table fails fast (no silent wrap)."""
+    unet = _paired_unet_with_offset(offset=4)  # num_class_embeds=4, tgt=1 -> row 5
+    sample = torch.randn(1, 2 * C_LATENT, 4, 4, 4)
+    spacing = torch.tensor([1.0, 1.0, 1.0])
+    with pytest.raises(ValueError, match="out of range"):
+        unet(sample=sample, timestep=0.5, spacing=spacing,
+             class_labels_src=torch.tensor([0]), class_labels_tgt=torch.tensor([1]))
+
+
 def test_noise_to_data_path_unchanged(paired_unet):
     """A single ``class_labels`` (the noise→data signature) still forwards — the
     paired extension is purely additive and backward-compatible (ADR-0014 wiring)."""
