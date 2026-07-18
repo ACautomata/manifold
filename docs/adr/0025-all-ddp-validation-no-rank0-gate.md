@@ -78,6 +78,32 @@ decode (`sw_device='cpu'`, the knob the encode path already uses). Both keep the
 metric contract; only the decode strategy changes. The architecture keeps the decode
 strategy as the one swappable seam if a fallback is needed.
 
+## Diagnosing deadlock vs. slow validation (added 2026-07-18)
+
+The symptom triad **"processes `Sl` (sleeping) + log mtime stalled + no tqdm
+output"** is NOT sufficient to diagnose the ADR-0025 deadlock — it is also
+exactly what a **healthy, fully-loaded validation epoch** looks like under
+8-DDP: Lightning writes no tqdm progress to a redirected (non-tty) log during
+`validation_step`, and the host main threads sleep while the DCUs compute. On
+2026-07-18 an epoch-0 Paired JiT validation on sugon 8-DCU was mis-diagnosed as
+this deadlock from those symptoms alone; `hy-smi` then showed all 8 DCUs at
+**100% util** — the validation was simply slow (#116 fully-distributed +
+#122 brain-mask decode is ~8x the #115 rank-0-only workload), not deadlocked.
+
+**Before claiming this deadlock, confirm with a load-bearing signal:**
+
+- `hy-smi` (`/opt/hyhal/bin/hy-smi`, after `source /opt/dtk/env.sh`): DCU% near
+  0 with no progress = stalled (deadlock candidate); DCU% ~100% = computing
+  (slow, not deadlocked).
+- `SIGTERM` response: the 2026-07-14 stall ignored `SIGTERM` (required
+  `SIGKILL`); a merely-slow validation terminates on `SIGTERM`.
+- (Decisive, per the original 2026-07-14 diagnosis) `py-spy` on all ranks: an
+  identical frozen frame in `sliding_window_inference -> _conv_forward` =
+  deadlock.
+
+The "Sl + log stalled" triad alone is a known false positive — do not act on it
+(kill / restart / disable validation) without one of the above.
+
 ## Consequences
 
 - `val/psnr`, `val/ssim`, `val/fid`, `val/mean_reward` are global means under DDP
