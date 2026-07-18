@@ -123,8 +123,12 @@ def test_single_gpu_paired_matches_baseline(tmp_path):
         # Removing it restores the pre-#86 raw-decode values exactly. C1 (per-sample
         # labels) is a no-op on this fixture — _FakePairedDataset emits one
         # direction (0→1), so per-sample labels == the scalar broadcast.
-        "val/psnr": 14.228303,  # raw optimizer arm (EMA training removed; was 14.222277 slow-EMA)
-        "val/ssim": 0.096884,  # raw optimizer arm (EMA training removed; was 0.049186 slow-EMA)
+        # The brain-mask + data_range-clamp fix (skull-stripped background excluded
+        # from PSNR/SSIM; dr >= 1.0) moved the baseline to 15.495928 / 0.221532 —
+        # the masked metric now reflects brain-region fidelity, not the trivially
+        # matched background (was 14.228303 / 0.096884 full-volume).
+        "val/psnr": 15.495928,  # brain-masked, dr>=1.0 (raw optimizer arm; was 14.228303 full-volume)
+        "val/ssim": 0.221532,  # brain-masked (raw optimizer arm; was 0.096884 full-volume)
     }
     for key, expected in baseline.items():
         assert key in m, f"missing {key}"

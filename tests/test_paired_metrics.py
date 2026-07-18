@@ -141,11 +141,14 @@ def test_psnr_formula_pinned_on_known_pair(identity_vae):
     psnr_sum, ssim_sum, n = cb._batch_metrics(pred_vol, tgt_vol)
 
     assert n == 1
-    # PSNR matches a manual recompute on the same RAW decoded tensors.
+    # PSNR matches a manual recompute on the same RAW decoded tensors — but over
+    # the brain mask (skull-stripped background excluded), with data_range clamped
+    # to >= 1.0 (the [0, 1] VAE convention).
     p = pred_vol[0:1].float()
     t = tgt_vol[0:1].float()
-    dr = float(t.max() - t.min())
-    mse = float((p - t).pow(2).mean())
+    dr = max(float(t.max() - t.min()), 1.0)
+    brain = t > 0
+    mse = float((p - t).pow(2)[brain].mean())
     expected = 10.0 * math.log10(dr**2 / mse)
     assert psnr_sum == pytest.approx(expected, abs=1e-4)
     # SSIM is a finite float in [0, 1] (structural similarity is bounded).
@@ -171,8 +174,9 @@ def test_psnr_matches_direct_recompute(identity_vae):
     tgt_vol = cb._eval_decode(tgt)
     psnr_sum, _, n = cb._batch_metrics(pred_vol, tgt_vol)
 
-    data_range = float(tgt_vol.max() - tgt_vol.min())
-    mse = float((pred_vol - tgt_vol).pow(2).mean())
+    data_range = max(float(tgt_vol.max() - tgt_vol.min()), 1.0)
+    brain = tgt_vol > 0
+    mse = float((pred_vol - tgt_vol).pow(2)[brain].mean())
     expected = 10.0 * math.log10(data_range**2 / mse)
     assert n == 1
     assert psnr_sum == pytest.approx(expected, abs=1e-4)
@@ -229,6 +233,44 @@ def test_ssim_is_one_for_identical_volumes(identity_vae):
     data_range = float(vol.max() - vol.min())
     ssim_same = float(structural_similarity_index_measure(vol, vol, data_range=data_range))
     assert ssim_same == pytest.approx(1.0, abs=1e-5)
+
+
+def test_brain_mask_excludes_background(identity_vae):
+    """Brain-masked PSNR/SSIM ignores trivially-matched background (skull-stripped).
+
+    Builds a target that is 90% background (0) + a small brain block, with a pred
+    that is EXACT on the background but WRONG inside the brain. A full-volume
+    metric would report a high PSNR (the 90% exact background dominates MSE); the
+    brain-masked metric must report the *low* brain-region PSNR instead. Also pins
+    the data_range clamp: with a sub-1.0 brain range the effective range is 1.0.
+    """
+    cb = _make_callback(_FakePipeline(_FakeUNet(), identity_vae))
+    cb._stage_eval_on_device()
+
+    # 8³ volume: a 2³ brain block (8 voxels) inside, everything else background 0.
+    tgt = torch.zeros(1, C_LATENT, SPATIAL, SPATIAL, SPATIAL)
+    tgt[..., 3:5, 3:5, 3:5] = 0.5  # brain range [0, 0.5] (< 1.0 → clamped to 1.0)
+    pred = tgt.clone()
+    pred[..., 3:5, 3:5, 3:5] = 0.5 + 0.1  # brain off by +0.1, background exact
+
+    pred_vol = cb._eval_decode(pred)
+    tgt_vol = cb._eval_decode(tgt)
+    psnr_sum, ssim_sum, n = cb._batch_metrics(pred_vol, tgt_vol)
+    assert n == 1
+
+    # Independent brain-masked recompute: dr clamped to 1.0, mse over brain only.
+    brain = tgt_vol > 0
+    mse = float((pred_vol - tgt_vol).pow(2)[brain].mean())  # ≈ 0.01
+    expected = 10.0 * math.log10(1.0**2 / mse)  # ≈ 20 dB
+    assert psnr_sum == pytest.approx(expected, abs=1e-3)
+    # A full-volume PSNR (90% exact background) would be ~+10 dB higher; assert the
+    # masked metric is the lower, brain-driven value.
+    full_mse = float((pred_vol - tgt_vol).pow(2).mean())
+    full_psnr = 10.0 * math.log10(1.0**2 / full_mse)
+    assert psnr_sum < full_psnr - 5.0
+    # Background-masked SSIM stays in [0, 1] and reflects the brain mismatch (< 1).
+    assert 0.0 <= ssim_sum <= 1.0
+    assert ssim_sum < 1.0
 
 
 # ============================================================================
