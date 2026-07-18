@@ -91,6 +91,7 @@ class UNet3DConditionModel(ModelMixin):
         include_fc: bool = False,
         use_flash_attention: bool = False,
         num_train_timesteps: int = 1000,
+        paired_direction_offset: int = 0,
     ):
         """Construct the wrapper.
 
@@ -98,11 +99,19 @@ class UNet3DConditionModel(ModelMixin):
             num_train_timesteps: the MAISI UNet time-embedding scale; ``timestep``
                 passed to :meth:`forward` (a flow-time ``t ∈ [0, 1]``) is
                 multiplied by it before the backbone forward.
+            paired_direction_offset: optional integer added to the **target**
+                contrast label before its class-embedding lookup in the Paired JiT
+                summed-label path. The default ``0`` keeps ``cond = embed(src) +
+                embed(tgt)`` (the symmetric ADR-0014 behaviour, so A->B and B->A
+                receive an identical global condition). A non-zero offset shifts
+                the target rows so ``cond = embed(src) + embed(tgt + offset)`` is
+                no longer commutative in src<->tgt, breaking the A<->B symmetry.
             Remaining args are the MAISI diffusion UNet's construction config; the
             new knobs default to MAISI's values so the tiny-CPU fixtures are unchanged.
         """
         super().__init__()
         self.num_train_timesteps = int(num_train_timesteps)
+        self.paired_direction_offset = int(paired_direction_offset)
         # MAISI accepts a scalar (broadcast across levels) or a per-level
         # sequence for ``num_res_blocks``; pass a scalar through unchanged and
         # tuple a sequence (current behaviour).
@@ -172,7 +181,7 @@ class UNet3DConditionModel(ModelMixin):
             context: optional cross-attention context.
             class_labels_src / class_labels_tgt: the Paired JiT (src, tgt) contrast
                 pair ``[B]`` (long). When **both** are passed the wrapper injects
-                ``embed(src) + embed(tgt)`` at the backbone's class-embedding
+                ``embed(src) + embed(tgt + paired_direction_offset)`` at the backbone's class-embedding
                 injection point (ADR-0014); they must be passed together and require
                 ``num_class_embeds`` to be set.
         """
@@ -196,14 +205,31 @@ class UNet3DConditionModel(ModelMixin):
                 )
             # cond carries autograd history through the real nn.Embedding rows, so
             # gradients still reach class_embedding.weight despite the swap below.
-            cond = embedding(class_labels_src) + embedding(class_labels_tgt)
+            # The target rows are shifted by ``paired_direction_offset`` so a non-zero
+            # offset makes cond = embed(src) + embed(tgt + offset) non-commutative in
+            # src<->tgt (breaks the A<->B symmetry of the single-table sum).
+            tgt_rows = class_labels_tgt + self.paired_direction_offset
+            num_rows = embedding.weight.shape[0]
+            if int(self.paired_direction_offset) != 0:
+                lo = int(min(class_labels_src.min().item(), tgt_rows.min().item()))
+                hi = int(max(class_labels_src.max().item(), tgt_rows.max().item()))
+                if lo < 0 or hi >= num_rows:
+                    raise ValueError(
+                        f"paired label out of range after offset: src range "
+                        f"[{class_labels_src.min().item()}, {class_labels_src.max().item()}], "
+                        f"tgt+offset range [{tgt_rows.min().item()}, {tgt_rows.max().item()}] "
+                        f"(paired_direction_offset={self.paired_direction_offset}, "
+                        f"num_class_embeds={num_rows}); use a smaller offset or a larger "
+                        f"num_class_embeds."
+                    )
+            cond = embedding(class_labels_src) + embedding(tgt_rows)
             pinned = _PinnedClassEmbedding(cond)
             original = self.unet.class_embedding
             self.unet.class_embedding = pinned
             try:
                 # class_labels=src is a sentinel: the pinned module ignores it and
                 # returns cond, which the backbone adds to the time embedding —
-                # net effect emb += embed(src) + embed(tgt).
+                # net effect emb += embed(src) + embed(tgt + offset).
                 return self.unet(
                     x=sample,
                     timesteps=timesteps,

@@ -226,6 +226,10 @@ def test_compose_then_dotlist_override_retargets(tmp_path: Path) -> None:
     assert cfg.diffusion_unet.num_class_embeds == 4
     cfg = merge_overrides(cfg, {}, ["diffusion_unet.num_class_embeds=8"])
     assert cfg.diffusion_unet.num_class_embeds == 8
+    # paired_direction_offset flows through the diffusion_unet block to the wrapper
+    cfg = merge_overrides(cfg, {}, ["diffusion_unet.paired_direction_offset=4"])
+    unet = build_unet(cfg)
+    assert unet.config["paired_direction_offset"] == 4
 
 
 def test_unet_wrapper_accepts_widened_architectural_knobs(tmp_path: Path) -> None:
@@ -254,6 +258,7 @@ def test_unet_wrapper_accepts_widened_architectural_knobs(tmp_path: Path) -> Non
     assert list(unet.config["num_head_channels"]) == [0, 4]  # per-level accepted
     assert unet.config["resblock_updown"] is True
     assert unet.config["include_fc"] is True
+    assert unet.config["paired_direction_offset"] == 0  # default, dotlist-overridable
     out = unet(
         torch.randn(1, 4, 4, 4, 4),
         0.5,

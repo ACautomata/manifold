@@ -32,6 +32,18 @@ def _pipeline() -> PairedLatentFlowPipeline:
     return PairedLatentFlowPipeline(unet, AutoencoderKL(scaling_factor=0.5), FlowMatchHeunDiscreteScheduler())
 
 
+def _pipeline_with_offset(offset: int) -> PairedLatentFlowPipeline:
+    torch.manual_seed(0)
+    unet = UNet3DConditionModel(
+        in_channels=2 * C_LATENT,
+        out_channels=C_LATENT,
+        num_class_embeds=4,
+        include_spacing_input=True,
+        paired_direction_offset=offset,
+    )
+    return PairedLatentFlowPipeline(unet, AutoencoderKL(scaling_factor=0.5), FlowMatchHeunDiscreteScheduler())
+
+
 def test_save_from_pretrained_round_trips_doubled_in_channels(tmp_path):
     """The reloaded UNet keeps ``in_channels = 2·C_latent`` (ADR-0014 concat input)."""
     pipe = _pipeline()
@@ -66,6 +78,21 @@ def test_reloaded_sample_latent_matches(tmp_path):
     pipe.save_pretrained(str(tmp_path / "paired"))
     reloaded = PairedLatentFlowPipeline.from_pretrained(str(tmp_path / "paired"))
     after = reloaded.sample_latent(src, **args)
+    assert torch.equal(before, after)
+
+
+def test_paired_direction_offset_round_trips(tmp_path):
+    """A non-zero paired_direction_offset survives save/load and yields identical
+    inference (the offset is model config, not a transient runtime arg)."""
+    pipe = _pipeline_with_offset(offset=2)
+    src = torch.randn(LATENT_SHAPE)
+    args = dict(spacing=[1.0, 1.0, 1.0], src_label=0, tgt_label=1, num_inference_steps=3)
+    before = pipe(src, **args)
+
+    pipe.save_pretrained(str(tmp_path / "paired"))
+    reloaded = PairedLatentFlowPipeline.from_pretrained(str(tmp_path / "paired"))
+    assert reloaded.unet.config["paired_direction_offset"] == 2
+    after = reloaded(src, **args)
     assert torch.equal(before, after)
 
 
