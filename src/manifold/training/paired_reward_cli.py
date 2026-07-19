@@ -410,11 +410,16 @@ def _real_inputs(
         entries truly match this geometry (a different-geometry legacy cache is
         rejected there, not silently reused).
         """
-        from ..data.latent_dataset import _load_cache
+        from ..data.latent_dataset import _cache_path
 
         sids = vol_ds.unique_sample_ids()
+
         def _hits(tag):
-            return sum(1 for sid in sids if _load_cache(cache_dir, sid, tag) is not None)
+            # File-existence probe only (NOT _load_cache): _load_cache deserializes
+            # every latent tensor, which would add a full extra disk read per split
+            # before warm_cache reads them again (codex #148 P2). warm_cache's own
+            # _load_cache pass stays the single deserialization point.
+            return sum(1 for sid in sids if _cache_path(cache_dir, sid, tag).is_file())
         if _hits(cache_tag) == len(sids):
             return cache_tag
         if base_tag != cache_tag and _hits(base_tag) == len(sids):
