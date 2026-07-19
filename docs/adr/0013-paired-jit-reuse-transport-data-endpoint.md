@@ -1,5 +1,10 @@
 # Paired JiT — the same transport as noise→data JiT, with a data latent at the t=0 endpoint
 
+> **Status: Superseded by [ADR-0027](0027-controlnet-supervised-then-grpo-two-stage.md)
+> (+ [ADR-0026](0026-controlnet-via-monai-native-residual-interface.md)).** Paired MRI
+> generation no longer uses the src→tgt transport; `x_src` is a ControlNet control signal
+> on the noise→data transport instead. Kept as decision history.
+
 For paired src→tgt translation, Paired JiT reuses the existing
 `FlowMatchHeunDiscreteScheduler` transport `z = t·x + (1−t)·e` **verbatim**, passing
 the source latent as `e` — so `z_t = t·x_tgt + (1−t)·x_src` is a straight

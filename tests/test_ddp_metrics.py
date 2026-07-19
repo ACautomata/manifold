@@ -22,7 +22,7 @@ from __future__ import annotations
 import pytest
 import torch
 
-from tests.ddp import _unbalanced_val_worker, jit_ddp_worker, paired_psnr_ddp_worker, run_ddp_two_rank
+from tests.ddp import _unbalanced_val_worker, jit_ddp_worker, run_ddp_two_rank
 
 
 # -- M6: MeanMetric yields the true sample-weighted global mean -----------------
@@ -195,38 +195,6 @@ def test_l5_grpo_train_loss_has_sync_dist():
     # The train/loss log call carries sync_dist=True and batch_size=B.
     assert "sync_dist=True" in src, "GRPO train/loss missing sync_dist=True"
     assert 'self.log("train/loss"' in src
-
-
-# -- Paired PSNR: all-rank decode + all_reduce global mean (ADR-0025) ----------
-
-
-def test_paired_psnr_all_ranks(tmp_path):
-    """2-rank: BOTH ranks decode their own ``DistributedSampler`` val shard and
-    ``all_reduce`` the per-volume ``(psnr_sum, ssim_sum, count)`` for the global mean
-    (ADR-0025; the PR #115 rank-0-only revert is undone - the VAE ``num_splits``
-    config addresses the per-batch decode stall instead).
-
-    Asserts: (a) both ranks decoded (``count_local > 0`` on each); (b) ``val/psnr`` +
-    ``val/ssim`` logged on BOTH ranks to the SAME value; (c) that value is the GLOBAL
-    mean ``(r0_sum + r1_sum) / (r0_count + r1_count)``, not either rank's own shard
-    mean; (d) no deadlock (the spawn joined -> both ranks wrote a result).
-    """
-    results = run_ddp_two_rank(paired_psnr_ddp_worker, results_dir=str(tmp_path), args=(False,))
-    r0, r1 = results
-    # (a) Both ranks decode their own shard.
-    assert r0["count_local"] > 0, "rank 0 did not decode"
-    assert r1["count_local"] > 0, "rank 1 did not decode (all-rank gate not applied?)"
-    # (b) val/psnr + val/ssim logged on both ranks.
-    assert r0["val_psnr"] is not None and r0["val_ssim"] is not None, "rank 0 did not log"
-    assert r1["val_psnr"] is not None and r1["val_ssim"] is not None, "rank 1 did not log"
-    # (c) The logged value is the GLOBAL mean (all-reduced), identical on both ranks.
-    g_count = r0["count_local"] + r1["count_local"]
-    g_psnr = (r0["psnr_sum_local"] + r1["psnr_sum_local"]) / g_count
-    g_ssim = (r0["ssim_sum_local"] + r1["ssim_sum_local"]) / g_count
-    assert r0["val_psnr"] == pytest.approx(g_psnr, abs=1e-4), "rank 0 val/psnr != global mean"
-    assert r1["val_psnr"] == pytest.approx(g_psnr, abs=1e-4), "rank 1 val/psnr != global mean"
-    assert r0["val_ssim"] == pytest.approx(g_ssim, abs=1e-4)
-    assert r1["val_ssim"] == pytest.approx(g_ssim, abs=1e-4)
 
 
 def test_codex116_padding_sampler_equal_batches_no_data_loss():

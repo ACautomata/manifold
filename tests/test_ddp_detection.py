@@ -139,36 +139,11 @@ def test_jit_main_passes_devices_n_for_multi_gpu(monkeypatch, tmp_path):
     assert captured["devices"] == 2
 
 
-def test_paired_main_passes_devices_1_for_single_gpu(monkeypatch, tmp_path):
-    """Paired ``main(-g 1)`` passes ``devices=1`` (M2b parity with JiT)."""
-    from manifold.training import paired_cli as cli_mod
-
-    captured: dict = {}
-
-    def fake_build_trainer(*, devices, **kw):
-        captured["devices"] = devices
-        raise SystemExit("stop")
-
-    monkeypatch.setattr(cli_mod, "build_trainer", fake_build_trainer)
-    from tests.test_paired_training_cli import _write_paired_configs
-
-    env, train, net = _write_paired_configs(tmp_path)
-
-    def fake_provider(cfg, device):
-        from tests.test_paired_training_cli import _DataBundle, _FakePairedDataset
-        from manifold import AutoencoderKL
-        return _DataBundle(latent_ds=_FakePairedDataset(n=4), vae=AutoencoderKL(scaling_factor=0.5))
-
-    with pytest.raises(SystemExit):
-        cli_mod.main(["-e", env, "-c", train, "-t", net, "-g", "1"], data_provider=fake_provider)
-    assert captured["devices"] == 1
-
-
 def test_no_else_auto_fallback_remains():
     """grep sanity (M2): ``else "auto"`` is gone from both encoding CLIs."""
     import re
 
-    for path in ("src/manifold/training/cli.py", "src/manifold/training/paired_cli.py"):
+    for path in ("src/manifold/training/cli.py",):
         with open(path) as f:
             assert not re.search(r'else\s+"auto"', f.read()), f"else \"auto\" reintroduced in {path}"
 
@@ -194,16 +169,3 @@ def test_jit_checkpoint_monitor_set_on_single_gpu(tmp_path):
     # monitor_fid=True mirrors run_training's single-GPU enable_fid branch.
     ckpt = _build_checkpoint(str(tmp_path), monitor_fid=True, monitor_metric="val/fid")
     assert ckpt.monitor == "val/fid"
-
-
-def test_paired_checkpoint_monitor_always_set(tmp_path):
-    """The paired ``_build_checkpoint`` always monitors ``val/psnr`` (the PSNR/SSIM
-    callback is distributed under DDP - ADR-0016 amendment - so the monitor stays
-    on for every config, including multi-GPU). The pre-amendment rank-0-only
-    fallback (no monitor under DDP) is gone; the monitor metric is configurable."""
-    from manifold.training.paired_cli import _build_checkpoint
-
-    ckpt = _build_checkpoint(str(tmp_path), monitor_metric="val/psnr")
-    assert ckpt.monitor == "val/psnr"
-    ckpt2 = _build_checkpoint(str(tmp_path / "b"), monitor_metric="val/ssim")
-    assert ckpt2.monitor == "val/ssim"

@@ -34,10 +34,9 @@ from .paired_latent_dataset import (
     estimate_paired_scale_factor,
 )
 from .paired_reward_pairs import (
-    build_paired_bridge_noised_fakes,
     build_paired_reward_pairs,
     build_paired_reward_probe,
-    load_frozen_paired_generator,
+    load_frozen_controlnet_generator,
 )
 from .paired_volume_dataset import PairedNiftiVolumeDataset
 from .reward_pairs import (
@@ -70,7 +69,6 @@ __all__ = [
     "build_brats_pair_manifest",
     "build_datamodule",
     "build_encode_pipeline",
-    "build_paired_bridge_noised_fakes",
     "build_paired_reward_pairs",
     "build_paired_reward_probe",
     "build_volume_dataset",
@@ -83,8 +81,8 @@ __all__ = [
     "generate_reward_pairs",
     "label_provider_from_config",
     "load_brats_labels",
+    "load_frozen_controlnet_generator",
     "load_frozen_denoiser",
-    "load_frozen_paired_generator",
     "load_reward_pairs",
     "load_vae",
     "normalize_to_01",

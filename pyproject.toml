@@ -62,18 +62,16 @@ manifold-train-reward = "manifold.training.reward_cli:main"
 # The GRPO policy-post-training launcher (issue #55/#56): the frozen reward steers a
 # Granular-GRPO singular-branch update of the raw-arm JiT x0-denoiser (the policy).
 manifold-train-grpo = "manifold.training.grpo_cli:main"
-# The Paired JiT (src→tgt flow) launcher (issue #69): warms the paired BraTS
-# latent cache (Slice 2) and fits the paired Module + double-EMA + PSNR/SSIM.
-manifold-train-paired = "manifold.training.paired_cli:main"
 # The Paired-JiT reward model launcher (issue #93): real-vs-fake, condition-aware
 # PatchGAN reward (in_channels = 2·C_latent), offline-precomputed pairs -> fit.
-# The frozen paired generator loads from --native-dir (issue #94's paired export).
+# The frozen ControlNet generator loads from --native-dir (the supervised
+# ControlNet's noise→data export, ADR-0027/T7).
 manifold-train-paired-reward = "manifold.training.paired_reward_cli:main"
-# The Paired-JiT GRPO launcher (issue #103, G2RPO / ADR-0024): Granular-GRPO
-# singular-branch post-training of the Paired JiT UNet over a src→tgt Brownian
-# bridge against the frozen paired reward. The bridge is training-only; inference
-# reuses manifold-train-paired's deterministic Heun pipeline.
-manifold-train-paired-grpo = "manifold.training.paired_grpo_cli:main"
+# The ControlNet supervised launcher (issue #141 / ADR-0027 stage 1): a frozen JiT
+# base UNet + a trainable ControlNet over the paired MRI latent cache -> fit. The
+# frozen base loads from --native-dir (a JiT native export); the paired cache from
+# --latents-dir. Stage 2 (ControlNet GRPO) runs via manifold-train-grpo --grpo-mode 2.
+manifold-train-controlnet = "manifold.training.controlnet_cli:main"
 
 [project.urls]
 Homepage = "https://github.com/junran/manifold"

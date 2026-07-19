@@ -20,9 +20,20 @@ import torch
 from torch import nn
 from torch.utils.data import Dataset
 
-from manifold import FlowMatchGRPOScheduler, FlowMatchHeunDiscreteScheduler, RewardModel
+from manifold import (
+    ControlNet3DConditionModel,
+    FlowMatchGRPOScheduler,
+    FlowMatchHeunDiscreteScheduler,
+    RewardModel,
+    UNet3DConditionModel,
+)
 from manifold.modules import sample_latent_flow, singular_branch_rollout
-from manifold.modules.grpo import clipped_surrogate_loss, gaussian_log_prob, group_advantage
+from manifold.modules.grpo import (
+    GRPOModule,
+    clipped_surrogate_loss,
+    gaussian_log_prob,
+    group_advantage,
+)
 
 #: A tiny latent shape + RewardModel config that survives the PatchGAN strided
 #: convs on CPU (mirrors tests/test_reward.py).
@@ -877,3 +888,343 @@ def test_codex116_padding_mask_uses_global_sum_count():
     assert "_val_reward_sum" in step and "_val_reward_count" in step
     assert "all_reduce" in end and "ReduceOp.SUM" in end
     assert "self.log(" not in step
+
+
+# ============================================================================
+# Mode-2 (ControlNet on the frozen base) — ADR-0028 / issue #138
+# ============================================================================
+#
+# The two-mode unification: Mode-2 freezes the base UNet, trains the ControlNet
+# against the condition-aware reward, and reuses the SAME spine (transition
+# log-prob / KL anchor / advantage / clipped surrogate / singular-branch rollout).
+# The Mode-2 perturbed-step backward is autograd-safe ONLY because the base
+# wrapper's out-of-place residual forward (ADR-0026 corrected hazard) neutralizes
+# MONAI's in-place residual adds — these tests pin that contract.
+
+
+def _mode2_base() -> UNet3DConditionModel:
+    """A tiny base UNet with the zero-init output conv re-initialized.
+
+    MONAI MAISI zero-initializes the final output projection, so at init the base
+    output is identically zero and the ControlNet's residual-injection effect on the
+    output is masked. Re-initializing the all-zero ``out`` params (emulating a
+    pretrained base) lets the tests exercise the full base-output→ControlNet path.
+    """
+    torch.manual_seed(0)
+    base = UNet3DConditionModel(num_class_embeds=4, include_spacing_input=True)
+    for p in base.unet.out.parameters():
+        if p.abs().sum().item() == 0.0:
+            nn.init.normal_(p, std=0.01)
+    return base
+
+
+def _mode2_controlnet(base) -> ControlNet3DConditionModel:
+    torch.manual_seed(1)
+    cn = ControlNet3DConditionModel(num_class_embeds=4, include_spacing_input=True)
+    cn.load_base_encoder_weights(base)
+    return cn
+
+
+def _mode2_reward() -> RewardModel:
+    """Condition-aware reward (in_channels = 2·C_latent) scoring cat([x_src, z_K])."""
+    torch.manual_seed(0)
+    return RewardModel(spatial_dims=3, in_channels=8, channels=8, num_layers_d=1)
+
+
+def _mode2_batch() -> dict:
+    return {
+        "src_latent": torch.randn(2, 4, 16, 16, 8),
+        "spacing": torch.tensor([1.0, 1.0, 1.0]),
+        "src_label": torch.tensor([1, 0]),
+        "tgt_label": torch.tensor([2, 3]),
+    }
+
+
+def _mode2_module(base, controlnet, reward, *, reference=None, kl_coef=0.0, G=4):
+    return GRPOModule(
+        base,
+        reward,
+        FlowMatchGRPOScheduler(eta=0.5),
+        G=G,
+        eta_step_list=[0, 1],
+        num_steps=4,
+        latent_shape=(4, 16, 16, 8),
+        reference_policy=reference,
+        kl_coef=kl_coef,
+        controlnet=controlnet,
+        freeze_unet=True,
+        lr=1e-5,
+    )
+
+
+def _run_manual_training_step(module, batch):
+    """Drive one training_step outside a Trainer (no-op optimizer so grads persist)."""
+    opt = module.configure_optimizers()["optimizer"]
+
+    class _NoStepOpt:
+        def step(self):
+            pass
+
+        def zero_grad(self, set_to_none=True):
+            pass
+
+    module.optimizers = lambda: _NoStepOpt()
+    module.lr_schedulers = lambda: None
+    module.manual_backward = lambda loss: loss.backward()
+    module.log = lambda *a, **k: None
+    return module.training_step(dict(batch), 0), opt
+
+
+def test_mode2_requires_freeze_unet():
+    """Mode-2 (controlnet set) without freeze_unet=True is a construction error."""
+    base = _mode2_base()
+    cn = _mode2_controlnet(base)
+    with pytest.raises(ValueError, match="freeze_unet"):
+        GRPOModule(
+            base, _mode2_reward(), FlowMatchGRPOScheduler(eta=0.5),
+            controlnet=cn, freeze_unet=False, latent_shape=(4, 16, 16, 8),
+        )
+
+
+def test_mode2_freezes_base_and_optimizes_controlnet_only():
+    """Mode-2: base frozen + unregistered; optimizer wires ControlNet params only."""
+    base = _mode2_base()
+    cn = _mode2_controlnet(base)
+    module = _mode2_module(base, cn, _mode2_reward())
+
+    # Base frozen + held unregistered (off parameters/state_dict/checkpoint).
+    assert not any(p.requires_grad for p in base.parameters())
+    opt_param_ids = {id(p) for p in module.parameters()}
+    assert not ({id(p) for p in base.parameters()} & opt_param_ids)
+    assert {id(p) for p in cn.parameters()} <= opt_param_ids
+    assert not any(k.startswith("unet.") for k in module.state_dict())
+    assert any("controlnet" in k for k in module.state_dict())
+
+    # Optimizer wires ONLY the ControlNet params.
+    opt = module.configure_optimizers()["optimizer"]
+    opt_params = {p for g in opt.param_groups for p in g["params"]}
+    assert opt_params == set(cn.parameters())
+    assert not (opt_params & set(base.parameters()))
+
+
+def test_mode2_kl_anchor_is_base_plus_controlnet_pair():
+    """Mode-2 reference_policy is a (base, controlnet) pair (ADR-0015 anchor)."""
+    import copy
+
+    base = _mode2_base()
+    cn = _mode2_controlnet(base)
+    ref = (copy.deepcopy(base), copy.deepcopy(cn))
+    module = _mode2_module(base, cn, _mode2_reward(), reference=ref, kl_coef=0.1)
+    assert module.reference_unet is not None
+    assert module.reference_controlnet is not None
+    # Both frozen.
+    assert not any(p.requires_grad for p in module.reference_unet.parameters())
+    assert not any(p.requires_grad for p in module.reference_controlnet.parameters())
+
+
+def test_mode2_kl_zero_at_init_when_anchor_matches_policy():
+    """The Mode-2 KL term is ~0 at init when the anchor is a deepcopy of the policy."""
+    import copy
+
+    base = _mode2_base()
+    cn = _mode2_controlnet(base)
+    ref = (copy.deepcopy(base), copy.deepcopy(cn))
+    module = _mode2_module(base, cn, _mode2_reward(), reference=ref, kl_coef=0.1)
+
+    # A stored-step dict mimicking the rollout buffer at one perturbed step.
+    module.scheduler.set_timesteps(4, device="cpu")  # sde_step_mean needs the grid
+    z_k = torch.randn(2, 4, 16, 16, 8)
+    spacing_t = torch.tensor([1.0, 1.0, 1.0])
+    cond = (
+        torch.randn(2, 4, 16, 16, 8),
+        torch.tensor([1, 0]),
+        torch.tensor([2, 3]),
+    )
+    step = {"z_k": z_k, "t_k": 0.25, "t_next": 0.5, "z_kplus1": torch.randn(2, 4, 4, 16, 16, 8)}
+    x_src, src_labels, tgt_labels = cond
+    x0 = module._controlnet_forward(cn, z_k, step["t_k"], x_src, spacing_t, src_labels, tgt_labels)
+    mean_new, std_new = module.scheduler.sde_step_mean(x0, z_k, step["t_k"], step["t_next"])
+    kl = module._transition_kl(step, mean_new, std_new, spacing_t, tgt_labels, cond)
+    assert kl is not None
+    # Anchor == policy ⇒ μ_θ == μ_ref ⇒ KL ≈ 0.
+    assert torch.allclose(kl, torch.zeros_like(kl), atol=1e-5)
+
+
+def test_mode2_training_step_backward_through_perturbed_step():
+    """The Mode-2 inner-loop backward flows base-output→ControlNet (hazard neutralized).
+
+    This is the load-bearing Mode-2 test: the perturbed-step grad re-eval runs the
+    frozen base forward WITH ControlNet residuals injected; the backward must reach
+    the ControlNet WITHOUT the MONAI in-place-residual autograd error (the base
+    wrapper's out-of-place ``_forward_with_residuals`` is what makes this safe), and
+    must NOT touch the frozen base. Grad magnitudes may underflow to ~0 (the tiny
+    clip_range + zero-conv gating), so assert on grad PRESENCE for the ControlNet
+    and ABSENCE for the base.
+    """
+    base = _mode2_base()
+    cn = _mode2_controlnet(base)
+    module = _mode2_module(base, cn, _mode2_reward())
+    out, _ = _run_manual_training_step(module, _mode2_batch())
+
+    assert torch.isfinite(out["loss"])
+    n_cn_grad = sum(1 for p in cn.parameters() if p.grad is not None)
+    assert n_cn_grad > 0, "backward did not reach the ControlNet"
+    base_grads = [p.grad for p in base.parameters() if p.grad is not None]
+    assert all(g.abs().sum() == 0 for g in base_grads), "frozen base received grad"
+
+
+def test_mode2_optimizer_step_updates_controlnet_not_base():
+    """A real opt.step() moves ControlNet params; the frozen base never moves."""
+    base = _mode2_base()
+    cn = _mode2_controlnet(base)
+    module = _mode2_module(base, cn, _mode2_reward())
+    base_before = [p.detach().clone() for p in base.parameters()]
+
+    out, _ = _run_manual_training_step(module, _mode2_batch())
+    assert torch.isfinite(out["loss"])
+    # The frozen base never moved (no grad, never stepped).
+    for before, after in zip(base_before, base.parameters()):
+        assert torch.equal(before, after)
+
+
+def test_mode2_conditioning_reads_src_tgt_labels():
+    """Mode-2 _conditioning returns (x_src, src_labels, tgt_labels) as cond."""
+    base = _mode2_base()
+    cn = _mode2_controlnet(base)
+    module = _mode2_module(base, cn, _mode2_reward())
+    spacing_t, class_labels, B, cond = module._conditioning(_mode2_batch())
+    assert B == 2
+    assert cond is not None
+    x_src, src_labels, tgt_labels = cond
+    assert x_src.shape == (2, 4, 16, 16, 8)
+    # class_labels is the per-sample tgt_label (the base's own modality embedding).
+    assert torch.equal(class_labels, torch.tensor([2, 3]))
+    assert torch.equal(src_labels, torch.tensor([1, 0]))
+    assert torch.equal(tgt_labels, torch.tensor([2, 3]))
+
+
+# -- Mode-2 CLI entry point (#141): --grpo-mode 2 on the GRPO entry point --------
+
+
+class _ToyPairedCondDS(Dataset):
+    """A tiny PAIRED conditioning dataset for Mode-2 (train/val).
+
+    Emits ``{spacing, src_latent, src_label, tgt_label}`` — the ControlNet's control
+    signal + translation direction. GRPO samples the group noise; the paired batch
+    carries only the ControlNet condition (the rollout's stochastic input).
+    """
+
+    def __init__(self, n: int = 4):
+        self.n = n
+
+    def __len__(self):
+        return self.n
+
+    def __getitem__(self, i):
+        return {
+            "spacing": torch.tensor([1.0, 1.0, 1.0]),
+            "src_latent": torch.randn(4, 16, 16, 8),
+            "src_label": torch.tensor(1, dtype=torch.long),
+            "tgt_label": torch.tensor(2, dtype=torch.long),
+        }
+
+
+def _mode2_inputs():
+    """Mode-2 injection-seam bundle: frozen base + trainable ControlNet + reward + paired conditioning."""
+    from manifold.training.grpo_cli import GRPOInputs
+
+    base = _mode2_base()
+    cn = _mode2_controlnet(base)
+    return GRPOInputs(
+        policy=base,
+        reward_model=_mode2_reward(),
+        scheduler=FlowMatchGRPOScheduler(eta=0.5),
+        train_ds=_ToyPairedCondDS(),
+        val_ds=_ToyPairedCondDS(),
+        latent_shape=(4, 16, 16, 8),
+        controlnet=cn,
+    )
+
+
+def test_main_runs_end_to_end_mode2(tmp_path):
+    """main() ``--grpo-mode 2``: the ControlNet path runs end-to-end via the CLI seam.
+
+    The Mode-2 entry-point acceptance (#141): ``--grpo-mode 2`` freezes the base
+    UNet and trains the ControlNet against the condition-aware reward. The
+    data_provider injects a frozen base + trainable ControlNet + paired conditioning;
+    main wires ``controlnet`` / ``freeze_unet`` into GRPOModule (the --grpo-mode
+    flag's load-bearing path) and writes a checkpoint.
+    """
+    from manifold.training.grpo_cli import main as grpo_main
+
+    env, train, net = _write_tiny_configs(tmp_path)
+    rc = grpo_main(
+        ["-e", env, "-c", train, "-t", net, "-g", "1", "--max-epochs", "1",
+         "--grpo-mode", "2", "grpo_train.latent_shape=[4,16,16,8]"],
+        data_provider=lambda cfg, device: _mode2_inputs(),
+    )
+    assert rc == 0
+    ckpts = list(Path(str(tmp_path / "model")).glob("*.ckpt"))
+    assert any(p.name == "last.ckpt" for p in ckpts)
+
+
+def test_main_mode2_requires_controlnet(tmp_path):
+    """``--grpo-mode 2`` without a ControlNet (Mode-1 inputs) fails fast at main.
+
+    The Mode-2 guard: ``--grpo-mode 2`` requires ``GRPOInputs.controlnet`` (the data
+    provider / real inputs must supply it); Mode-1 inputs have none.
+    """
+    from manifold.training.grpo_cli import main as grpo_main
+
+    env, train, net = _write_tiny_configs(tmp_path)
+    with pytest.raises(ValueError, match="ControlNet"):
+        grpo_main(
+            ["-e", env, "-c", train, "-t", net, "-g", "1", "--grpo-mode", "2"],
+            data_provider=lambda cfg, device: _inputs(),  # Mode-1 inputs — no controlnet
+        )
+
+
+def test_run_grpo_training_mode2_skips_unconditional_fid(tmp_path):
+    """Regression (codex #142): Mode-2 skips the unconditional FID and monitors
+    ``val/mean_reward`` even when the FID triple is present.
+
+    The base UNet is frozen and only the ControlNet trains, but FIDCallback's
+    unconditional ``module.sample()`` rollout ignores the ControlNet — so val/fid
+    would be a CONSTANT frozen-base metric, independent of the learned policy.
+    ``run_grpo_training`` must not attach it in Mode-2.
+    """
+    from manifold.modules import GRPOModule
+    from manifold.training.grpo_cli import GRPOInputs, run_grpo_training
+
+    class _FakeVAE:  # FID triple present — would force fid_active=True in Mode-1
+        pass
+
+    base = _mode2_base()
+    cn = _mode2_controlnet(base)
+    inputs = GRPOInputs(
+        policy=base,
+        reward_model=_mode2_reward(),
+        scheduler=FlowMatchGRPOScheduler(eta=0.5),
+        train_ds=_ToyPairedCondDS(),
+        val_ds=_ToyPairedCondDS(),
+        latent_shape=(4, 16, 16, 8),
+        controlnet=cn,
+        vae=_FakeVAE(),
+        real_latents=torch.randn(2, 4, 16, 16, 8),
+        feature_net=object(),
+    )
+    module = GRPOModule(
+        base, inputs.reward_model, FlowMatchGRPOScheduler(eta=0.5),
+        G=2, eta_step_list=[0], num_steps=3, latent_shape=(4, 16, 16, 8),
+        controlnet=cn, freeze_unet=True, lr=1e-5,
+    )
+    trainer, ckpt = run_grpo_training(
+        module=module, inputs=inputs, model_dir=str(tmp_path),
+        max_epochs=1, devices=1, accelerator="cpu", batch_size=2,
+    )
+    from manifold.metrics import FIDCallback
+
+    assert not any(isinstance(c, FIDCallback) for c in trainer.callbacks), (
+        "FIDCallback attached in Mode-2 — a constant frozen-base metric"
+    )
+    assert ckpt.monitor == "val/mean_reward"

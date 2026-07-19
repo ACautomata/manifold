@@ -66,6 +66,7 @@ class GRPOInputs:
     val_ds: Any
     latent_shape: Sequence[int]
     reference_policy: Any = None  # the frozen KL anchor (ADR-0015); None ⇒ no KL (v1)
+    controlnet: Any = None  # Mode-2: the trainable ControlNet (ADR-0028); None ⇒ Mode-1
     vae: Any = None
     real_latents: Any = None
     feature_net: Any = None
@@ -148,6 +149,19 @@ def run_grpo_training(
         and inputs.real_latents is not None
         and (inputs.feature_net is not None or inputs.feature_net_factory is not None)
     )
+    # Mode-2 (ADR-0028): the base UNet is frozen and only the ControlNet trains, but
+    # the FID callback's unconditional `module.sample()` rollout ignores the
+    # ControlNet — so val/fid would be a CONSTANT frozen-base metric, independent of
+    # the learned policy. Selecting on it is meaningless; skip the unconditional FID
+    # in Mode-2 and select on the conditional reward (val/mean_reward).
+    mode2 = getattr(module, "controlnet", None) is not None
+    if mode2 and fid_active:
+        rank_zero_info(
+            "Mode-2 (ControlNet on frozen base): skipping unconditional FID — it "
+            "ignores the ControlNet (a constant frozen-base metric). Monitoring "
+            "val/mean_reward (the conditional-reward progress signal) instead."
+        )
+        fid_active = False
     if monitor_metric is None:
         monitor_metric = "val/fid" if fid_active else "val/mean_reward"
     if mode is None:
@@ -237,6 +251,16 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         "#59 launch gate; size G / eta_step_list / n_epochs before the full run.",
     )
     parser.add_argument(
+        "--grpo-mode",
+        type=int,
+        choices=(1, 2),
+        default=1,
+        help="GRPO mode (ADR-0028): 1 = train the UNet policy (default, unchanged); "
+        "2 = freeze the base UNet and train the ControlNet against the condition-aware "
+        "reward (requires the ControlNet + a paired conditioning batch carrying "
+        "src_latent / src_label / tgt_label).",
+    )
+    parser.add_argument(
         "--resume", default=None, help="resume a Lightning .ckpt (trainer.fit(ckpt_path=...))."
     )
     parser.add_argument(
@@ -296,6 +320,14 @@ def main(argv: list[str] | None = None, *, data_provider=None) -> int:
 
     gcfg = cfg.grpo_train
     latent_shape = tuple(int(s) for s in opt(gcfg, "latent_shape", [4, 64, 64, 32]))
+    # ADR-0028 two-mode wiring: Mode-2 requires the ControlNet (built by the data
+    # provider / real inputs); Mode-1 has none and is unchanged.
+    if args.grpo_mode == 2 and inputs.controlnet is None:
+        raise ValueError(
+            "--grpo-mode 2 requires a ControlNet — the data provider / real inputs must "
+            "supply GRPOInputs.controlnet (and a paired conditioning batch carrying "
+            "src_latent / src_label / tgt_label). Mode-1 has no ControlNet."
+        )
     module = GRPOModule(
         inputs.policy,
         inputs.reward_model,
@@ -311,6 +343,8 @@ def main(argv: list[str] | None = None, *, data_provider=None) -> int:
         kl_coef=float(opt(gcfg, "kl_coef", 0.0)),
         reward_bound=str(opt(gcfg, "reward_bound", "none")),
         reward_temp=float(opt(gcfg, "reward_temp", 8.0)),
+        controlnet=inputs.controlnet if args.grpo_mode == 2 else None,
+        freeze_unet=args.grpo_mode == 2,
     )
 
     if args.measure:

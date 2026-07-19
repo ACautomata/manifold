@@ -34,6 +34,11 @@ except ImportError:  # pragma: no cover
 
 from lightning.pytorch.callbacks import ModelCheckpoint
 
+try:
+    from lightning.pytorch.utilities.rank_zero import rank_zero_info
+except ImportError:  # pragma: no cover
+    from pytorch_lightning.utilities.rank_zero import rank_zero_info  # type: ignore
+
 from ..config import opt
 from ..data.datamodule import build_datamodule
 from ..models.reward_model import RewardModel
@@ -248,14 +253,67 @@ def main(argv: list[str] | None = None, *, data_provider=None) -> int:
     return 0
 
 
+def _train_val_manifests(cfg, manifest):
+    """Resolve the (train, val) paired manifests from the configured split mode.
+
+    Two mutually-exclusive modes (mirrors the ``val_data_base_dir`` /
+    ``val_fraction`` env-config contract):
+
+    - ``cfg.val_data_base_dir`` set AND an existing directory → the **native
+      held-out split**: ``manifest`` (built from ``data_base_dir``) is the full
+      train set, and val is built from ``val_data_base_dir`` — a BraTS directory
+      in the same form as ``data_base_dir`` (NOT a manifest JSON; the paired path
+      is BraTS-dir-based via :func:`build_brats_pair_manifest`). Use this when the
+      dataset ships its own disjoint train/val (e.g. BraTS-2024-GLI's 1621 train /
+      188 val) — the organizer-split subjects are disjoint, so there is no
+      train/val leakage. A non-directory ``val_data_base_dir`` (e.g. the manifest
+      JSON the BraTS2023 profile sets) is ignored with a warning and falls back to
+      ``val_fraction`` (the pre-native-split behavior).
+    - otherwise → ``cfg.val_fraction`` subject-level split of ``manifest``
+      (``0`` → val=train fallback). A ``null``/``???``/absent
+      ``val_data_base_dir`` reads as unset via :func:`~manifold.config.opt`.
+
+    Inlined from the deleted ``paired_cli`` (T8): the paired-reward recipe is the
+    only remaining consumer of the paired subject split.
+    """
+    import os
+
+    from ..data.paired_brats import build_brats_pair_manifest, split_brats_pair_manifest
+
+    val_dir = opt(cfg, "val_data_base_dir", None)
+    # The native-split path needs a BraTS *directory* (build_brats_pair_manifest
+    # scans NIfTIs); a manifest JSON (e.g. the BraTS2023 profile's
+    # brats_all_val.json) or a missing path is not usable here. Fall back to
+    # val_fraction (the pre-native-split behavior) instead of building an empty
+    # val set and crashing (codex #78, P1).
+    if val_dir and os.path.isdir(str(val_dir)):
+        val_manifest = build_brats_pair_manifest(str(val_dir))
+        if not val_manifest:
+            raise FileNotFoundError(
+                f"No paired BraTS volumes found under val_data_base_dir={val_dir} "
+                f"(need >=1 subject with all 4 contrasts)."
+            )
+        return manifest, val_manifest
+    if val_dir:
+        rank_zero_info(
+            "paired val_data_base_dir=%s is not a directory; the native train/val "
+            "split needs a BraTS directory (not a manifest JSON). Falling back to "
+            "the val_fraction subject split.",
+            val_dir,
+        )
+    val_fraction = float(opt(cfg, "val_fraction", 0.0))
+    return split_brats_pair_manifest(manifest, val_fraction)
+
+
 def _real_inputs(
     cfg, native_dir: str, latents_dir: str, device: torch.device
 ) -> PairedRewardInputs:
-    """Build the real paired-reward inputs from the paired native export + latent cache.
+    """Build the real paired-reward inputs from the ControlNet native export + latent cache.
 
-    Loads the frozen paired generator (``--native-dir``, issue #94's
-    :func:`~manifold.data.paired_reward_pairs.load_frozen_paired_generator` - raw
-    arm + base scheduler + scaling_factor), resolves the **paired** train/val split
+    Loads the frozen ControlNet generator (``--native-dir``, T7's
+    :func:`~manifold.data.paired_reward_pairs.load_frozen_controlnet_generator` —
+    frozen base + ControlNet + base scheduler + scaling_factor), resolves the
+    **paired** train/val split
     (``_train_val_manifests`` / ``val_data_base_dir`` / ``val_fraction`` - NOT JiT
     reward's ``partition_subjects``, ADR-0022), warms the paired latent cache over
     each split (reusing the existing ``paired_train`` cache - disjoint sample_ids
@@ -271,9 +329,8 @@ def _real_inputs(
     from ..config import autoencoder_divisor
     from ..data.paired_brats import build_brats_pair_manifest
     from ..data.paired_latent_dataset import PairedLatentDataset
-    from ..data.paired_reward_pairs import build_paired_reward_inputs, load_frozen_paired_generator
+    from ..data.paired_reward_pairs import build_paired_reward_inputs, load_frozen_controlnet_generator
     from ..data.paired_volume_dataset import PairedNiftiVolumeDataset
-    from .paired_cli import _train_val_manifests
 
     # target_dim MUST match the paired_train cache the generator trained on (cache
     # reuse, ADR-0021/0022: sample_ids are derived from the volume + target_dim, so
@@ -282,10 +339,15 @@ def _real_inputs(
     target_dim = tuple(int(d) for d in inf_cfg.dim)
     divisor = autoencoder_divisor(cfg)
 
-    # The frozen paired generator (raw arm, base scheduler, scaling_factor).
-    generator, base_scheduler, scaling_factor = load_frozen_paired_generator(native_dir)
+    # The frozen ControlNet generator (raw arm): base UNet + ControlNet + base
+    # scheduler + scaling_factor (ADR-0027/T7 — the fake source is the supervised
+    # ControlNet's noise→data generation, replacing the deleted src→tgt rollout).
+    generator, controlnet, base_scheduler, scaling_factor = load_frozen_controlnet_generator(native_dir)
     generator.to(device).eval()
     for p in generator.parameters():
+        p.requires_grad_(False)
+    controlnet.to(device).eval()
+    for p in controlnet.parameters():
         p.requires_grad_(False)
 
     # The PAIRED 2-way subject split (ADR-0022): resolve via _train_val_manifests
@@ -380,6 +442,7 @@ def _real_inputs(
         val_ds=val_ds,
         generator=generator,
         base_scheduler=base_scheduler,
+        controlnet=controlnet,
         num_steps=num_steps,
         probe_num_steps=probe_num_steps,
         n_probe=n_probe,

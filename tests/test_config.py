@@ -20,6 +20,7 @@ from omegaconf.errors import MissingMandatoryValue
 
 from manifold import (
     AutoencoderKL,
+    ControlNet3DConditionModel,
     FlowMatchHeunDiscreteScheduler,
     LatentFlowPipeline,
     UNet3DConditionModel,
@@ -33,7 +34,7 @@ from manifold.config import (
     opt,
     require_paths,
 )
-from manifold.config.builder import build_unet
+from manifold.config.builder import build_controlnet, build_unet
 
 # A tiny CPU-runnable network config (mirrors the conftest fixtures: 2-level VAE
 # divisor 2 → latent [1,4,4,4,4] decodes to image [1,1,8,8,8]). The shipped real
@@ -87,7 +88,10 @@ diffusion_unet_train:
   batch_size: 1
 formulation:
   mode: x0-denoiser
-  cfg_interval: [0.1, 1.0]
+  p_mean: -0.8
+  p_std: 0.8
+  t_eps: 0.05
+  l1_weight: 0.0
 diffusion_unet_inference:
   num_inference_steps: 15
   modality: 1
@@ -226,10 +230,6 @@ def test_compose_then_dotlist_override_retargets(tmp_path: Path) -> None:
     assert cfg.diffusion_unet.num_class_embeds == 4
     cfg = merge_overrides(cfg, {}, ["diffusion_unet.num_class_embeds=8"])
     assert cfg.diffusion_unet.num_class_embeds == 8
-    # paired_direction_offset flows through the diffusion_unet block to the wrapper
-    cfg = merge_overrides(cfg, {}, ["diffusion_unet.paired_direction_offset=4"])
-    unet = build_unet(cfg)
-    assert unet.config["paired_direction_offset"] == 4
 
 
 def test_unet_wrapper_accepts_widened_architectural_knobs(tmp_path: Path) -> None:
@@ -258,7 +258,6 @@ def test_unet_wrapper_accepts_widened_architectural_knobs(tmp_path: Path) -> Non
     assert list(unet.config["num_head_channels"]) == [0, 4]  # per-level accepted
     assert unet.config["resblock_updown"] is True
     assert unet.config["include_fc"] is True
-    assert unet.config["paired_direction_offset"] == 0  # default, dotlist-overridable
     out = unet(
         torch.randn(1, 4, 4, 4, 4),
         0.5,
@@ -339,32 +338,88 @@ def test_jit_recipe_carries_x0_formulation() -> None:
     assert cfg.diffusion_unet_inference.cfg_guidance_scale == 1.5
 
 
-def test_paired_recipe_warmup_is_ratio_not_absolute() -> None:
-    """Regression (autoresearch best-experiment finding): the paired-JiT recipe's
-    default ``lr_warmup_steps: 1000`` exceeded the ~500-step horizon of a 20-ep
-    8-DDU run, so ``cosine_with_warmup`` never left its linear ramp and the run
-    trained on a monotonic 0->peak ramp - ending at peak LR (worst convergence
-    point). Setting it to 50 gave +1 dB. The recipe now defaults to
-    ``lr_warmup_ratio: 0.1`` (0.1 x 500 = 50 there), which tracks the horizon at
-    any run length. This fails if the ratio is removed (the absolute 1000 returns
-    and again exceeds a short horizon).
+# -- ControlNet recipes + builder (issue #141 / ADR-0027) ---------------------
+
+
+def test_controlnet_supervised_recipe_loads() -> None:
+    """The ControlNet supervised recipe loads + carries the x0 Formulation + the L1 knob."""
+    cfg = load_config(
+        str(_REPOS / "configs/env/environment_brats2023.yaml"),
+        str(_REPOS / "configs/train/config_controlnet_supervised.yaml"),
+        str(_REPOS / "configs/network/config_network.yaml"),
+    )
+    assert cfg.formulation.mode == "x0-denoiser"
+    assert cfg.formulation.l1_weight == 0.0  # the L1+direction lever, default off
+    assert cfg.diffusion_unet_train.lr == 1.0e-4
+    assert cfg.controlnet.num_inference_steps == 15  # validation rollout resolution
+
+
+def test_controlnet_grpo_recipe_loads() -> None:
+    """The ControlNet GRPO recipe (Mode-2) loads + carries the grpo_train block."""
+    cfg = load_config(
+        str(_REPOS / "configs/env/environment_brats2023.yaml"),
+        str(_REPOS / "configs/train/config_controlnet_grpo.yaml"),
+        str(_REPOS / "configs/network/config_network.yaml"),
+    )
+    # Smaller LR than the UNet policy recipe (warm-started from the supervised stage).
+    assert cfg.grpo_train.lr == 1.0e-7
+    assert list(cfg.grpo_train.eta_step_list) == [0, 1, 2, 3, 4, 5, 6, 7]
+    assert cfg.checkpoint.save_top_k == 1
+
+
+def test_build_controlnet_maps_diffusion_unet_block(tmp_path: Path) -> None:
+    """build_controlnet maps the diffusion_unet block to ControlNet kwargs + forwards on CPU.
+
+    Two keys differ from the base (ADR-0026): ``out_channels`` is base-only (the
+    ControlNet has no output conv) and ``controlnet_cond_channels`` defaults to
+    ``in_channels`` (the ``x_src`` latent width). The ControlNet forward emits the
+    base's residual-injection args.
     """
-    from manifold.modules.latent_flow import resolve_warmup_steps
+    env = _write(tmp_path / "env.yaml", _BASE_ENV)
+    train = _write(tmp_path / "train.yaml", _TRAIN)
+    net = _write(tmp_path / "net.yaml", _TINY_NETWORK)
+    cfg = load_config(env, train, net)
+    cn = build_controlnet(cfg)
+    assert type(cn) is ControlNet3DConditionModel
+    assert cn.config["controlnet_cond_channels"] == cfg.diffusion_unet.in_channels == 4
+    # out_channels is NOT a ControlNet config key (it was popped — base-only).
+    assert "out_channels" not in cn.config
+
+    z = torch.randn(1, 4, 4, 4, 4)
+    down_res, mid_res = cn(
+        sample=z,
+        controlnet_cond=torch.randn_like(z),
+        timestep=torch.tensor(0.5),
+        spacing=torch.tensor([1.0, 1.0, 1.0]),
+        class_labels_src=torch.tensor([1]),
+        class_labels_tgt=torch.tensor([2]),
+    )
+    assert mid_res is not None
+    assert len(down_res) > 0
+
+
+def test_build_unet_pops_controlnet_only_paired_direction_offset() -> None:
+    """Regression (codex #142): the shipped ``config_network.yaml`` carries
+    ``paired_direction_offset`` (the ControlNet's direction-MLP knob), but the base
+    UNet wrapper no longer accepts it. ``build_unet`` must pop it so the shared
+    block builds the base without a TypeError; ``build_controlnet`` forwards it."""
+    from manifold.config import merge_overrides
 
     cfg = load_config(
         str(_REPOS / "configs/env/environment_brats2023.yaml"),
-        str(_REPOS / "configs/train/config_paired_jit.yaml"),
+        str(_REPOS / "configs/train/config_rflow_jit.yaml"),
         str(_REPOS / "configs/network/config_network.yaml"),
     )
-    train = cfg.diffusion_unet_train
-    assert float(train.lr_warmup_ratio) == pytest.approx(0.1)
-    # The 20-ep/8-DDU horizon (~500 steps): resolved warmup must be 50, NOT the
-    # old absolute 1000 that exceeds the horizon -> a pure linear ramp.
-    resolved = resolve_warmup_steps(
-        int(train.lr_warmup_steps), train.lr_warmup_ratio, total_steps=500
-    )
-    assert resolved == 50
-    assert resolved < 500
+    # The shipped block has the ControlNet-only knob; GPU-only flash attention is
+    # disabled so the wrapper constructs on CPU.
+    assert cfg.diffusion_unet.paired_direction_offset == 0
+    cfg = merge_overrides(cfg, {}, ["diffusion_unet.use_flash_attention=false"])
+
+    unet = build_unet(cfg)  # would TypeError on paired_direction_offset before the fix
+    assert type(unet) is UNet3DConditionModel
+    assert "paired_direction_offset" not in unet.config
+    # build_controlnet consumes the same block (forwards the knob) without popping it.
+    assert build_controlnet(cfg).config["paired_direction_offset"] == 0
 
 
 def test_env_configs_are_tracked_in_repo() -> None:

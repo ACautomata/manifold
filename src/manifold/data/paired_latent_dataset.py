@@ -7,8 +7,8 @@ exactly once — the encode cost is the unique-volume count, not the pair count
 (ADR-0014 — shared cache, no 12× duplication).
 
 Emits ``{"src_latent","tgt_latent","src_label","tgt_label","spacing"}`` where both
-latents are **scaled** — :class:`~manifold.modules.PairedLatentFlowModule` and
-:class:`~manifold.pipelines.PairedLatentFlowPipeline` never reference
+latents are **scaled** — :class:`~manifold.modules.ControlNetLatentFlowModule`
+and :class:`~manifold.pipelines.ControlNetLatentFlowPipeline` never reference
 ``scale_factor`` (ADR-0003 addendum). The data stack is the *only* place that does:
 
 1. :meth:`warm_cache` materializes **unscaled** latents for every unique volume

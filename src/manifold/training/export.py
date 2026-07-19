@@ -51,10 +51,10 @@ def export_to_native(
             VAE carries its (already-set) ``scaling_factor``.
         pipeline_cls: the pipeline class whose ``save_pretrained`` writes the dir
             - default :class:`~manifold.LatentFlowPipeline`; pass
-            :class:`~manifold.PairedLatentFlowPipeline` for the paired src->tgt export
-            (the reward's frozen generator, ADR-0021). One export path: the baking is
-            MAISI-backbone-keyed, so it is reused verbatim (the paired UNet wraps the
-            same backbone - only ``in_channels = 2*C_latent``).
+            :class:`~manifold.ControlNetLatentFlowPipeline` for the ControlNet
+            export (the reward's frozen generator base+ControlNet, ADR-0027). One
+            export path: the baking is MAISI-backbone-keyed, so it is reused
+            verbatim (the base UNet wraps the same MAISI backbone).
 
     Returns:
         A short string naming which weights were baked (always
