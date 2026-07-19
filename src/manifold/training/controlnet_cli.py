@@ -43,7 +43,7 @@ from ..config import opt
 from ..data.datamodule import build_datamodule
 from ..modules.controlnet_latent_flow import ControlNetLatentFlowModule
 from .metrics import LatentX0MAE, TrainLossLogger
-from .trainer import build_trainer, is_multi_gpu
+from .trainer import build_trainer
 
 
 @dataclass
@@ -76,29 +76,21 @@ class ControlNetInputs:
 def _build_checkpoint(
     model_dir: str,
     *,
-    monitor_metric: str | None = "val/x0_mae",
+    monitor_metric: str = "val/x0_mae",
     save_top_k: int = 3,
-    multi_gpu: bool = False,
 ) -> ModelCheckpoint:
     """Stock Lightning ``ModelCheckpoint`` for the supervised ControlNet (ADR-0006).
 
-    Single-GPU monitors ``val/x0_mae`` (the latent-space target-prediction MAE,
-    mode ``min`` — the raw optimizer arm, no EMA). The metric is the same callback
-    the JiT cli uses (the ControlNet's validation forward returns ``pred`` / ``target``
-    just like JiT's). Under DDP (``multi_gpu``) the rank-local monitor is dropped
-    (``save_last`` + ``save_top_k=1`` keep the latest), mirroring the JiT/reward
-    DDP fallback. ``auto_insert_metric_name = False`` because the key contains a ``/``.
+    Monitors ``val/x0_mae`` (the latent-space target-prediction MAE, mode ``min`` —
+    the raw optimizer arm, no EMA). The metric is the same callback the JiT cli uses
+    (the ControlNet's validation forward returns ``pred`` / ``target`` just like
+    JiT's), and it is **globally reduced** under DDP: :class:`LatentX0MAE` accumulates
+    into a sample-weighted ``torchmetrics.MeanMetric`` and logs the Metric object, so
+    Lightning fires the cross-rank reduction to the true global mean (issue #146). A
+    rank-local fallback (``save_top_k=1`` + ``save_last``) would throw away
+    best-checkpoint selection for no correctness gain, so the monitor stays ON under
+    DDP. ``auto_insert_metric_name = False`` because the key contains a ``/``.
     """
-    if multi_gpu:
-        return ModelCheckpoint(
-            dirpath=model_dir,
-            filename="controlnet-{epoch:03d}",
-            save_last=True,
-            save_top_k=1,
-            save_on_train_epoch_end=True,
-            auto_insert_metric_name=False,
-            save_weights_only=False,
-        )
     return ModelCheckpoint(
         dirpath=model_dir,
         filename=f"controlnet-{{epoch:03d}}-{{{monitor_metric}:.3f}}",
@@ -141,13 +133,14 @@ def run_controlnet_training(
         ckpt_path: optional warm-start / resume checkpoint passed to ``fit``.
     """
     pl.seed_everything(seed, workers=True)
-    multi_gpu = is_multi_gpu(devices)
     callbacks: list[pl.Callback] = [TrainLossLogger(), LatentX0MAE()]
+    # val/x0_mae is globally reduced under DDP (LatentX0MAE logs a sample-weighted
+    # MeanMetric), so the monitored checkpoint stays on under multi-GPU (issue #146)
+    # — no save_top_k=1 degradation.
     ckpt = _build_checkpoint(
         model_dir,
-        monitor_metric=None if multi_gpu else "val/x0_mae",
+        monitor_metric="val/x0_mae",
         save_top_k=save_top_k,
-        multi_gpu=multi_gpu,
     )
     callbacks.append(ckpt)
     if inputs.warm_fn is not None:

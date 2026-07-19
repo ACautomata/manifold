@@ -683,6 +683,86 @@ def controlnet_cold_cache_ddp_worker(
     ddp_fini()
 
 
+# -- ControlNet DDP monitor worker (issue #146: keep the global val monitor) -----
+
+
+class _ToyPairedCondDS(Dataset):
+    """Tiny paired latent dataset for the ControlNet DDP fit (pre-warmed contract).
+
+    Emits the ControlNet batch contract ``{src_latent, tgt_latent, spacing, src_label,
+    tgt_label}`` (both latents scaled) so the module's validation forward returns
+    ``pred`` / ``target`` and ``LatentX0MAE`` logs ``val/x0_mae``.
+    """
+
+    def __init__(self, n: int = 4):
+        self.n = n
+
+    def __len__(self):
+        return self.n
+
+    def __getitem__(self, i):
+        return {
+            "src_latent": torch.randn(4, 8, 8, 4),
+            "tgt_latent": torch.randn(4, 8, 8, 4),
+            "spacing": torch.tensor([1.0, 1.0, 1.0]),
+            "src_label": torch.tensor(1, dtype=torch.long),
+            "tgt_label": torch.tensor(2, dtype=torch.long),
+        }
+
+
+def controlnet_monitor_ddp_worker(rank: int, world: int, results_dir: str, port: str, _unused: bool) -> None:
+    """Run a 2-rank ControlNet fit; capture the checkpoint monitor + written ckpts.
+
+    Issue #146: ``val/x0_mae`` is globally reduced (LatentX0MAE logs a sample-weighted
+    MeanMetric), so the monitored checkpoint must stay ON under DDP — no
+    ``save_top_k=1`` fallback. Captures ``ckpt.monitor`` and the written ckpt filenames
+    so the test asserts the monitored checkpoint (not just ``last``) is produced.
+    """
+    from manifold import (
+        ControlNet3DConditionModel,
+        FlowMatchHeunDiscreteScheduler,
+        UNet3DConditionModel,
+    )
+    from manifold.modules.controlnet_latent_flow import ControlNetLatentFlowModule
+    from manifold.training.controlnet_cli import ControlNetInputs, run_controlnet_training
+
+    ddp_init(rank, world, port)
+    try:
+        torch.manual_seed(0)
+        base = UNet3DConditionModel(num_class_embeds=4, include_spacing_input=True)
+        for p in base.unet.out.parameters():
+            if p.abs().sum().item() == 0.0:
+                nn.init.normal_(p, std=0.01)
+        controlnet = ControlNet3DConditionModel(num_class_embeds=4, include_spacing_input=True)
+        controlnet.load_base_encoder_weights(base)
+        module = ControlNetLatentFlowModule(
+            base, controlnet, FlowMatchHeunDiscreteScheduler(),
+            lr=1e-3, lr_warmup_steps=0, num_train_examples=4, train_batch_size=2, n_epochs=2,
+        )
+        inputs = ControlNetInputs(
+            unet=base, controlnet=controlnet, scheduler=FlowMatchHeunDiscreteScheduler(),
+            train_ds=_ToyPairedCondDS(), val_ds=_ToyPairedCondDS(),
+        )
+        trainer, ckpt = run_controlnet_training(
+            module=module, inputs=inputs, model_dir=results_dir,
+            max_epochs=2, devices=world, accelerator="cpu", batch_size=2,
+            limit_val_batches=1.0,
+        )
+        written = sorted(p.name for p in Path(results_dir).glob("*.ckpt"))
+        Path(results_dir, f"r{rank}.json").write_text(json.dumps({
+            "rank": rank,
+            "ckpt_monitor": ckpt.monitor,
+            "ckpt_mode": ckpt.mode,
+            "global_step": int(trainer.global_step),
+            "written_ckpts": written,
+            "val_x0_mae": float(trainer.callback_metrics.get("val/x0_mae", float("nan"))),
+        }))
+    finally:
+        ddp_fini()
+
+
+
+
 __all__ = [
     "ddp_init",
     "ddp_fini",
@@ -692,4 +772,5 @@ __all__ = [
     "grpo_ddp_worker",
     "cold_cache_ddp_worker",
     "controlnet_cold_cache_ddp_worker",
+    "controlnet_monitor_ddp_worker",
 ]
