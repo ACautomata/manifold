@@ -1,3 +1,10 @@
+---
+type: Reference
+title: Architecture and Source Map
+description: Component boundaries, data/config layers, domain vocabulary, and where to look in source.
+tags: [architecture, source-map, components, data-flow]
+---
+
 # Architecture and source map
 
 ## Component model
@@ -11,6 +18,7 @@ Manifold deliberately mirrors the diffusers vocabulary while keeping training an
 | Modules | stable-pretraining training components: objectives, optimizer/schedule wiring, rollout and validation steps for JiT, paired JiT, reward, and GRPO. | `src/manifold/modules/` |
 | Pipelines | Native inference composition of UNet, scheduler, and VAE, with `save_pretrained`/`from_pretrained`. | `src/manifold/pipelines/` |
 | Training orchestration | CLI parsing, config composition, data warming, callbacks, Lightning trainer construction, checkpointing, and export. | `src/manifold/training/`, `src/manifold/metrics/` |
+| Metrics callbacks | Per-epoch FID, PSNR/SSIM, GRPO reward, and automatic metrics line-chart rendering. | `src/manifold/metrics/` |
 
 The shared rollout primitives are intentional: training-time sampling and native inference delegate to the same sampler behavior rather than maintaining parallel integrators (`src/manifold/modules/sampler.py`, `paired_sampler.py`; ADR-0005).
 
@@ -30,7 +38,7 @@ Start with:
 
 ### Paired JiT
 
-Paired JiT maps a source latent at `t=0` to a target latent at `t=1`. The model sees `concat([z_t, x_src])`, so its input channel count is twice the latent channel count. Source and target contrast embeddings are summed to encode the requested translation. The production recipe uses uniform `x0` MSE; the earlier `(1-t)^-2` weighting overemphasized high-`t` examples and encouraged copy-source collapse (`configs/train/config_paired_jit.yaml`).
+Paired JiT maps a source latent at `t=0` to a target latent at `t=1`. The model sees `concat([z_t, x_src])`, so its input channel count is twice the latent channel count. Source and target contrast embeddings are combined through a learned MLP that projects `concat([embed(src), embed(tgt+offset)])` from `R^{2·time_embed_dim}` to `R^{time_embed_dim}`, replacing the earlier linear sum. This provides greater discriminability across the 12 contrast directions. The optional `paired_direction_offset` config shifts the target embedding row to break A<->B symmetry when needed. The production recipe uses uniform `x0` MSE; the earlier `(1-t)^-2` weighting overemphasized high-`t` examples and encouraged copy-source collapse (`configs/train/config_paired_jit.yaml`).
 
 BraTS-specific code groups volumes by subject and contrast, creates subject-disjoint splits, and enumerates all ordered non-self pairs. The dataset contract itself remains generic: source/target latents, labels, and spacing.
 

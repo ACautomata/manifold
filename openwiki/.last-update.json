@@ -1,6 +1,6 @@
 {
-  "updatedAt": "2026-07-15T06:48:28.467Z",
+  "updatedAt": "2026-07-19T01:57:40.944Z",
   "command": "update",
-  "gitHead": "6bad99801a0a04cb08c9c55127e3683425418c42",
-  "model": "gpt-5.6-sol"
+  "gitHead": "d023988403551b7c53a447d9edffbbca411b2a6f",
+  "model": "claude-opus-4-8"
 }
