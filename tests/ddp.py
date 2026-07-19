@@ -569,6 +569,120 @@ def cold_cache_ddp_worker(rank: int, world: int, results_dir: str, port: str, n_
     }))
 
 
+# -- ControlNet cold-cache 2-rank worker (issue #145: warm deferred to setup()) --
+
+
+class _CountingPairedVolDS(Dataset):
+    """A fake paired-image volume source that records per-rank encode counts.
+
+    Mirrors the ``PairedNiftiVolumeDataset`` surface that ``PairedLatentDataset``
+    drives (``unique_sample_ids`` / ``pair_meta`` / ``_load_volume``), so the deferred
+    paired warm encodes each unique volume once total under DDP (the sharded branch).
+    Emits the 5-key paired contract after the warm.
+    """
+
+    def __init__(self, n_pairs: int = 4, n_volumes: int = 6, *, seed: int = 0):
+        torch.manual_seed(seed)
+        self._n_pairs = n_pairs
+        self._ids = [f"vol_{i:03d}" for i in range(n_volumes)]
+        self._imgs = {sid: torch.randn(1, 4, 4, 4) for sid in self._ids}
+
+    def __len__(self):
+        return self._n_pairs
+
+    def unique_sample_ids(self):
+        return list(self._ids)
+
+    def pair_meta(self, index):
+        src = self._ids[index % len(self._ids)]
+        tgt = self._ids[(index + 1) % len(self._ids)]
+        return {
+            "src_id": src,
+            "tgt_id": tgt,
+            "src_label": torch.tensor(0, dtype=torch.long),
+            "tgt_label": torch.tensor(1, dtype=torch.long),
+        }
+
+    def _load_volume(self, sample_id):
+        return {
+            "image": self._imgs[sample_id],
+            "spacing": torch.tensor([1.0, 1.0, 1.0]),
+            "label": 0,
+        }
+
+
+def controlnet_cold_cache_ddp_worker(
+    rank: int, world: int, results_dir: str, port: str, n_volumes: int
+) -> None:
+    """Run a 2-rank ControlNet fit via the deferred ``DataModule.setup()`` paired warm.
+
+    Issue #145: the paired latent-cache warm runs inside ``setup()`` (post-PG), so each
+    rank encodes only its ``i % world == rank`` shard (no cross-rank double-encode).
+    Captures the per-rank encode count + ``dist.is_initialized()`` at warm time.
+    """
+    from manifold import (
+        ControlNet3DConditionModel,
+        FlowMatchHeunDiscreteScheduler,
+        UNet3DConditionModel,
+    )
+    from manifold.data.paired_latent_dataset import PairedLatentDataset
+    from manifold.modules.controlnet_latent_flow import ControlNetLatentFlowModule
+    from manifold.training.controlnet_cli import ControlNetInputs
+
+    ddp_init(rank, world, port)
+    encode_count = [0]
+    dist_at_warm = [None]
+
+    def counting_encode(images):
+        encode_count[0] += 1
+        return images.float().repeat(1, 4, 1, 1, 1)  # [1,1,D,H,W] -> [1,4,D,H,W] latent
+
+    vol_train = _CountingPairedVolDS(n_pairs=4, n_volumes=n_volumes)
+    vol_val = _CountingPairedVolDS(n_pairs=2, n_volumes=n_volumes, seed=1)
+    cache_dir = str(Path(results_dir) / "cache")
+    # Distinct tags so train/val caches stay disjoint (the gate counts train encodes).
+    train_ds = PairedLatentDataset(vol_train, encode_fn=None, cache_dir=cache_dir, cache_tag="cn_train")
+    val_ds = PairedLatentDataset(vol_val, encode_fn=None, cache_dir=cache_dir, cache_tag="cn_val")
+
+    def warm_fn():
+        dist_at_warm[0] = torch.distributed.is_initialized()
+        for ds in (train_ds, val_ds):
+            ds.encode_fn = counting_encode
+            ds.warm_cache(torch.device("cpu"), show_progress=False)
+            ds.free_encoder()
+        return train_ds, val_ds
+
+    torch.manual_seed(0)
+    base = UNet3DConditionModel(num_class_embeds=4, include_spacing_input=True)
+    for p in base.unet.out.parameters():
+        if p.abs().sum().item() == 0.0:
+            nn.init.normal_(p, std=0.01)
+    controlnet = ControlNet3DConditionModel(num_class_embeds=4, include_spacing_input=True)
+    controlnet.load_base_encoder_weights(base)
+    module = ControlNetLatentFlowModule(
+        base, controlnet, FlowMatchHeunDiscreteScheduler(),
+        lr=1e-3, lr_warmup_steps=0, num_train_examples=4, train_batch_size=2, n_epochs=1,
+    )
+    inputs = ControlNetInputs(
+        unet=base, controlnet=controlnet, scheduler=FlowMatchHeunDiscreteScheduler(),
+        train_ds=train_ds, val_ds=val_ds, warm_fn=warm_fn,
+    )
+    from manifold.training.controlnet_cli import run_controlnet_training
+
+    trainer, _ckpt = run_controlnet_training(
+        module=module, inputs=inputs, model_dir=results_dir,
+        max_epochs=1, devices=world, accelerator="cpu", batch_size=2,
+        limit_val_batches=1.0,
+    )
+    Path(results_dir, f"r{rank}.json").write_text(json.dumps({
+        "rank": rank,
+        "encode_count": encode_count[0],
+        "dist_at_warm": dist_at_warm[0],
+        "global_step": int(trainer.global_step),
+    }))
+    ddp_fini()
+
+
 __all__ = [
     "ddp_init",
     "ddp_fini",
@@ -577,4 +691,5 @@ __all__ = [
     "_unbalanced_val_worker",
     "grpo_ddp_worker",
     "cold_cache_ddp_worker",
+    "controlnet_cold_cache_ddp_worker",
 ]

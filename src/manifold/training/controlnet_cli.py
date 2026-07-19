@@ -65,6 +65,12 @@ class ControlNetInputs:
     train_ds: Any
     val_ds: Any
     vae: Any = None
+    #: Cold-path warm closure (issue #145 / ADR-0017): when set, ``train_ds`` /
+    #: ``val_ds`` are UN-warmed and the paired latent-cache warm runs inside
+    #: ``DataModule.setup()`` (post-DDP-spawn, per-rank sharded) instead of in the
+    #: CLI before ``fit``. ``None`` ⇒ the datasets are already warmed (the
+    #: ``data_provider`` smoke / single-GPU parity path).
+    warm_fn: Any = None
 
 
 def _build_checkpoint(
@@ -129,6 +135,9 @@ def run_controlnet_training(
 
     Args:
         inputs: the frozen base + ControlNet + scheduler + the paired train/val datasets.
+            When ``inputs.warm_fn`` is set the datasets are UN-warmed and the paired
+            latent-cache warm runs inside ``DataModule.setup()`` (issue #145 — post-PG,
+            per-rank sharded); otherwise they are pre-warmed (the smoke/parity path).
         ckpt_path: optional warm-start / resume checkpoint passed to ``fit``.
     """
     pl.seed_everything(seed, workers=True)
@@ -141,12 +150,33 @@ def run_controlnet_training(
         multi_gpu=multi_gpu,
     )
     callbacks.append(ckpt)
-    datamodule = build_datamodule(
-        inputs.train_ds,
-        batch_size=batch_size,
-        val_dataset=inputs.val_ds,
-        num_workers=num_workers,
-    )
+    if inputs.warm_fn is not None:
+        # Cold path (issue #145 / ADR-0017): defer the paired latent-cache warm into
+        # DataModule.setup() so it runs per-rank after DDP spawn (the warm_cache
+        # sharded branch activates), instead of every rank re-warming pre-fit. The
+        # datasets in ``inputs`` are un-warmed placeholders; ``warm_fn`` returns the
+        # warmed (train_ds, val_ds, vae) triple (the PairedWarmDataModule contract).
+        from ..data.warm_datamodule import PairedWarmDataModule
+
+        def _warm_triple():
+            train_ds, val_ds = inputs.warm_fn()
+            return train_ds, val_ds, inputs.vae
+
+        datamodule = PairedWarmDataModule(
+            latent_ds=inputs.train_ds,
+            vae=inputs.vae,
+            batch_size=batch_size,
+            num_workers=num_workers,
+            val_latent_ds=inputs.val_ds,
+            warm_fn=_warm_triple,
+        )
+    else:
+        datamodule = build_datamodule(
+            inputs.train_ds,
+            batch_size=batch_size,
+            val_dataset=inputs.val_ds,
+            num_workers=num_workers,
+        )
     trainer = build_trainer(
         max_epochs=max_epochs,
         callbacks=callbacks,
@@ -290,13 +320,13 @@ def _real_inputs(
     that clones the base encoder (zero-conv init ⇒ initial residuals are zero ⇒ the
     model starts as the pretrained base unchanged, ADR-0026), resolves the **paired**
     train/val split (``_train_val_manifests`` / ``val_data_base_dir`` /
-    ``val_fraction``), warms the paired latent cache over each split (one encode per
-    unique volume, ADR-0014), and estimates one ``scaling_factor`` over the union of
-    src+tgt unique latents (ADR-0014 — pooled by construction).
+    ``val_fraction``), and DEFERS the paired latent-cache warm into
+    ``DataModule.setup()`` (issue #145 / ADR-0017 — post-DDP-spawn, per-rank sharded).
+    Scale-on-read uses the BASE EXPORT's ``scaling_factor`` verbatim (ADR-0021).
     """
     from ..config import autoencoder_divisor
     from ..config.builder import build_controlnet, build_scheduler
-    from ..data.latent_pipeline import make_encode_fn
+    from ..data.latent_pipeline import make_encode_fn, resolve_warm_device
     from ..data.paired_brats import build_brats_pair_manifest
     from ..data.paired_latent_dataset import PairedLatentDataset, paired_cache_tag
     from ..data.paired_volume_dataset import PairedNiftiVolumeDataset
@@ -308,7 +338,7 @@ def _real_inputs(
     base = base_pipe.unet.to(device).eval()
     for p in base.parameters():
         p.requires_grad_(False)
-    vae = base_pipe.vae.to(device)
+    vae = base_pipe.vae
 
     # 2. Fresh ControlNet — a zero-conv clone of the base encoder (the only trained arm).
     controlnet = build_controlnet(cfg).to(device)
@@ -346,13 +376,13 @@ def _real_inputs(
             "reused as val."
         )
 
-    # 4. Warm the paired latent cache over each split (one encode per unique volume;
-    # ADR-0014 — disjoint sample_ids ⇒ free disk hits across splits). Scale-on-read
-    # uses the BASE EXPORT's scaling_factor VERBATIM (ADR-0021): the frozen base was
+    # 4. Defer the paired latent-cache warm into DataModule.setup() (issue #145 /
+    # ADR-0017): build the UN-warmed datasets + a warm closure; ``setup()`` runs it
+    # post-DDP-spawn so the warm_cache per-rank sharded branch activates (one writer
+    # per cache file) instead of every rank re-warming pre-fit. Scale-on-read uses
+    # the BASE EXPORT's scaling_factor VERBATIM (ADR-0021): the frozen base was
     # trained on latents scaled by that factor, so re-estimating it from this paired
     # subset would move both src+tgt into a normalization space the base never saw.
-    # Never re-estimate; assign the export factor to BOTH datasets.
-    encode_fn = make_encode_fn(vae, device, cfg)
     cache_dir = str(
         latents_dir
         or opt(cfg, "latent_cache_dir", os.path.join(str(cfg.model_dir), "paired_latent_cache"))
@@ -362,29 +392,39 @@ def _real_inputs(
     # tag would silently reuse a stale cache encoded at a different shape/divisor.
     # The geometry suffix makes a config change produce a disjoint cache entry.
     cache_tag = paired_cache_tag(str(opt(cfg, "controlnet.cache_tag", "paired_train")), target_dim, divisor)
+    scaling_factor = float(vae.scaling_factor)  # the base export's factor (verbatim)
 
     def _ds(manifest_split):
         vol_ds = PairedNiftiVolumeDataset(manifest_split, target_dim=target_dim, divisor=divisor)
-        ds = PairedLatentDataset(vol_ds, encode_fn=encode_fn, cache_dir=cache_dir, cache_tag=cache_tag)
-        ds.warm_cache(device, show_progress=False)
-        return ds
+        return PairedLatentDataset(vol_ds, encode_fn=None, cache_dir=cache_dir, cache_tag=cache_tag)
 
     train_ds, val_ds = _ds(train_manifest), _ds(val_manifest)
-    scaling_factor = float(vae.scaling_factor)  # the base export's factor (verbatim)
-    train_ds.scaling_factor = scaling_factor
-    val_ds.scaling_factor = scaling_factor
-    # Free BOTH encoder closures (train + val) and move the VAE off the training
-    # GPU: supervised validation is latent-only (no decode), so the VAE is only
-    # needed for the warm. The frozen base + ControlNet + activations already fill
-    # the device; a lingering GPU VAE can turn a feasible 3D run into an OOM.
-    train_ds.free_encoder()
-    val_ds.free_encoder()
-    vae.to("cpu")
-    rank_zero_info(
-        "ControlNet supervised: %d train / %d val paired pairs; base frozen, "
-        "ControlNet trainable (fresh zero-conv clone); scale_factor=%.6f (base export).",
-        len(train_ds), len(val_ds), scaling_factor,
-    )
+
+    def warm_fn():
+        # Runs INSIDE DataModule.setup() (post-PG). Warm on the per-rank local device,
+        # not the launch-time ``device`` (cuda:0 before LOCAL_RANK is known under DDP);
+        # rebuild the encode_fn bound to it. Each rank encodes its ``i % world == rank``
+        # shard, barriers, then loads the full set (one encode per unique volume,
+        # ADR-0014 — disjoint sample_ids ⇒ free disk hits across splits).
+        warm_device = resolve_warm_device(device)
+        vae.to(warm_device)
+        encode_fn = make_encode_fn(vae, warm_device, cfg)
+        for ds in (train_ds, val_ds):
+            ds.encode_fn = encode_fn
+            ds.scaling_factor = scaling_factor  # the base export's factor (ADR-0021)
+            ds.warm_cache(warm_device, show_progress=False)
+            # Free the encoder closure and move the VAE off the training GPU: supervised
+            # validation is latent-only (no decode), so the VAE is only needed for the
+            # warm; a lingering GPU VAE can turn a feasible 3D run into an OOM.
+            ds.free_encoder()
+        vae.to("cpu")
+        rank_zero_info(
+            "ControlNet supervised: %d train / %d val paired pairs; base frozen, "
+            "ControlNet trainable (fresh zero-conv clone); scale_factor=%.6f (base export).",
+            len(train_ds), len(val_ds), scaling_factor,
+        )
+        return train_ds, val_ds
+
     return ControlNetInputs(
         unet=base,
         controlnet=controlnet,
@@ -392,4 +432,5 @@ def _real_inputs(
         train_ds=train_ds,
         val_ds=val_ds,
         vae=vae,
+        warm_fn=warm_fn,
     )
