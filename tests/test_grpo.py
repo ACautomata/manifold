@@ -1423,6 +1423,38 @@ def test_real_inputs_mode2_raises_on_no_val_split(tmp_path, monkeypatch):
         )
 
 
+def test_real_inputs_mode2_rejects_condition_aware_reward_ckpt(tmp_path, monkeypatch):
+    """A 2·C condition-aware paired-reward ckpt fails fast with a readable error.
+
+    Mode-2 scores z_K unconditionally (in_channels = C_latent = 4). Passing a
+    2·C paired-reward ckpt (in_channels = 8, from manifold-train-paired-reward)
+    must raise a clear ValueError BEFORE load_state_dict's cryptic shape error
+    (codex #151: the z_K-only reward is an intentional design decision; the check
+    turns the real 2·C-ckpt incompatibility into an actionable message).
+    """
+    from tests.test_paired_reward_real import _save_controlnet_export
+
+    from manifold.data import paired_brats as pb
+    from manifold.training import grpo_cli, paired_reward_cli
+
+    _save_controlnet_export(tmp_path / "native")
+    # 2·C condition-aware ckpt: in_channels = 8 = 2 * C_latent(4).
+    _save_mode2_reward_ckpt(tmp_path / "reward.ckpt", in_channels=8)
+
+    train_manifest, val_manifest = _fake_mode2_manifests()
+    monkeypatch.setattr(pb, "build_brats_pair_manifest", lambda *a, **k: train_manifest + val_manifest)
+    monkeypatch.setattr(
+        paired_reward_cli, "_train_val_manifests", lambda cfg, manifest: (train_manifest, val_manifest)
+    )
+
+    cfg = _mode2_cfg(tmp_path)
+    with pytest.raises(ValueError, match="in_channels=8"):
+        grpo_cli._real_inputs_mode2(
+            cfg, str(tmp_path / "native"), str(tmp_path / "reward.ckpt"),
+            str(tmp_path / "cache"), torch.device("cpu"),
+        )
+
+
 def test_main_mode2_real_path_dispatches_and_builds_controlnet_module(tmp_path, monkeypatch):
     """main() --grpo-mode 2 dispatches to _real_inputs_mode2 and reaches fit (no guard).
 

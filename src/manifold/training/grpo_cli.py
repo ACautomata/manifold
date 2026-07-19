@@ -750,6 +750,21 @@ def _real_inputs_mode2(
         raise ValueError(
             f"No 'reward_model.*' keys in {reward_path} — not a trained RewardModule checkpoint."
         )
+    # Fail fast on a channel mismatch BEFORE load_state_dict's cryptic shape error:
+    # Mode-2 scores z_K unconditionally (in_channels = C_latent), so a 2·C
+    # condition-aware paired-reward ckpt (from manifold-train-paired-reward) is
+    # incompatible here — it must be used with the paired-reward path, not Mode-2.
+    # Detect via the first conv's input-channel dim (shape [out, in, kD, kH, kW]).
+    first_conv = reward_sd.get("discriminator.initial_conv.conv.weight")
+    if first_conv is not None and int(first_conv.shape[1]) != latent_c:
+        raise ValueError(
+            f"Reward checkpoint {reward_path} has in_channels={int(first_conv.shape[1])}, "
+            f"but Mode-2 scores z_K unconditionally and needs a single-latent reward "
+            f"(in_channels={latent_c}). This looks like a 2·C condition-aware paired-reward "
+            "ckpt (manifold-train-paired-reward) — Mode-2 intentionally does NOT concat "
+            "x_src into the reward (the policy x0 sees x_src instead). Point --reward-path "
+            "at a single-latent (Mode-1-style) RewardModule checkpoint."
+        )
     reward_model.load_state_dict(reward_sd, strict=True)
     reward_model.eval().to(device)
     for p in reward_model.parameters():
