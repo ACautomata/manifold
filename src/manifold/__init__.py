@@ -15,7 +15,12 @@ from .models import (
     UNet3DConditionModel,
 )
 from .modules import LatentFlowModule, PairedLatentFlowModule
-from .pipelines import DiffusionPipeline, LatentFlowPipeline, PairedLatentFlowPipeline
+from .pipelines import (
+    ControlNetLatentFlowPipeline,
+    DiffusionPipeline,
+    LatentFlowPipeline,
+    PairedLatentFlowPipeline,
+)
 from .schedulers import (
     FlowMatchBridgeGRPOScheduler,
     FlowMatchGRPOScheduler,
@@ -30,6 +35,7 @@ __all__ = [
     "AutoencoderKL",
     "ConfigMixin",
     "ControlNet3DConditionModel",
+    "ControlNetLatentFlowPipeline",
     "DiffusionPipeline",
     "FlowMatchBridgeGRPOScheduler",
     "FlowMatchGRPOScheduler",
