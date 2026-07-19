@@ -1,3 +1,10 @@
+---
+type: Guide
+title: Key Workflows
+description: JiT and Paired JiT training, reward/GRPO stages, inference, checkpoints, and export.
+tags: [workflows, training, inference, checkpoints, export]
+---
+
 # Key workflows
 
 ## JiT training
@@ -18,7 +25,9 @@ Important constraint: the regular noise-to-data production flow disables validat
 
 ## Paired training
 
-`manifold-train-paired` builds subject-level train/validation splits, warms shared per-volume latents, and trains all source-to-target directions. Validation runs deterministic source-started Heun inference and reports decoded full-volume PSNR/SSIM (`src/manifold/training/paired_cli.py`, `src/manifold/metrics/psnr_ssim_callback.py`).
+`manifold-train-paired` builds subject-level train/validation splits, warms shared per-volume latents, and trains all source-to-target directions. Validation runs deterministic source-started Heun inference and reports decoded full-volume PSNR/SSIM (`src/manifold/training/paired_cli.py`, `src/manifold/metrics/psnr_ssym_callback.py`).
+
+Paired JiT conditioning uses a learned MLP that combines source and target contrast embeddings (`concat([embed(src), embed(tgt+offset)])`), replacing the earlier linear sum. This provides greater discriminability across the 12 contrast directions. The optional `paired_direction_offset` config shifts the target embedding row to break A<->B symmetry when needed.
 
 Useful recipe controls in `configs/train/config_paired_jit.yaml` include:
 

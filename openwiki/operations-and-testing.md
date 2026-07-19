@@ -1,3 +1,10 @@
+---
+type: Guide
+title: Operations and Testing
+description: Setup, validation behavior, distributed metrics, runbook cautions, and focused test commands for Manifold.
+tags: [operations, testing, distributed, validation, ddp]
+---
+
 # Operations and testing
 
 ## Standard checks
@@ -52,6 +59,18 @@ If the probe hangs, ADR-0025's fallback order is:
 2. Move decode to CPU (`sw_device='cpu'`).
 
 The metric contract stays global; only the decode strategy should change. A return to rank-0-only metrics would again make checkpoint selection shard-biased.
+
+## Diagnosing deadlock vs. slow validation
+
+ADR-0025 includes diagnostic guidance for distinguishing the DCU deadlock from slow validation. The symptom triad "processes `Sl` (sleeping) + log mtime stalled + no tqdm output" is a false positive — it also describes healthy, fully-loaded validation under 8-DDP.
+
+Before diagnosing a deadlock, use load-bearing signals:
+
+- `hy-smi` (after `source /opt/dtk/env.sh`): DCU% near 0 with no progress = stalled; DCU% ~100% = computing (slow, not deadlocked).
+- `SIGTERM` response: the 2026-07-14 stall ignored `SIGTERM` (required `SIGKILL`); a merely-slow validation terminates on `SIGTERM`.
+- `py-spy` on all ranks: identical frozen frame in `sliding_window_inference -> _conv_forward` = deadlock.
+
+The "Sl + log stalled" triad alone is insufficient; do not act on it without confirming one of the above signals.
 
 ## DDP failure modes to guard
 
