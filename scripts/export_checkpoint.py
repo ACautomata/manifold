@@ -66,11 +66,23 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "--pipeline",
-        choices=("jit", "paired"),
+        choices=("jit", "paired", "controlnet"),
         default="jit",
         help="which native pipeline to write: 'jit' (LatentFlowPipeline, the "
-        "noise->data JiT - the default) or 'paired' (PairedLatentFlowPipeline, the "
-        "src->tgt translation - the reward's frozen generator, ADR-0021).",
+        "noise->data JiT - the default), 'paired' (PairedLatentFlowPipeline, the "
+        "src->tgt translation - the reward's frozen generator, ADR-0021), or "
+        "'controlnet' (ControlNetLatentFlowPipeline - the supervised ControlNet "
+        "stage-1 export, base UNet + ControlNet + VAE, ADR-0027/issue #144).",
+    )
+    parser.add_argument(
+        "--base-native-dir",
+        default=None,
+        help="REQUIRED for --pipeline controlnet: the JiT native export dir the "
+        "supervised ControlNet was trained against. A supervised ControlNet ckpt "
+        "registers ONLY the trainable ControlNet (the frozen base is held "
+        "unregistered, off the checkpoint), so the frozen base UNet + VAE scale are "
+        "loaded from this export and passed through verbatim; the ckpt bakes only "
+        "the controlnet.* weights.",
     )
     parser.add_argument(
         "--scaling-factor",
@@ -96,6 +108,38 @@ def main(argv: list[str] | None = None) -> int:
 
         latent_c = int(cfg.get("latent_channels", 4))
         cfg = OmegaConf.merge(cfg, {"diffusion_unet": {"in_channels": 2 * latent_c}})
+
+    if args.pipeline == "controlnet":
+        # Supervised ControlNet export (ADR-0027 stage 1 -> issue #144): the ckpt
+        # registers ONLY the trainable ControlNet, so the frozen base UNet + VAE scale
+        # come from the JiT native export it was trained against (--base-native-dir),
+        # passed through verbatim; export_to_native bakes only the controlnet.* weights.
+        if not args.base_native_dir:
+            raise ValueError(
+                "--base-native-dir is required for --pipeline controlnet: the frozen "
+                "base UNet + VAE scale are loaded from that JiT native export (a "
+                "supervised ControlNet ckpt carries only controlnet.* keys, no base)."
+            )
+        from manifold import ControlNetLatentFlowPipeline, LatentFlowPipeline
+        from manifold.config.builder import build_controlnet
+
+        base_pipe = LatentFlowPipeline.from_pretrained(args.base_native_dir)
+        unet = base_pipe.unet  # the frozen base (passed through verbatim, NOT re-baked)
+        vae = base_pipe.vae    # carries the training scaling_factor
+        scheduler = base_pipe.scheduler
+        controlnet = build_controlnet(cfg)
+        controlnet.load_base_encoder_weights(unet)
+        source = export_to_native(
+            args.ckpt,
+            args.output,
+            unet=unet,
+            controlnet=controlnet,
+            vae=vae,
+            scheduler=scheduler,
+            pipeline_cls=ControlNetLatentFlowPipeline,
+        )
+        print(f"Exported {args.ckpt} -> {args.output} ({source}; pipeline=controlnet).")
+        return 0
 
     unet = build_unet(cfg)
     vae = build_vae(cfg)
