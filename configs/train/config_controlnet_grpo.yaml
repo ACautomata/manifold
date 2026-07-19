@@ -54,6 +54,21 @@ grpo:
   modality: 1        # the FID generation recipe's class label (single-modality v1).
   spacing: [1.0, 1.0, 1.0]  # the FID generation recipe's voxel spacing.
 
+# The paired latent target shape + voxel spacing (the BraTS volume the VAE encodes
+# each unique contrast of). ``_real_inputs_mode2`` reads ``dim`` for the paired
+# cache's target_dim / divisor geometry (it must match the cache the supervised
+# stage warmed, ADR-0021/0022); without it the real Mode-2 launch raises
+# ConfigAttributeError before loading the cache (codex #151).
+diffusion_unet_inference:
+  dim: [256, 256, 128]          # volume target shape [D, H, W] (the VAE encodes to latent // divisor)
+  spacing: [1.7, 1.7, 2]
+  top_region_index: [0, 1, 0, 0]
+  bottom_region_index: [0, 0, 1, 0]
+  random_seed: 0
+  num_inference_steps: 15
+  modality: 1
+  cfg_guidance_scale: 1.5
+
 # Stock Lightning ModelCheckpoint: monitor val/mean_reward (the progress signal,
 # max); #58 switches selection to val/fid (min, the anti-reward-hacking screen)
 # when the FID triple is attached. Under DDP the rank-local monitor is dropped.

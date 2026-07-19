@@ -1388,6 +1388,15 @@ def test_real_inputs_mode2_loads_controlnet_and_builds_paired_conditioning(tmp_p
     )
     # No FID triple in Mode-2 (the unconditional FID is a constant frozen-base metric).
     assert inputs.vae is None and inputs.real_latents is None and inputs.feature_net is None
+    # The KL anchor (ADR-0015): a (base, controlnet) pair snapshot, so the recipe's
+    # kl_coef does not silently disable (codex #151 P1). Weight-matched to the loaded
+    # arms (a pre-update deepcopy; the GRPOModule freezes + unregisters it).
+    assert inputs.reference_policy is not None
+    ref_base, ref_cn = inputs.reference_policy
+    for k, v in inputs.policy.state_dict().items():
+        assert torch.equal(ref_base.state_dict()[k], v)
+    for k, v in inputs.controlnet.state_dict().items():
+        assert torch.equal(ref_cn.state_dict()[k], v)
 
 
 def test_real_inputs_mode2_raises_on_no_val_split(tmp_path, monkeypatch):
@@ -1483,3 +1492,76 @@ def test_main_mode2_real_path_dispatches_and_builds_controlnet_module(tmp_path, 
     assert rc == 0
     ckpts = list(Path(str(tmp_path / "model")).glob("*.ckpt"))
     assert any(p.name == "last.ckpt" for p in ckpts)
+
+
+# -- codex #151 regression guards ----------------------------------------------
+
+
+def test_mode2_recipe_resolves_inference_dim():
+    """The committed Mode-2 recipe defines diffusion_unet_inference.dim (codex #151 P1).
+
+    _real_inputs_mode2 reads cfg.diffusion_unet_inference.dim directly (load-bearing
+    for the paired cache's target_dim / divisor); the recipe must define it so the
+    documented launch does not raise ConfigAttributeError.
+    """
+    from manifold.config import load_config
+
+    cfg = load_config(
+        "configs/env/environment.yaml",
+        "configs/train/config_controlnet_grpo.yaml",
+        "configs/network/config_network.yaml",
+    )
+    assert tuple(int(d) for d in cfg.diffusion_unet_inference.dim) == (256, 256, 128)
+
+
+def test_real_inputs_mode2_rejects_stale_cache_shape(tmp_path, monkeypatch):
+    """A paired cache warmed at a different target_dim -> fail-fast ValueError (codex #151 P2).
+
+    The cache key is sample_id + tag (NOT target_dim), so a stale cache silently
+    reuses wrong-shape src latents. _real_inputs_mode2 validates every unique
+    latent's spatial shape against the recipe's target_dim / divisor and raises.
+    """
+    from tests.test_paired_reward_real import _save_controlnet_export
+
+    from manifold.data import paired_brats as pb
+    from manifold.data import paired_latent_dataset as pld_mod
+    from manifold.training import grpo_cli, paired_reward_cli
+
+    _save_controlnet_export(tmp_path / "native")
+    _save_mode2_reward_ckpt(tmp_path / "reward.ckpt", in_channels=4)
+
+    train_manifest, val_manifest = _fake_mode2_manifests()
+    monkeypatch.setattr(pb, "build_brats_pair_manifest", lambda *a, **k: train_manifest + val_manifest)
+    monkeypatch.setattr(
+        paired_reward_cli, "_train_val_manifests", lambda cfg, manifest: (train_manifest, val_manifest)
+    )
+
+    # A fake PairedLatentDataset exposing the real cache interface (source + raw_latent)
+    # but serving a WRONG-shape latent. The recipe target_dim [128,128,64] / divisor 4
+    # (autoencoder [64,128,256] -> div 4) expects ceil -> (32,32,16); serve (16,16,8).
+    class _FakePLDStale:
+        class source:
+            @staticmethod
+            def unique_sample_ids():
+                return ["s0", "s1", "s2", "s3"]
+
+        def __init__(self, vol_ds, encode_fn=None, cache_dir=None, cache_tag=None):
+            self.scaling_factor = None
+
+        def warm_cache(self, *a, **k):
+            return None
+
+        def __len__(self):
+            return 4
+
+        def raw_latent(self, sid):
+            return torch.randn(4, 16, 16, 8)  # WRONG spatial (16,16,8) != (32,32,16)
+
+    monkeypatch.setattr(pld_mod, "PairedLatentDataset", _FakePLDStale)
+
+    cfg = _mode2_cfg(tmp_path)  # dim [128,128,64]; autoencoder [8,8] -> divisor 2 -> (64,64,32)
+    with pytest.raises(ValueError, match="Cached paired latent"):
+        grpo_cli._real_inputs_mode2(
+            cfg, str(tmp_path / "native"), str(tmp_path / "reward.ckpt"),
+            str(tmp_path / "cache"), torch.device("cpu"),
+        )

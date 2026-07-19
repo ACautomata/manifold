@@ -627,6 +627,11 @@ def _real_inputs_mode2(
     controlnet.to(device)
     for p in controlnet.parameters():
         p.requires_grad_(True)  # the ControlNet is the only Mode-2 trainable arm
+    # The frozen KL anchor (ADR-0015): a deepcopy of the initial (base, controlnet)
+    # pair taken BEFORE any GRPO update. The recipe enables kl_coef (anti-reward-hacking);
+    # without this reference the GRPOModule's _transition_kl early-returns and the
+    # anchor silently disables (codex #151 P1). The Module freezes + unregisters both.
+    reference_policy = (copy.deepcopy(base), copy.deepcopy(controlnet))
 
     # 2. Paired conditioning: the paired train/val split warmed from the paired latent
     # cache. The cache carries UNSCALED latents; scale-on-read uses the export factor.
@@ -672,6 +677,31 @@ def _real_inputs_mode2(
         return ds
 
     train_ds, val_ds = _ds(train_manifest), _ds(val_manifest)
+
+    # The paired cache is keyed by sample_id + cache_tag (NOT target_dim), so a
+    # --latents-dir pointing at a cache warmed at a DIFFERENT target_dim silently
+    # reuses wrong-shape src latents — the Mode-2 ControlNet then fails at the first
+    # forward (its sampled rollout shape != the cached src shape). Mirror the
+    # every-entry shape check paired_reward_cli._real_inputs uses (codex #151 P2):
+    # validate EVERY unique latent's spatial shape (both splits) against this
+    # recipe's target_dim / divisor and fail fast. CEIL division (the volume dataset
+    # zero-pads each dim up to a divisor multiple before encoding, so the latent
+    # spatial is ceil(target_dim / divisor)). Test fakes (no source/raw_latent)
+    # bypass this — they don't model the encode.
+    if hasattr(train_ds, "raw_latent") and hasattr(train_ds, "source"):
+        expected_spatial = tuple(-(-d // divisor) for d in target_dim)  # ceil(d / divisor)
+        for split_name, ds in (("train", train_ds), ("val", val_ds)):
+            for sid in ds.source.unique_sample_ids():
+                cached_spatial = tuple(ds.raw_latent(sid).shape[1:])
+                if cached_spatial != expected_spatial:
+                    raise ValueError(
+                        f"Cached paired latent ({split_name}, {sid}) spatial shape "
+                        f"{cached_spatial} does not match the Mode-2 recipe's "
+                        f"target_dim={target_dim} / divisor={divisor} = {expected_spatial} "
+                        f"(ceil). The paired cache was built with a different target_dim "
+                        f"(or is a mixed/partial cache); point --latents-dir at a matching "
+                        f"cache or re-warm it."
+                    )
 
     # GRPO is generative — the rollout samples the group noise; the batch carries only
     # the ControlNet condition ({src_latent, src_label, tgt_label, spacing}). Normalize
@@ -747,6 +777,7 @@ def _real_inputs_mode2(
         train_ds=_PairedCondDS(train_ds),
         val_ds=_PairedCondDS(val_ds),
         latent_shape=latent_shape,
+        reference_policy=reference_policy,  # the (base, controlnet) KL anchor (ADR-0015)
         controlnet=controlnet,  # the ONLY trainable arm
         # No FID triple: Mode-2 selects on val/mean_reward (the unconditional FID would
         # be a constant frozen-base metric — see run_grpo_training's mode2 skip).
