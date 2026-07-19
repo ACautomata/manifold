@@ -251,11 +251,12 @@ def main(argv: list[str] | None = None, *, data_provider=None) -> int:
 def _real_inputs(
     cfg, native_dir: str, latents_dir: str, device: torch.device
 ) -> PairedRewardInputs:
-    """Build the real paired-reward inputs from the paired native export + latent cache.
+    """Build the real paired-reward inputs from the ControlNet native export + latent cache.
 
-    Loads the frozen paired generator (``--native-dir``, issue #94's
-    :func:`~manifold.data.paired_reward_pairs.load_frozen_paired_generator` - raw
-    arm + base scheduler + scaling_factor), resolves the **paired** train/val split
+    Loads the frozen ControlNet generator (``--native-dir``, T7's
+    :func:`~manifold.data.paired_reward_pairs.load_frozen_controlnet_generator` —
+    frozen base + ControlNet + base scheduler + scaling_factor), resolves the
+    **paired** train/val split
     (``_train_val_manifests`` / ``val_data_base_dir`` / ``val_fraction`` - NOT JiT
     reward's ``partition_subjects``, ADR-0022), warms the paired latent cache over
     each split (reusing the existing ``paired_train`` cache - disjoint sample_ids
@@ -271,7 +272,7 @@ def _real_inputs(
     from ..config import autoencoder_divisor
     from ..data.paired_brats import build_brats_pair_manifest
     from ..data.paired_latent_dataset import PairedLatentDataset
-    from ..data.paired_reward_pairs import build_paired_reward_inputs, load_frozen_paired_generator
+    from ..data.paired_reward_pairs import build_paired_reward_inputs, load_frozen_controlnet_generator
     from ..data.paired_volume_dataset import PairedNiftiVolumeDataset
     from .paired_cli import _train_val_manifests
 
@@ -282,10 +283,15 @@ def _real_inputs(
     target_dim = tuple(int(d) for d in inf_cfg.dim)
     divisor = autoencoder_divisor(cfg)
 
-    # The frozen paired generator (raw arm, base scheduler, scaling_factor).
-    generator, base_scheduler, scaling_factor = load_frozen_paired_generator(native_dir)
+    # The frozen ControlNet generator (raw arm): base UNet + ControlNet + base
+    # scheduler + scaling_factor (ADR-0027/T7 — the fake source is the supervised
+    # ControlNet's noise→data generation, replacing the deleted src→tgt rollout).
+    generator, controlnet, base_scheduler, scaling_factor = load_frozen_controlnet_generator(native_dir)
     generator.to(device).eval()
     for p in generator.parameters():
+        p.requires_grad_(False)
+    controlnet.to(device).eval()
+    for p in controlnet.parameters():
         p.requires_grad_(False)
 
     # The PAIRED 2-way subject split (ADR-0022): resolve via _train_val_manifests
@@ -380,6 +386,7 @@ def _real_inputs(
         val_ds=val_ds,
         generator=generator,
         base_scheduler=base_scheduler,
+        controlnet=controlnet,
         num_steps=num_steps,
         probe_num_steps=probe_num_steps,
         n_probe=n_probe,

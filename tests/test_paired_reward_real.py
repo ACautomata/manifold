@@ -49,6 +49,35 @@ class _IdentityPairedGen(nn.Module):
         return sample[:, :C_LATENT]
 
 
+def _save_controlnet_export(native_dir) -> None:
+    """Write a minimal ControlNet native export (base UNet + ControlNet + VAE + scheduler).
+
+    The reward's fake source is the ControlNet generator (T7): ``_real_inputs`` loads
+    it via ``load_frozen_controlnet_generator``, which expects the
+    :class:`ControlNetLatentFlowPipeline` per-component layout (a ``controlnet/``
+    subdirectory the old paired export did not have). The base ``out`` conv is
+    re-initialized so the ControlNet's residual effect is visible (the zero-init
+    ``out`` would mask it).
+    """
+    from manifold import (
+        AutoencoderKL,
+        ControlNet3DConditionModel,
+        ControlNetLatentFlowPipeline,
+        UNet3DConditionModel,
+    )
+
+    torch.manual_seed(0)
+    base = UNet3DConditionModel(num_class_embeds=4, include_spacing_input=True)
+    for p in base.unet.out.parameters():
+        if p.abs().sum().item() == 0.0:
+            nn.init.normal_(p, std=0.01)
+    controlnet = ControlNet3DConditionModel(num_class_embeds=4, include_spacing_input=True)
+    controlnet.load_base_encoder_weights(base)
+    ControlNetLatentFlowPipeline(
+        base, controlnet, AutoencoderKL(scaling_factor=0.5), FlowMatchHeunDiscreteScheduler()
+    ).save_pretrained(str(native_dir))
+
+
 class _FakePairedLatentDS(Dataset):
     """A warmed ``PairedLatentDataset`` stand-in: emits the 5-key paired contract.
 
@@ -270,80 +299,16 @@ def test_real_inputs_loads_generator_and_resolves_paired_split(tmp_path, monkeyp
     paired split resolves, and the returned inputs carry precomputed pairs (no
     generator held by the Module downstream).
     """
-    import lightning.pytorch as pl
     import omegaconf
-    import stable_pretraining as spt
-    from torch.utils.data import DataLoader
 
-    from manifold import AutoencoderKL, PairedLatentFlowPipeline, UNet3DConditionModel
     from manifold.data import paired_brats as pb
-    from manifold.modules.paired_latent_flow import PairedLatentFlowModule
     from manifold.training import paired_cli as pcli
     from manifold.training import paired_reward_cli
-    from manifold.training.export import export_to_native
 
-    # Build a paired native export (raw arm) via #94's export bridge.
-    torch.manual_seed(0)
-    unet = UNet3DConditionModel(
-        in_channels=2 * C_LATENT,
-        out_channels=C_LATENT,
-        num_class_embeds=4,
-        include_spacing_input=True,
-    )
-    for p in unet.parameters():
-        if p.abs().sum().item() == 0.0:
-            torch.nn.init.normal_(p, std=0.01)
-    module = PairedLatentFlowModule(
-        unet,
-        FlowMatchHeunDiscreteScheduler(),
-        lr=1e-2,
-        lr_warmup_steps=0,
-        num_train_examples=4,
-        train_batch_size=2,
-        n_epochs=1,
-    )
-    vae = AutoencoderKL(scaling_factor=0.5)
-    trainer = pl.Trainer(
-        accelerator="cpu",
-        devices=1,
-        max_epochs=1,
-        logger=False,
-        enable_progress_bar=False,
-        enable_checkpointing=False,
-        enable_model_summary=False,
-        num_sanity_val_steps=0,
-    )
-
-    class _D(torch.utils.data.Dataset):
-        def __len__(self):
-            return 4
-
-        def __getitem__(self, i):
-            return {
-                "src_latent": torch.randn(C_LATENT, 4, 4, 4),
-                "tgt_latent": torch.randn(C_LATENT, 4, 4, 4),
-                "src_label": torch.tensor(0, dtype=torch.long),
-                "tgt_label": torch.tensor(1, dtype=torch.long),
-                "spacing": torch.tensor([1.0, 1.0, 1.0]),
-            }
-
-    trainer.fit(module, datamodule=spt.data.DataModule(train=DataLoader(_D(), batch_size=2)))
-    ckpt_path = str(tmp_path / "paired.ckpt")
-    trainer.save_checkpoint(ckpt_path)
-    fresh = UNet3DConditionModel(
-        in_channels=2 * C_LATENT,
-        out_channels=C_LATENT,
-        num_class_embeds=4,
-        include_spacing_input=True,
-    )
-    export_to_native(
-        ckpt_path,
-        str(tmp_path / "native"),
-        unet=fresh,
-        vae=vae,
-        scheduler=FlowMatchHeunDiscreteScheduler(),
-        pipeline_cls=PairedLatentFlowPipeline,
-    )
+    # Write a minimal ControlNet native export directly (the reward's fake source is
+    # the ControlNet generator post-T7). No paired training/export needed — the
+    # reward consumes the ControlNet's generation.
+    _save_controlnet_export(tmp_path / "native")
 
     # Fake the BraTS manifest + the paired split (no NIfTIs on CPU): a train + val
     # manifest so build_paired_reward_inputs gets non-empty splits. Patch the SOURCE
@@ -433,22 +398,12 @@ def test_real_inputs_raises_on_no_val_split(tmp_path, monkeypatch):
     """No held-out val split -> clear ValueError (train never reused as val, ADR-0022)."""
     import omegaconf
 
-    from manifold import AutoencoderKL, PairedLatentFlowPipeline, UNet3DConditionModel
     from manifold.data import paired_brats as pb
     from manifold.training import paired_cli as pcli
     from manifold.training import paired_reward_cli
 
-    # A minimal paired native export so the generator loads.
-    torch.manual_seed(0)
-    unet = UNet3DConditionModel(
-        in_channels=2 * C_LATENT,
-        out_channels=C_LATENT,
-        num_class_embeds=4,
-        include_spacing_input=True,
-    )
-    PairedLatentFlowPipeline(
-        unet, AutoencoderKL(scaling_factor=0.5), FlowMatchHeunDiscreteScheduler()
-    ).save_pretrained(str(tmp_path / "native"))
+    # A minimal ControlNet native export so the generator loads (T7).
+    _save_controlnet_export(tmp_path / "native")
 
     train_manifest = [
         {"src": f"/t/s{i}-t1n.nii.gz", "tgt": f"/t/s{i}-t1c.nii.gz", "src_label": 0, "tgt_label": 1}
@@ -561,21 +516,11 @@ def test_real_inputs_mirrors_paired_reward_val_fraction_to_root(tmp_path, monkey
     """
     import omegaconf
 
-    from manifold import AutoencoderKL, PairedLatentFlowPipeline, UNet3DConditionModel
     from manifold.data import paired_brats as pb
     from manifold.training import paired_cli as pcli
     from manifold.training import paired_reward_cli
 
-    torch.manual_seed(0)
-    unet = UNet3DConditionModel(
-        in_channels=2 * C_LATENT,
-        out_channels=C_LATENT,
-        num_class_embeds=4,
-        include_spacing_input=True,
-    )
-    PairedLatentFlowPipeline(
-        unet, AutoencoderKL(scaling_factor=0.5), FlowMatchHeunDiscreteScheduler()
-    ).save_pretrained(str(tmp_path / "native"))
+    _save_controlnet_export(tmp_path / "native")
 
     train_manifest = [
         {"src": f"/t/s{i}-t1n.nii.gz", "tgt": f"/t/s{i}-t1c.nii.gz", "src_label": 0, "tgt_label": 1}
@@ -621,22 +566,12 @@ def test_real_inputs_rejects_stale_cache_shape(tmp_path, monkeypatch):
     import omegaconf
     import pytest
 
-    from manifold import AutoencoderKL, PairedLatentFlowPipeline, UNet3DConditionModel
     from manifold.data import paired_brats as pb
     from manifold.data import paired_latent_dataset as pld_mod
     from manifold.training import paired_cli as pcli
     from manifold.training import paired_reward_cli
 
-    torch.manual_seed(0)
-    unet = UNet3DConditionModel(
-        in_channels=2 * C_LATENT,
-        out_channels=C_LATENT,
-        num_class_embeds=4,
-        include_spacing_input=True,
-    )
-    PairedLatentFlowPipeline(
-        unet, AutoencoderKL(scaling_factor=0.5), FlowMatchHeunDiscreteScheduler()
-    ).save_pretrained(str(tmp_path / "native"))
+    _save_controlnet_export(tmp_path / "native")
 
     train_manifest = [
         {"src": f"/t/s{i}-t1n.nii.gz", "tgt": f"/t/s{i}-t1c.nii.gz", "src_label": 0, "tgt_label": 1}
@@ -719,21 +654,11 @@ def test_real_inputs_preserves_explicit_root_val_fraction(tmp_path, monkeypatch)
     import omegaconf
     import pytest
 
-    from manifold import AutoencoderKL, PairedLatentFlowPipeline, UNet3DConditionModel
     from manifold.data import paired_brats as pb
     from manifold.training import paired_cli as pcli
     from manifold.training import paired_reward_cli
 
-    torch.manual_seed(0)
-    unet = UNet3DConditionModel(
-        in_channels=2 * C_LATENT,
-        out_channels=C_LATENT,
-        num_class_embeds=4,
-        include_spacing_input=True,
-    )
-    PairedLatentFlowPipeline(
-        unet, AutoencoderKL(scaling_factor=0.5), FlowMatchHeunDiscreteScheduler()
-    ).save_pretrained(str(tmp_path / "native"))
+    _save_controlnet_export(tmp_path / "native")
 
     train_manifest = [
         {"src": f"/t/s{i}-t1n.nii.gz", "tgt": f"/t/s{i}-t1c.nii.gz", "src_label": 0, "tgt_label": 1}
@@ -776,22 +701,12 @@ def test_real_inputs_rejects_mixed_cache_shape(tmp_path, monkeypatch):
     import omegaconf
     import pytest
 
-    from manifold import AutoencoderKL, PairedLatentFlowPipeline, UNet3DConditionModel
     from manifold.data import paired_brats as pb
     from manifold.data import paired_latent_dataset as pld_mod
     from manifold.training import paired_cli as pcli
     from manifold.training import paired_reward_cli
 
-    torch.manual_seed(0)
-    unet = UNet3DConditionModel(
-        in_channels=2 * C_LATENT,
-        out_channels=C_LATENT,
-        num_class_embeds=4,
-        include_spacing_input=True,
-    )
-    PairedLatentFlowPipeline(
-        unet, AutoencoderKL(scaling_factor=0.5), FlowMatchHeunDiscreteScheduler()
-    ).save_pretrained(str(tmp_path / "native"))
+    _save_controlnet_export(tmp_path / "native")
 
     train_manifest = [
         {"src": f"/t/s{i}-t1n.nii.gz", "tgt": f"/t/s{i}-t1c.nii.gz", "src_label": 0, "tgt_label": 1}
@@ -905,21 +820,11 @@ def test_real_inputs_mirrors_val_fraction_for_non_directory_val_dir(tmp_path, mo
     import omegaconf
     import pytest
 
-    from manifold import AutoencoderKL, PairedLatentFlowPipeline, UNet3DConditionModel
     from manifold.data import paired_brats as pb
     from manifold.training import paired_cli as pcli
     from manifold.training import paired_reward_cli
 
-    torch.manual_seed(0)
-    unet = UNet3DConditionModel(
-        in_channels=2 * C_LATENT,
-        out_channels=C_LATENT,
-        num_class_embeds=4,
-        include_spacing_input=True,
-    )
-    PairedLatentFlowPipeline(
-        unet, AutoencoderKL(scaling_factor=0.5), FlowMatchHeunDiscreteScheduler()
-    ).save_pretrained(str(tmp_path / "native"))
+    _save_controlnet_export(tmp_path / "native")
 
     train_manifest = [
         {"src": f"/t/s{i}-t1n.nii.gz", "tgt": f"/t/s{i}-t1c.nii.gz", "src_label": 0, "tgt_label": 1}

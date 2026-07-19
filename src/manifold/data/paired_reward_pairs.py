@@ -35,6 +35,7 @@ import torch
 from lightning.pytorch.utilities.rank_zero import rank_zero_info
 from torch import Tensor
 
+from ..modules.controlnet_sampler import controlnet_partial_rollout, controlnet_rollout
 from ..modules.paired_sampler import partial_paired_rollout, sample_paired_latent_flow
 from ..schedulers.scheduling_flow_match_heun import FlowMatchHeunDiscreteScheduler
 from ..schedulers.scheduling_partial_flow_match_heun import PartialFlowMatchHeunScheduler
@@ -119,6 +120,7 @@ def build_paired_reward_pairs(
     generator,
     scheduler: FlowMatchHeunDiscreteScheduler,
     *,
+    controlnet=None,
     src_label,
     tgt_label,
     spacing: Sequence[float] | Tensor,
@@ -128,18 +130,26 @@ def build_paired_reward_pairs(
 ) -> RewardPairDataset:
     """Build real-vs-fake condition-aware pairs: ``cat([x_src, real_tgt])`` vs ``cat([x_src, gen_tgt])``.
 
-    The generated tgt is the full ``0 -> 1`` src->tgt rollout
-    (:func:`sample_paired_latent_flow`, the base scheduler). The winner is the real
-    target latent, the loser the model's generation - both concatenated with the
-    (shared) source (ADR-0018/0019). Deterministic given ``x_src`` (the rollout has
-    no stochastic input) -> re-building yields byte-identical fakes (ADR-0020).
+    The generated tgt is the fake source's full ``0 -> 1`` rollout over the base
+    scheduler. **Generator source (ADR-0027/T7):** when ``controlnet`` is given the
+    fake is the **supervised ControlNet's** noise→data generation
+    (:func:`~manifold.modules.controlnet_rollout` — frozen base + ControlNet, fresh
+    Gaussian ``t = 0`` endpoint, ``x_src`` the control signal); otherwise it is the
+    paired JiT's deterministic src→tgt rollout
+    (:func:`~manifold.modules.sample_paired_latent_flow`, the pre-ControlNet path).
+    The winner is the real target latent, the loser the model's generation — both
+    concatenated with the (shared) source (ADR-0018/0019).
 
     Args:
         x_src / x_tgt: scaled source / real-target latents ``[N, C_latent, D, H, W]``
             (the caller scales via ``vae.scaling_factor`` - ADR-0021).
-        generator: the frozen Paired-JiT UNet (``in_channels = 2·C_latent``).
+        generator: the frozen **base UNet** (Mode-2) or the paired JiT UNet
+            (pre-ControlNet).
         scheduler: the base :class:`FlowMatchHeunDiscreteScheduler` (the loser is a
             full rollout - NOT the Partial subclass).
+        controlnet: the frozen :class:`~manifold.ControlNet3DConditionModel`. When
+            set the fake source is the ControlNet noise→data rollout; ``None`` ⇒ the
+            paired JiT src→tgt rollout (backward-compat).
         src_label / tgt_label: scalar ``int`` (broadcast) or length-``N`` per-sample
             labels (a batch mixing contrast directions).
         spacing: ``[3]`` (broadcast) or ``[N, 3]`` (per-sample).
@@ -178,9 +188,18 @@ def build_paired_reward_pairs(
         tgt_lab = (
             tgt_lab_full[start : start + b] if isinstance(tgt_lab_full, Tensor) else tgt_lab_full
         )
-        gen_tgt = sample_paired_latent_flow(
-            generator, scheduler, src_b, spacing_b, src_lab, tgt_lab, num_inference_steps=num_steps
-        ).detach()
+        if controlnet is not None:
+            # ControlNet noise→data fake (T7): fresh Gaussian start (the t = 0
+            # endpoint); x_src is the control signal, not a transport endpoint.
+            noise = torch.randn(src_b.shape, device=src_b.device, dtype=src_b.dtype)
+            gen_tgt = controlnet_rollout(
+                generator, controlnet, scheduler, noise, src_b, spacing_b, src_lab, tgt_lab,
+                num_inference_steps=num_steps,
+            ).detach()
+        else:
+            gen_tgt = sample_paired_latent_flow(
+                generator, scheduler, src_b, spacing_b, src_lab, tgt_lab, num_inference_steps=num_steps
+            ).detach()
         # Condition-aware concat: cat([x_src, tgt]) along channels (in_channels = 2·C).
         winners.append(torch.cat([src_b, tgt_b], dim=1).detach().cpu())
         losers.append(torch.cat([src_b, gen_tgt], dim=1).detach().cpu())
@@ -194,6 +213,7 @@ def build_paired_reward_probe(
     generator,
     partial_scheduler: PartialFlowMatchHeunScheduler,
     *,
+    controlnet=None,
     src_label,
     tgt_label,
     spacing: Sequence[float] | Tensor,
@@ -205,16 +225,19 @@ def build_paired_reward_probe(
 ) -> RewardPairDataset:
     """Build the generated-end probe: both samples generated, ordered by translation-progress ``t``.
 
-    Both samples start from ``z = add_noise(x_tgt, x_src, t_start)`` at
-    ``t_start ∈ t_range`` (default ``[0, 0.5)`` - ADR-0023) and roll to ``t = 1`` via
-    :func:`partial_paired_rollout`; the **winner is the higher-``t``** sample (less
-    translation -> closer to real ``x_tgt`` -> higher quality). Concatenated with
-    ``x_src`` for condition-aware scoring (``val/gen_pair_acc`` - the within-fake
-    ranking the checkpoint monitors; ``val/pair_acc`` saturates, ADR-0023).
+    Both samples start from ``z = add_noise(x_tgt, ε, t_start)`` at
+    ``t_start ∈ t_range`` (default ``[0, 0.5)`` - ADR-0023) and roll to ``t = 1``; the
+    **winner is the higher-``t``** sample (less transport -> closer to real ``x_tgt``
+    -> higher quality). **Generator source (T7):** when ``controlnet`` is given the
+    partial rollout is :func:`~manifold.modules.controlnet_partial_rollout` (frozen
+    base + ControlNet, ``x_src`` the control signal); otherwise the paired JiT's
+    :func:`~manifold.modules.partial_paired_rollout`. Concatenated with ``x_src`` for
+    condition-aware scoring (``val/gen_pair_acc`` - the within-fake ranking the
+    checkpoint monitors; ``val/pair_acc`` saturates, ADR-0023).
 
-    Deterministic given the seed (the ``t`` draws use a fresh seeded generator and
-    the rollout is deterministic) -> re-building with the same seed yields
-    byte-identical probe pairs.
+    Deterministic given the seed (the ``t`` draws + the ControlNet corruption ``ε``
+    use a fresh seeded generator and the rollout is deterministic) -> re-building
+    with the same seed yields byte-identical probe pairs.
     """
     src = x_src if isinstance(x_src, Tensor) else torch.stack(list(x_src))
     tgt = x_tgt if isinstance(x_tgt, Tensor) else torch.stack(list(x_tgt))
@@ -248,28 +271,40 @@ def build_paired_reward_probe(
         tgt_lab = (
             tgt_lab_full[start : start + b] if isinstance(tgt_lab_full, Tensor) else tgt_lab_full
         )
-        gen_w = partial_paired_rollout(
-            generator,
-            partial_scheduler,
-            src_b,
-            tgt_b,
-            winner_t,
-            spacing_b,
-            src_lab,
-            tgt_lab,
-            num_steps=num_steps,
-        ).detach()
-        gen_l = partial_paired_rollout(
-            generator,
-            partial_scheduler,
-            src_b,
-            tgt_b,
-            loser_t,
-            spacing_b,
-            src_lab,
-            tgt_lab,
-            num_steps=num_steps,
-        ).detach()
+        if controlnet is not None:
+            # ControlNet partial noise→data probe (T7): corrupt endpoint is Gaussian ε
+            # (the seeded generator keeps the probe reproducible); x_src the control.
+            gen_w = controlnet_partial_rollout(
+                generator, controlnet, partial_scheduler, src_b, tgt_b, winner_t,
+                spacing_b, src_lab, tgt_lab, num_steps=num_steps, generator=gen,
+            ).detach()
+            gen_l = controlnet_partial_rollout(
+                generator, controlnet, partial_scheduler, src_b, tgt_b, loser_t,
+                spacing_b, src_lab, tgt_lab, num_steps=num_steps, generator=gen,
+            ).detach()
+        else:
+            gen_w = partial_paired_rollout(
+                generator,
+                partial_scheduler,
+                src_b,
+                tgt_b,
+                winner_t,
+                spacing_b,
+                src_lab,
+                tgt_lab,
+                num_steps=num_steps,
+            ).detach()
+            gen_l = partial_paired_rollout(
+                generator,
+                partial_scheduler,
+                src_b,
+                tgt_b,
+                loser_t,
+                spacing_b,
+                src_lab,
+                tgt_lab,
+                num_steps=num_steps,
+            ).detach()
         winners.append(torch.cat([src_b, gen_w], dim=1).detach().cpu())
         losers.append(torch.cat([src_b, gen_l], dim=1).detach().cpu())
     rank_zero_info(
@@ -318,6 +353,47 @@ def load_frozen_paired_generator(native_dir: str | Path):
     return pipe.unet, scheduler, scaling_factor
 
 
+def load_frozen_controlnet_generator(native_dir: str | Path):
+    """Load the frozen ControlNet generator (the reward's fake source) from a ControlNet native export.
+
+    The ControlNet counterpart of :func:`load_frozen_paired_generator` (ADR-0027/T7).
+    The native dir is the layout written by
+    :meth:`~manifold.ControlNetLatentFlowPipeline.save_pretrained` (the raw arm, no
+    EMA). The generator is the **supervised ControlNet's** noise→data policy: a
+    **frozen base UNet** + a **frozen ControlNet** whose residuals steer it. The
+    reward's fakes become the ControlNet's generation
+    (:func:`~manifold.modules.controlnet_rollout` /
+    :func:`~manifold.modules.controlnet_partial_rollout`), replacing the deleted
+    src→tgt rollout.
+
+    - The scheduler is the **base** :class:`FlowMatchHeunDiscreteScheduler` (the
+      loser is a full ``0 -> 1`` rollout), NOT the Partial subclass — only the probe
+      path constructs that (ADR-0023).
+    - Both arms are frozen + eval + grad-disabled (the reward precomputes fakes once,
+      ADR-0020). The VAE's ``scaling_factor`` is returned so callers scale the raw
+      paired-cache src latents into the generator's training space (ADR-0021).
+
+    Returns:
+        ``(base_unet, controlnet, scheduler, scaling_factor)`` — the frozen + eval
+        base UNet, the frozen ControlNet, the base scheduler, and the VAE scaling
+        factor.
+    """
+    from ..pipelines.controlnet_latent_flow import ControlNetLatentFlowPipeline
+
+    pipe = ControlNetLatentFlowPipeline.from_pretrained(str(native_dir))
+    # The base scheduler (NOT the Partial subclass): the loser is a full 0->1
+    # rollout. Only the probe constructs Partial (ADR-0023).
+    scheduler = FlowMatchHeunDiscreteScheduler(**pipe.scheduler.config)
+    scaling_factor = float(pipe.vae.scaling_factor)
+    pipe.unet.eval()
+    for p in pipe.unet.parameters():
+        p.requires_grad_(False)
+    pipe.controlnet.eval()
+    for p in pipe.controlnet.parameters():
+        p.requires_grad_(False)
+    return pipe.unet, pipe.controlnet, scheduler, scaling_factor
+
+
 def _stack_paired_latents(dataset) -> tuple[Tensor, Tensor, Tensor, Tensor, Tensor]:
     """Stack a warmed :class:`~manifold.data.PairedLatentDataset` into ``(src, tgt, src_lab, tgt_lab, spacing)``.
 
@@ -353,6 +429,7 @@ def build_paired_reward_inputs(
     val_ds,
     generator,
     base_scheduler: FlowMatchHeunDiscreteScheduler,
+    controlnet=None,
     num_steps: int,
     probe_num_steps: int | None = None,
     n_probe: int = 64,
@@ -379,9 +456,12 @@ def build_paired_reward_inputs(
     Args:
         train_ds / val_ds: warmed :class:`PairedLatentDataset` (scale-on-read; set
             ``scaling_factor`` to the export's before calling).
-        generator: the frozen Paired-JiT UNet (``in_channels = 2·C_latent``).
+        generator: the frozen **base UNet** (Mode-2, with ``controlnet``) or the
+            paired JiT UNet (pre-ControlNet).
         base_scheduler: the base :class:`FlowMatchHeunDiscreteScheduler` (the loser
             is a full rollout).
+        controlnet: the frozen :class:`~manifold.ControlNet3DConditionModel` (Mode-2);
+            when set the fake source is the ControlNet noise→data rollout (T7).
         num_steps: rollout Heun budget (a one-time precompute cost, ADR-0020).
         probe_num_steps: probe rollout budget (defaults to ``num_steps``).
         n_probe: max val latents for the generated-end probe.
@@ -402,6 +482,7 @@ def build_paired_reward_inputs(
         x_tgt_tr,
         generator,
         base_scheduler,
+        controlnet=controlnet,
         src_label=src_lab_tr,
         tgt_label=tgt_lab_tr,
         spacing=spacing_tr,
@@ -415,6 +496,7 @@ def build_paired_reward_inputs(
         x_tgt_va,
         generator,
         base_scheduler,
+        controlnet=controlnet,
         src_label=src_lab_va,
         tgt_label=tgt_lab_va,
         spacing=spacing_va,
@@ -428,6 +510,7 @@ def build_paired_reward_inputs(
         x_tgt_va[:n_probe],
         generator,
         partial_scheduler,
+        controlnet=controlnet,
         src_label=src_lab_va[:n_probe],
         tgt_label=tgt_lab_va[:n_probe],
         spacing=spacing_va[:n_probe],
@@ -568,5 +651,6 @@ __all__ = [
     "build_paired_reward_pairs",
     "build_paired_reward_inputs",
     "build_paired_reward_probe",
+    "load_frozen_controlnet_generator",
     "load_frozen_paired_generator",
 ]

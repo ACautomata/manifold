@@ -37,6 +37,7 @@ from .paired_reward_pairs import (
     build_paired_bridge_noised_fakes,
     build_paired_reward_pairs,
     build_paired_reward_probe,
+    load_frozen_controlnet_generator,
     load_frozen_paired_generator,
 )
 from .paired_volume_dataset import PairedNiftiVolumeDataset
@@ -83,6 +84,7 @@ __all__ = [
     "generate_reward_pairs",
     "label_provider_from_config",
     "load_brats_labels",
+    "load_frozen_controlnet_generator",
     "load_frozen_denoiser",
     "load_frozen_paired_generator",
     "load_reward_pairs",
