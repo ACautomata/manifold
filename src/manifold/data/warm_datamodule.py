@@ -29,7 +29,6 @@ Two construction modes:
 
 from __future__ import annotations
 
-import logging
 import math
 import os
 from typing import Any
@@ -37,13 +36,12 @@ from typing import Any
 import torch
 import torch.distributed as dist
 from lightning.pytorch import LightningDataModule
+from lightning.pytorch.utilities.rank_zero import rank_zero_info
 from torch.utils.data import DataLoader, Dataset
 from torch.utils.data.distributed import DistributedSampler
 
 
 from .latent_pipeline import LatentPipeline, warm_latent_pipeline
-
-_log = logging.getLogger(__name__)
 
 
 class _ValidationDataset(Dataset):
@@ -220,7 +218,7 @@ class LatentWarmDataModule(LightningDataModule):
         # (allow_train_as_val) reuses train with a loud warning; otherwise an empty
         # loader yields 0 batches (validation is also disabled at the Trainer).
         if self._allow_train_as_val:
-            _log.warning(
+            rank_zero_info(
                 "LatentWarmDataModule: no held-out val; reusing TRAIN as val "
                 "(allow_train_as_val=True, smoke only) - val/* metrics are NOT held-out."
             )
@@ -314,7 +312,7 @@ class PairedWarmDataModule(LightningDataModule):
                 self._val_latent_ds, batch_size=self._batch_size, num_workers=self._num_workers
             )
         if self._allow_train_as_val:
-            _log.warning(
+            rank_zero_info(
                 "PairedWarmDataModule: no held-out val_latent_ds; reusing TRAIN as val "
                 "(allow_train_as_val=True, smoke only) - val/* metrics are NOT held-out."
             )

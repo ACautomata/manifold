@@ -16,7 +16,6 @@ feed a fake ``encode_fn`` + dummy VAE (it never calls :func:`load_vae`).
 
 from __future__ import annotations
 
-import logging
 import os
 from dataclasses import dataclass
 from pathlib import Path
@@ -24,6 +23,7 @@ from pathlib import Path
 import torch
 import torch.distributed as dist
 import torch.nn as nn
+from lightning.pytorch.utilities.rank_zero import rank_zero_info
 from monai.inferers import sliding_window_inference
 from omegaconf import DictConfig
 from torch import Tensor
@@ -70,7 +70,7 @@ def _load_checkpoint(path: str, map_location) -> dict:
     try:
         return torch.load(path, map_location=map_location, weights_only=True)
     except Exception as exc:  # noqa: BLE001 — fall back for exotic nested types
-        logging.getLogger(__name__).warning(
+        rank_zero_info(
             f"weights_only=True failed for {path} ({exc!r}); retrying with "
             "weights_only=False. Only load checkpoints from trusted sources."
         )
@@ -78,7 +78,7 @@ def _load_checkpoint(path: str, map_location) -> dict:
 
 
 def load_vae(
-    cfg: DictConfig, device: torch.device, logger: logging.Logger | None = None
+    cfg: DictConfig, device: torch.device
 ) -> nn.Module:
     """Build the VAE from the network config and load trained weights.
 
@@ -93,8 +93,7 @@ def load_vae(
         ckpt = ckpt["unet_state_dict"]
     vae.autoencoder.load_state_dict(ckpt)
     vae.eval()
-    if logger is not None:
-        logger.info(f"VAE loaded from {cfg.trained_autoencoder_path}")
+    rank_zero_info(f"VAE loaded from {cfg.trained_autoencoder_path}")
     return vae
 
 
@@ -104,7 +103,6 @@ def build_volume_dataset(
     target_dim: tuple[int, int, int],
     include_modality: bool,
     default_modality: int,
-    logger: logging.Logger,
 ) -> tuple[NiftiVolumeDataset, LabelProvider]:
     """Build the training volume dataset + its label provider (decoupled seam).
 
@@ -126,7 +124,7 @@ def build_volume_dataset(
             f"No training NIfTI found under data_base_dir={cfg.data_base_dir} "
             f"or json_data_list={json_list}."
         )
-    logger.info(f"num_files_train: {len(vol_ds)}; label_counts={vol_ds.label_counts()}")
+    rank_zero_info(f"num_files_train: {len(vol_ds)}; label_counts={vol_ds.label_counts()}")
     return vol_ds, provider
 
 
@@ -186,7 +184,6 @@ def build_encode_pipeline(
     cfg: DictConfig,
     *,
     device: torch.device,
-    logger: logging.Logger | None = None,
 ) -> tuple[nn.Module, EncodeFn]:
     """Load + freeze the pretrained VAE and build the sliding-window ``encode_fn``.
 
@@ -198,7 +195,7 @@ def build_encode_pipeline(
     sliding-window inference; ``autoencoder`` is still on *device* (the caller
     moves it to CPU after the cache is warm).
     """
-    autoencoder = load_vae(cfg, device, logger)
+    autoencoder = load_vae(cfg, device)
     for p in autoencoder.parameters():
         p.requires_grad_(False)
     return autoencoder, make_encode_fn(autoencoder, device, cfg)
@@ -212,7 +209,6 @@ def warm_latent_pipeline(
     cache_dir: str,
     cache_tag: str,
     device: torch.device,
-    logger: logging.Logger | None,
     rank: int | None = None,
     world: int | None = None,
     scale_factor_sample_size: int,
@@ -247,17 +243,16 @@ def warm_latent_pipeline(
         dist.barrier()
 
     latent_ds = LatentDataset(vol_ds, encode_fn=encode_fn, cache_dir=cache_dir, cache_tag=cache_tag)
-    latent_ds.warm_cache(device, logger, show_progress=rank == 0, rank=rank, world=world)
+    latent_ds.warm_cache(device, show_progress=rank == 0, rank=rank, world=world)
     latent_ds.free_encoder()
 
     autoencoder.cpu()
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
-    if logger is not None:
-        logger.info("VAE moved to CPU; training the UNet on cached latents.")
+    rank_zero_info("VAE moved to CPU; training the UNet on cached latents.")
 
     scale_factor = estimate_scale_factor(
-        latent_ds, autoencoder, sample_size=scale_factor_sample_size, logger=logger
+        latent_ds, autoencoder, sample_size=scale_factor_sample_size
     )
     return LatentPipeline(
         vol_ds=vol_ds,

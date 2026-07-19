@@ -14,13 +14,10 @@ exported "best" checkpoint is best for the weights that are published.
 
 from __future__ import annotations
 
-import logging
-
 import torch
+from lightning.pytorch.utilities.rank_zero import rank_zero_info
 
 from ..pipelines.latent_flow import LatentFlowPipeline
-
-_log = logging.getLogger(__name__)
 
 #: The wrapper's UNet params live under ``self.unet`` (the MAISI backbone), so
 #: the Lightning ``state_dict`` (rooted at the module) uses the ``"unet.unet."``
@@ -73,7 +70,7 @@ def export_to_native(
     }
     _bake_backbone(unet, backbone, strict=True)
     source = "unet_state_dict"
-    _log.info("Export baking %s as the inference UNet -> %s", source, output_dir)
+    rank_zero_info("Export baking %s as the inference UNet -> %s", source, output_dir)
 
     pipeline_cls(unet, vae, scheduler).save_pretrained(output_dir)
     return source

@@ -22,7 +22,6 @@ precomputed **once** (the generator is frozen ⇒ static across epochs) and reus
 from __future__ import annotations
 
 import argparse
-import logging
 from dataclasses import dataclass
 from typing import Any
 
@@ -41,8 +40,6 @@ from ..models.reward_model import RewardModel
 from ..modules.paired_reward import PairedRewardModule
 from .reward_cli import _build_checkpoint
 from .trainer import build_trainer, is_multi_gpu
-
-_log = logging.getLogger(__name__)
 
 
 @dataclass
@@ -339,7 +336,7 @@ def _real_inputs(
     def _ds(manifest_split):
         vol_ds = PairedNiftiVolumeDataset(manifest_split, target_dim=target_dim, divisor=divisor)
         ds = PairedLatentDataset(vol_ds, encode_fn=None, cache_dir=cache_dir, cache_tag=cache_tag)
-        ds.warm_cache(device, logger=_log, show_progress=False)
+        ds.warm_cache(device, show_progress=False)
         # Scale-on-read uses the EXPORT scaling_factor verbatim (ADR-0021): the
         # generator trained on latents scaled by this factor, so the rollout
         # operates in its training space. Never re-estimate.

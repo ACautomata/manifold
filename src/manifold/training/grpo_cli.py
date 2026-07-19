@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import argparse
 import copy
-import logging
 from dataclasses import dataclass
 from typing import Any, Sequence
 
@@ -27,8 +26,10 @@ import torch
 
 try:
     import lightning.pytorch as pl
+    from lightning.pytorch.utilities.rank_zero import rank_zero_info
 except ImportError:  # pragma: no cover
     import pytorch_lightning as pl  # type: ignore
+    from pytorch_lightning.utilities.rank_zero import rank_zero_info  # type: ignore
 
 from lightning.pytorch.callbacks import ModelCheckpoint
 
@@ -38,8 +39,6 @@ from ..metrics import FIDCallback
 from ..modules.grpo import GRPOModule
 from ..schedulers.scheduling_flow_match_grpo import FlowMatchGRPOScheduler
 from .trainer import build_trainer
-
-_log = logging.getLogger(__name__)
 
 
 @dataclass
@@ -444,7 +443,7 @@ def _real_inputs(
     try:
         ckpt = torch.load(str(reward_path), map_location="cpu", weights_only=True)
     except (pickle.UnpicklingError, ValueError):
-        _log.warning("reward ckpt %s needs weights_only=False (non-tensor state); loading trusted.", reward_path)
+        rank_zero_info("reward ckpt %s needs weights_only=False (non-tensor state); loading trusted.", reward_path)
         ckpt = torch.load(str(reward_path), map_location="cpu", weights_only=False)
     state = ckpt.get("state_dict", ckpt)
     reward_sd = {k[len("reward_model."):]: v for k, v in state.items() if k.startswith("reward_model.")}
@@ -472,7 +471,7 @@ def _real_inputs(
             f"Empty train ({len(train_items)}) / val ({len(val_items)}) subject split "
             f"from {len(items)} latents — adjust grpo.val_fraction."
         )
-    _log.info(
+    rank_zero_info(
         "GRPO real inputs: %d train / %d val conditioning subjects (%d / %d latents).",
         len(train_subjects), len(val_subjects), len(train_items), len(val_items),
     )

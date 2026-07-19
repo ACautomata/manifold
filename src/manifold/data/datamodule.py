@@ -9,16 +9,13 @@ per-rank latent *encoding* sharding is handled inside
 
 from __future__ import annotations
 
-import logging
-
 import stable_pretraining as spt
 from lightning.pytorch import LightningDataModule
+from lightning.pytorch.utilities.rank_zero import rank_zero_info
 from torch.utils.data import DataLoader
 
 from .base import MedicalDataset
 from .warm_datamodule import _validation_loader
-
-_log = logging.getLogger(__name__)
 
 
 class _DedupValDataModule(spt.data.DataModule):
@@ -79,7 +76,7 @@ def build_datamodule(
                 "validation). Set allow_train_as_val=True ONLY for smoke tests that do not "
                 "rely on val/* metrics."
             )
-        _log.warning(
+        rank_zero_info(
             "build_datamodule: val_dataset is None; reusing the TRAIN set as val "
             "(allow_train_as_val=True). val/* metrics are NOT held-out - do not use "
             "them for selection."

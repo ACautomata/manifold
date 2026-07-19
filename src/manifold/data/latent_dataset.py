@@ -23,7 +23,6 @@ the data stack (scale-on-read at ``__getitem__``).
 from __future__ import annotations
 
 import hashlib
-import logging
 import os
 from collections.abc import Callable
 from pathlib import Path
@@ -31,6 +30,7 @@ from typing import Any
 
 import torch
 import torch.distributed as dist
+from lightning.pytorch.utilities.rank_zero import rank_zero_info
 from torch import Tensor
 from tqdm import tqdm
 
@@ -108,7 +108,6 @@ class LatentDataset(MedicalDataset):
     def warm_cache(
         self,
         device: torch.device,
-        logger: logging.Logger | None = None,
         show_progress: bool = True,
         rank: int | None = None,
         world: int | None = None,
@@ -149,22 +148,21 @@ class LatentDataset(MedicalDataset):
         else:
             progress = tqdm(range(n), desc="Pre-encoding VAE latents", disable=not show_progress)
             self._ram = [self._materialize(i, device) for i in progress]
-        if logger is not None:
-            sample_ids_fn = getattr(self.source, "sample_ids", None)
-            if callable(sample_ids_fn):
-                hits = sum(
-                    1
-                    for sid in sample_ids_fn()
-                    if self.cache_dir is not None
-                    and _load_cache(self.cache_dir, sid, self.cache_tag) is not None
-                )
-            else:
-                hits = sum(1 for i in range(n) if self._disk_hit(i))
-            logger.info(
-                f"LatentDataset: materialized {len(self._ram)} latents "
-                f"(disk cache {hits}/{n} hits, cache_dir={self.cache_dir}, "
-                f"sharded={sharded})."
+        sample_ids_fn = getattr(self.source, "sample_ids", None)
+        if callable(sample_ids_fn):
+            hits = sum(
+                1
+                for sid in sample_ids_fn()
+                if self.cache_dir is not None
+                and _load_cache(self.cache_dir, sid, self.cache_tag) is not None
             )
+        else:
+            hits = sum(1 for i in range(n) if self._disk_hit(i))
+        rank_zero_info(
+            f"LatentDataset: materialized {len(self._ram)} latents "
+            f"(disk cache {hits}/{n} hits, cache_dir={self.cache_dir}, "
+            f"sharded={sharded})."
+        )
 
     def free_encoder(self) -> None:
         """Drop the encoder reference so the VAE can leave GPU before UNet training."""
@@ -260,7 +258,6 @@ def estimate_scale_factor(
     dataset: LatentDataset,
     vae: Any,
     sample_size: int = 64,
-    logger: logging.Logger | None = None,
 ) -> Tensor:
     """Estimate ``scale_factor = 1 / std(z)`` over the warmed **unscaled** cache.
 
@@ -279,6 +276,5 @@ def estimate_scale_factor(
     with torch.no_grad():
         vae.scaling_factor.fill_(float(scale))
     dataset.scaling_factor = float(scale)
-    if logger is not None:
-        logger.info(f"scale_factor -> {float(scale):.6f} (over {n} latents).")
+    rank_zero_info(f"scale_factor -> {float(scale):.6f} (over {n} latents).")
     return scale

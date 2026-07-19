@@ -16,7 +16,6 @@ Best-checkpoint selection monitors ``val/psnr`` (``mode="max"``); under DDP the 
 from __future__ import annotations
 
 import argparse
-import logging
 import os
 from dataclasses import dataclass
 from typing import Any
@@ -25,8 +24,10 @@ import torch
 
 try:
     import lightning.pytorch as pl
+    from lightning.pytorch.utilities.rank_zero import rank_zero_info
 except ImportError:  # pragma: no cover
     import pytorch_lightning as pl  # type: ignore
+    from pytorch_lightning.utilities.rank_zero import rank_zero_info  # type: ignore
 
 from lightning.pytorch.callbacks import ModelCheckpoint
 
@@ -37,8 +38,6 @@ from ..modules.paired_latent_flow import PairedLatentFlowModule
 from ..pipelines.paired_latent_flow import PairedLatentFlowPipeline
 from .metrics import LatentX0MAE, TrainLossLogger
 from .trainer import build_trainer
-
-_log = logging.getLogger(__name__)
 
 
 @dataclass
@@ -157,7 +156,7 @@ def run_paired_training(
         # leaving no val/psnr — the run finishes with no ranking metric. Force it to 1
         # so the decode always runs whenever Lightning validates (codex #91).
         if check_val_every_n_epoch is not None and every_n_epochs > 1:
-            _log.warning(
+            rank_zero_info(
                 "paired last-epoch-only val (check_val_every_n_epoch=%s) ignores "
                 "paired_eval.every_n_epochs=%d — forcing the PSNR/SSIM cadence to 1 so "
                 "the callback does not skip the single final-epoch validation pass.",
@@ -181,7 +180,7 @@ def run_paired_training(
             every_n_epochs=every_n_epochs,
         )
     else:
-        _log.warning(
+        rank_zero_info(
             "manifold-train-paired: no held-out validation split configured "
             "(val_fraction=0 / no val_data_base_dir). Validation is DISABLED - "
             "val/psnr will not be logged. Reusing the train set as val would leak "
@@ -389,7 +388,7 @@ def _train_val_manifests(cfg, manifest):
             )
         return manifest, val_manifest
     if val_dir:
-        _log.warning(
+        rank_zero_info(
             "paired val_data_base_dir=%s is not a directory; the native train/val "
             "split needs a BraTS directory (not a manifest JSON). Falling back to "
             "the val_fraction subject split.",
@@ -417,7 +416,6 @@ def _warm_data(cfg, device) -> tuple[_DataBundle, int]:
     )
     from ..data.paired_volume_dataset import PairedNiftiVolumeDataset
 
-    logger = logging.getLogger("manifold.train_paired")
     inf_cfg = cfg.diffusion_unet_inference
     target_dim = tuple(int(d) for d in inf_cfg.dim)
     divisor = autoencoder_divisor(cfg)
@@ -440,12 +438,12 @@ def _warm_data(cfg, device) -> tuple[_DataBundle, int]:
         if val_dir
         else f"val_fraction={float(opt(cfg, 'val_fraction', 0.0)):.3f}"
     )
-    logger.info(
+    rank_zero_info(
         f"paired manifest: {len(train_manifest)} train / {len(val_manifest)} val "
         f"pairs ({split_note}; {len(vol_ds.unique_sample_ids())} train unique volumes)."
     )
     if not has_val:
-        logger.warning(
+        rank_zero_info(
             "paired: no held-out val split resolved (%s) - validation will be "
             "DISABLED (val/psnr not logged). Hold out subjects (val_fraction>0) or "
             "set val_data_base_dir to enable; train data is never reused as val.",
@@ -458,7 +456,7 @@ def _warm_data(cfg, device) -> tuple[_DataBundle, int]:
     # local GPU inside setup(); PSNR's decode stages it to the UNet device at eval.
     # The CPU encode_fn built here is unused on the cold path (rebuilt in warm_fn).
     autoencoder, _cpu_encode_fn = build_encode_pipeline(
-        cfg, device=torch.device("cpu"), logger=logger
+        cfg, device=torch.device("cpu")
     )
     cache_dir = str(
         opt(cfg, "latent_cache_dir", os.path.join(str(cfg.model_dir), "paired_latent_cache"))
@@ -479,7 +477,7 @@ def _warm_data(cfg, device) -> tuple[_DataBundle, int]:
         latent_ds = PairedLatentDataset(
             vol_ds, encode_fn=encode_fn, cache_dir=cache_dir, cache_tag="paired_train"
         )
-        latent_ds.warm_cache(warm_device, logger=logger, show_progress=True)
+        latent_ds.warm_cache(warm_device, show_progress=True)
         val_latent_ds = None
         if val_manifest:
             val_vol_ds = PairedNiftiVolumeDataset(
@@ -488,14 +486,14 @@ def _warm_data(cfg, device) -> tuple[_DataBundle, int]:
             val_latent_ds = PairedLatentDataset(
                 val_vol_ds, encode_fn=encode_fn, cache_dir=cache_dir, cache_tag="paired_train"
             )
-            val_latent_ds.warm_cache(warm_device, logger=logger, show_progress=True)
+            val_latent_ds.warm_cache(warm_device, show_progress=True)
             val_latent_ds.free_encoder()
         latent_ds.free_encoder()
         autoencoder.cpu()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
         estimate_paired_scale_factor(
-            latent_ds, autoencoder, sample_size=val_subset_size, logger=logger
+            latent_ds, autoencoder, sample_size=val_subset_size
         )
         if val_latent_ds is not None:
             val_latent_ds.scaling_factor = latent_ds.scaling_factor
@@ -514,7 +512,7 @@ def _warm_data(cfg, device) -> tuple[_DataBundle, int]:
             os.makedirs(str(cfg.model_dir), exist_ok=True)
             scale_path = os.path.join(str(cfg.model_dir), "paired_scaling_factor.pt")
             torch.save(torch.tensor(float(autoencoder.scaling_factor)), scale_path)
-            logger.info(
+            rank_zero_info(
                 f"Persisted paired scaling_factor={float(autoencoder.scaling_factor):.6f}"
                 f" -> {scale_path}"
             )

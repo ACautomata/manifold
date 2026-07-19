@@ -20,7 +20,6 @@ ships in #103, ``_real_inputs`` in #104.
 from __future__ import annotations
 
 import argparse
-import logging
 from dataclasses import dataclass
 from typing import Any
 
@@ -28,8 +27,10 @@ import torch
 
 try:
     import lightning.pytorch as pl
+    from lightning.pytorch.utilities.rank_zero import rank_zero_info
 except ImportError:  # pragma: no cover
     import pytorch_lightning as pl  # type: ignore
+    from pytorch_lightning.utilities.rank_zero import rank_zero_info  # type: ignore
 
 from lightning.pytorch.callbacks import ModelCheckpoint
 
@@ -40,8 +41,6 @@ from ..modules.paired_grpo import PairedGRPOModule
 from ..pipelines.paired_latent_flow import PairedLatentFlowPipeline
 from ..schedulers.scheduling_flow_match_bridge_grpo import FlowMatchBridgeGRPOScheduler
 from .trainer import build_trainer
-
-_log = logging.getLogger(__name__)
 
 
 @dataclass
@@ -211,14 +210,14 @@ def _calibrate_reward_temp_from_val(module, val_ds, *, n: int = 16) -> None:
             break  # no tgt in this val set -> skip calibration (config value stands)
         samples.append(torch.cat([src, tgt], dim=0))
     if len(samples) < 2:
-        _log.warning(
+        rank_zero_info(
             "reward_temp calibration skipped (only %d val pairs with tgt); using the "
             "config reward_temp=%s.", len(samples), module.reward_temp,
         )
         return
     batch = torch.stack(samples).to(next(module.reward_model.parameters()).device)
     module.reward_temp = calibrate_reward_temp(module.reward_model, batch)
-    _log.info("Calibrated reward_temp=%.4f from %d real val pairs (reward std).",
+    rank_zero_info("Calibrated reward_temp=%.4f from %d real val pairs (reward std).",
               module.reward_temp, len(samples))
 
 
@@ -475,7 +474,7 @@ def _run_probe(module, inputs, cfg, *, n_probe: int = 64) -> float:
         G=G, perturbed_step=perturbed_step, num_steps=num_steps, batch_size=batch_size,
         reward_bound=module.reward_bound, reward_temp=module.reward_temp,
     )
-    _log.info("bridge-noise probe: acc=%.3f (n=%d, G=%d, step=%d, eta=%.3f)",
+    rank_zero_info("bridge-noise probe: acc=%.3f (n=%d, G=%d, step=%d, eta=%.3f)",
               res["acc"], res["n"], res["G"], res["perturbed_step"], res["eta"])
     return res["acc"]
 
@@ -780,7 +779,7 @@ def main(argv: list[str] | None = None, *, data_provider=None) -> int:
             # produce an acc; that's a GATE FAILURE (the reward can't rank bridge-noised
             # fakes), not a crash. Return 1 + the escalation path, mirroring the low-acc
             # branch below (codex #110 P2).
-            _log.error(
+            rank_zero_info(
                 "G2RPO launch gate FAILED: the probe produced no ranking signal (%s). "
                 "G2RPO would silently random-walk (R1). Retrain the paired reward with "
                 "bridge-noised fakes (build_paired_bridge_noised_fakes) before retrying.",
@@ -794,7 +793,7 @@ def main(argv: list[str] | None = None, *, data_provider=None) -> int:
             f"(G=...) | threshold={threshold:.2f} | {'PASS' if passed else 'FAIL'}"
         )
         if not passed:
-            _log.error(
+            rank_zero_info(
                 "G2RPO launch gate FAILED: the reward can't rank bridge-noised fakes "
                 "(acc=%.3f < %.2f). G2RPO would silently random-walk (R1). Retrain the "
                 "paired reward with bridge-noised fakes (build_paired_bridge_noised_fakes) "
@@ -1018,7 +1017,7 @@ def _real_inputs(
     def _warm_ds(manifest_split):
         vol_ds = PairedNiftiVolumeDataset(manifest_split, target_dim=target_dim, divisor=divisor)
         ds = PairedLatentDataset(vol_ds, encode_fn=None, cache_dir=cache_dir, cache_tag=cache_tag)
-        ds.warm_cache(device, logger=_log, show_progress=False)
+        ds.warm_cache(device, show_progress=False)
         ds.scaling_factor = scaling_factor  # scale-on-read (ADR-0021: reuse verbatim)
         return ds
 
@@ -1067,7 +1066,7 @@ def _real_inputs(
                 "spacing": it["spacing"],
             }
 
-    _log.info(
+    rank_zero_info(
         "G2RPO real inputs: %d train (src-only) / %d val (src+tgt) paired latents.",
         len(train_latent_ds), len(val_latent_ds),
     )

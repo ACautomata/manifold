@@ -17,18 +17,16 @@ exactly its training distribution.
 
 from __future__ import annotations
 
-import logging
 from pathlib import Path
 from typing import Any, Sequence
 
 import torch
+from lightning.pytorch.utilities.rank_zero import rank_zero_info
 from torch import Tensor
 from torch.utils.data import Dataset
 
 from ..modules.partial_denoise import partial_denoise_rollout
 from ..schedulers.scheduling_partial_flow_match_heun import PartialFlowMatchHeunScheduler
-
-_log = logging.getLogger(__name__)
 
 #: Winner corruption: light, near-clean (the scheduler's t→1 = clean convention).
 WINNER_T_RANGE: tuple[float, float] = (0.5, 1.0)
@@ -207,7 +205,7 @@ def generate_reward_pairs(
                 tr_w.append(pair[0])
                 tr_l.append(pair[1])
 
-    _log.info(
+    rank_zero_info(
         "generate_reward_pairs: %d train / %d val pairs (%d val subjects of %d).",
         len(tr_w), len(va_w), n_val, len(unique),
     )
@@ -472,7 +470,7 @@ def generate_generated_end_probe(
         t_range=(0.0, 0.5), spacing=spacing, modality=modality, num_steps=num_steps,
         batch_size=batch_size, seed=seed, device=device,
     )
-    _log.info("generate_generated_end_probe: %d probe pairs (both t ∈ [0, 0.5)).", len(probe))
+    rank_zero_info("generate_generated_end_probe: %d probe pairs (both t ∈ [0, 0.5)).", len(probe))
     return probe
 
 
@@ -503,5 +501,5 @@ def generate_full_range_val_pairs(
         t_range=(0.0, 1.0), spacing=spacing, modality=modality, num_steps=num_steps,
         batch_size=batch_size, seed=seed, device=device,
     )
-    _log.info("generate_full_range_val_pairs: %d full-range val pairs.", len(val))
+    rank_zero_info("generate_full_range_val_pairs: %d full-range val pairs.", len(val))
     return val

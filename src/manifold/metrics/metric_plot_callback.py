@@ -53,18 +53,17 @@ Design (vetted by a parallel recon of the Lightning source + adversarial review)
 from __future__ import annotations
 
 import csv
-import logging
 import math
 import os
 
 try:
     import lightning.pytorch as pl
+    from lightning.pytorch.utilities.rank_zero import rank_zero_info
 except ImportError:  # pragma: no cover — lightning is a hard dep via spt
     import pytorch_lightning as pl  # type: ignore[assignment]
+    from pytorch_lightning.utilities.rank_zero import rank_zero_info  # type: ignore[assignment]
 
 from lightning.pytorch.loggers import CSVLogger as _CSVLogger
-
-_log = logging.getLogger(__name__)
 
 #: The CSVLogger's on-disk metrics file (``<log_dir>/metrics.csv``).
 _METRICS_FILE = "metrics.csv"
@@ -128,7 +127,7 @@ class MetricsPlotCallback(pl.Callback):
                 # Warn once — retrying the same absent import every epoch only
                 # floods the training log; unrelated render failures still retry.
                 self._matplotlib_unavailable = True
-                _log.warning(
+                rank_zero_info(
                     "MetricsPlotCallback: matplotlib is unavailable; plotting disabled.",
                     exc_info=True,
                 )
@@ -149,7 +148,7 @@ class MetricsPlotCallback(pl.Callback):
             fig.savefig(tmp_path, format="png", dpi=self._dpi, bbox_inches="tight")
             os.replace(tmp_path, final_path)  # atomic rename on the same filesystem.
         except Exception:
-            _log.warning("MetricsPlotCallback: render failed; plot not updated.", exc_info=True)
+            rank_zero_info("MetricsPlotCallback: render failed; plot not updated.", exc_info=True)
         finally:
             # Always release the figure (a long sugon run would otherwise leak).
             if fig is not None and plt is not None:

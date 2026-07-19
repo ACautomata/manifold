@@ -26,20 +26,18 @@ input (``concat``), and the summed-label conditioning differ.
 
 from __future__ import annotations
 
-import logging
 from typing import Any, Iterable
 
 import stable_pretraining as spt
 import torch
 import torch.nn.functional as F
+from lightning.pytorch.utilities.rank_zero import rank_zero_info
 from torch import Tensor
 
 from ..models.unet_3d_condition import UNet3DConditionModel
 from ..schedulers.scheduling_flow_match_heun import FlowMatchHeunDiscreteScheduler
 from .latent_flow import cosine_with_warmup, resolve_warmup_steps, scaled_peak_lr
 from .paired_sampler import sample_paired_latent_flow
-
-_log = logging.getLogger(__name__)
 
 #: A Paired JiT training batch: scaled src + tgt latents, contrast labels, spacing.
 #: The data stack (Slice 2) produces these; this module only consumes them.
@@ -321,7 +319,7 @@ class PairedLatentFlowModule(spt.Module):
             eff_desc = "unknown (train_batch_size=None) → no scaling, peak = base"
         total = self._total_optimizer_steps()
         warmup = resolve_warmup_steps(self.lr_warmup_steps, self.lr_warmup_ratio, total)
-        _log.info(
+        rank_zero_info(
             "LR schedule: base=%.3e -> peak=%.3e (eff_batch: %s; rule=%s; "
             "warmup=%d/%d optimizer steps)",
             self.lr, peak_lr, eff_desc, self.lr_scale_rule, warmup, total,
