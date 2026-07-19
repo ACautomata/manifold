@@ -34,6 +34,7 @@ import torch
 from torch import Tensor
 
 from ..schedulers.scheduling_flow_match_grpo import FlowMatchGRPOScheduler
+from .controlnet_sampler import _controlnet_x0, controlnet_rollout
 from .sampler import sample_latent_flow
 
 #: Per-step rollout buffer entry consumed by the GRPO inner loop.
@@ -82,25 +83,34 @@ def group_advantage(rewards: Tensor, adv_clip_max: float = 5.0, eps: float = 1e-
 
 
 def _heun_one_step(
-    unet, scheduler, z: Tensor, t: float, t_next: float, spacing_t: Tensor, class_labels: Tensor
+    unet, scheduler, z: Tensor, t: float, t_next: float, spacing_t: Tensor, class_labels: Tensor,
+    x0_fn: Callable[..., Tensor] | None = None, fn_labels: Any = None,
 ) -> Tensor:
     """One deterministic two-eval-Heun reverse step (the deployed sampler's step).
 
     Final-step Euler when ``t_next == 1`` (the ``1/(1 − t_next)`` corrector
     denominator diverges) — the same convention as
     :func:`~manifold.modules.sample_latent_flow` / :func:`partial_denoise_rollout`.
+
+    ``x0_fn`` (Mode-2) overrides the x0 prediction: called as
+    ``x0_fn(z, t, fn_labels)`` and must return the clean-latent prediction. ``None``
+    (Mode-1) uses ``unet(sample=z, timestep=t, spacing, class_labels)`` directly.
     """
-    x0_1 = unet(sample=z, timestep=t, spacing=spacing_t, class_labels=class_labels)
+    if x0_fn is None:
+        def x0_fn(z_, t_, _labels):  # noqa: ANN001
+            return unet(sample=z_, timestep=t_, spacing=spacing_t, class_labels=class_labels)
+    x0_1 = x0_fn(z, t, fn_labels)
     z_euler, v1 = scheduler.euler_step(x0_1, z, t, t_next)
     if float(t_next) >= 1.0:
         return z_euler
-    x0_2 = unet(sample=z_euler, timestep=t_next, spacing=spacing_t, class_labels=class_labels)
+    x0_2 = x0_fn(z_euler, t_next, fn_labels)
     return scheduler.heun_correct(x0_2, z, z_euler, v1, t, t_next)
 
 
 def _heun_rollout(
     unet, scheduler, z_start: Tensor, nodes: Tensor, spacing_t: Tensor, class_labels: Tensor,
     start_i: int, end_i: int,
+    x0_fn: Callable[..., Tensor] | None = None, fn_labels: Any = None,
 ) -> list[Tensor]:
     """Deterministic Heun from node ``start_i`` to ``end_i``; returns ``[z_start_i, …, z_end_i]``.
 
@@ -108,11 +118,16 @@ def _heun_rollout(
     (``start_i=k+1``). ``nodes`` is the scheduler's batch-wide grid
     (:meth:`~manifold.FlowMatchGRPOScheduler.set_timesteps`); the steps are the
     scheduler's inherited ``euler_step`` / ``heun_correct`` (never reimplemented).
+    ``x0_fn`` / ``fn_labels`` (Mode-2) thread a ControlNet-conditioned x0 prediction
+    through every step; ``None`` (Mode-1) uses the plain UNet call.
     """
     zs = [z_start]
     z = z_start
     for i in range(start_i, end_i):
-        z = _heun_one_step(unet, scheduler, z, float(nodes[i]), float(nodes[i + 1]), spacing_t, class_labels)
+        z = _heun_one_step(
+            unet, scheduler, z, float(nodes[i]), float(nodes[i + 1]), spacing_t, class_labels,
+            x0_fn=x0_fn, fn_labels=fn_labels,
+        )
         zs.append(z)
     return zs
 
@@ -131,6 +146,9 @@ def singular_branch_rollout(
     num_steps: int,
     adv_clip_max: float = 5.0,
     reward_transform: Callable[[Tensor], Tensor] | None = None,
+    x0_fn: Callable[..., Tensor] | None = None,
+    reward_fn: Callable[[Tensor], Tensor] | None = None,
+    fn_labels_bg: Any = None,
 ) -> list[RolloutStep]:
     """One Granular-GRPO singular-branch rollout (no_grad) → per-step buffer.
 
@@ -146,7 +164,8 @@ def singular_branch_rollout(
         unet: the policy UNet (the JiT x0-denoiser; run eval + no_grad).
         scheduler: a :class:`FlowMatchGRPOScheduler` (its grid + inherited Heun +
             ``sde_step_mean`` run; ``set_timesteps`` is called here).
-        reward_model: the frozen :class:`~manifold.RewardModel` scoring ``z_K``.
+        reward_model: the frozen :class:`~manifold.RewardModel` scoring ``z_K``
+            (Mode-1) — ignored when ``reward_fn`` is given (Mode-2).
         noise: the pure-noise group start ``(B, C, D, H, W)`` — shared across siblings.
         spacing / modality: the manifold conditioning (voxel spacing + class label).
         G: the group size (siblings per conditioning).
@@ -156,6 +175,18 @@ def singular_branch_rollout(
         adv_clip_max: the advantage-magnitude clip.
         reward_transform: optional monotone bound applied to the raw rewards before the
             group normalization (the v2 tanh cap, ADR-0015); ``None`` ⇒ raw logit (v1).
+        x0_fn: optional Mode-2 policy x0 prediction override, called
+            ``x0_fn(z, t_scalar, fn_labels_bg)`` at every eval point (anchor, perturbed,
+            suffix). Must be pre-bound to the ControlNet-conditioned frozen-base
+            forward and the current conditioning (``z_k``-batch for anchor/perturbed,
+            ``(B·G,)`` for the suffix — the same ``fn_labels_bg`` batching). ``None``
+            (Mode-1) uses the plain ``unet(sample, timestep, spacing, class_labels)``.
+        reward_fn: optional Mode-2 condition-aware reward override, called
+            ``reward_fn(z_K_bg)`` on the ``(B·G,)`` terminal latents (the caller
+            concats the G-expanded ``x_src`` inside). ``None`` (Mode-1) calls
+            ``reward_model(z_K)``.
+        fn_labels_bg: the ``(B·G,)``-batched conditioning labels forwarded to
+            ``x0_fn`` (Mode-2); ignored in Mode-1.
 
     Returns:
         One :data:`RolloutStep` per ``k`` in ``eta_step_list`` (sorted ascending).
@@ -193,7 +224,10 @@ def singular_branch_rollout(
 
     with torch.autocast(device_type=device.type, enabled=device.type == "cuda"):
         # Shared anchor: z at nodes [0..max_k] (anchor_z[k] = latent at node k).
-        anchor_z = _heun_rollout(unet, scheduler, z0, nodes, spacing_t, class_labels, 0, max_k)
+        anchor_z = _heun_rollout(
+            unet, scheduler, z0, nodes, spacing_t, class_labels, 0, max_k,
+            x0_fn=x0_fn, fn_labels=fn_labels_bg,
+        )
 
         buffer: list[RolloutStep] = []
         for k in eta_steps:
@@ -202,7 +236,10 @@ def singular_branch_rollout(
             z_k = anchor_z[k]  # (B, *spatial) — the anchor node
 
             # SDE transition params at the current (rollout-time) policy.
-            x0 = unet(sample=z_k, timestep=t_k, spacing=spacing_t, class_labels=class_labels)
+            if x0_fn is not None:
+                x0 = x0_fn(z_k, t_k, fn_labels_bg)
+            else:
+                x0 = unet(sample=z_k, timestep=t_k, spacing=spacing_t, class_labels=class_labels)
             mean_old, std_old = scheduler.sde_step_mean(x0, z_k, t_k, t_next)
             # G siblings branch off z_k via one SDE draw each (the only per-sibling
             # difference; the anchor + suffix are otherwise deterministic given z_{k+1}).
@@ -213,14 +250,18 @@ def singular_branch_rollout(
             # Deterministic Heun suffix from z_{k+1} (node k+1) to the terminal z_K.
             z_g = z_kplus1.reshape(B * G, *spatial)
             suffix = _heun_rollout(
-                unet, scheduler, z_g, nodes, spacing_bg, class_labels_bg, k + 1, num_steps
+                unet, scheduler, z_g, nodes, spacing_bg, class_labels_bg, k + 1, num_steps,
+                x0_fn=x0_fn, fn_labels=fn_labels_bg,
             )
             z_K = suffix[-1]  # (B·G, *spatial)
 
             # float(): under cuda autocast the PatchGAN emits fp16 rewards; the
             # group-normalization (std / (r−mean)) must run in fp32 to avoid the
             # fp16 square overflowing for large rewards (mirrors validation_step).
-            rewards = reward_model(z_K).float().reshape(B, G)  # (B, G)
+            if reward_fn is not None:
+                rewards = reward_fn(z_K).float().reshape(B, G)  # (B, G) — Mode-2 condition-aware
+            else:
+                rewards = reward_model(z_K).float().reshape(B, G)  # (B, G) — Mode-1 unconditional
             if reward_transform is not None:  # the v2 bound (ADR-0015) — caps the raw logit
                 rewards = reward_transform(rewards)
             advantage = group_advantage(rewards, adv_clip_max=adv_clip_max)  # (B, G)
@@ -271,28 +312,50 @@ class GRPOModule(spt.Module):
     one ``opt.step`` per step so the ratio drifts off 1 and the clip **binds** (a real
     trust region — a single aggregated step would collapse it to REINFORCE).
 
-    Holds the **trainable JiT UNet** (the policy — the only params
-    :meth:`configure_optimizers` optimizes) and the **frozen** :class:`~manifold.RewardModel`
-    (unregistered via ``object.__setattr__``, like the reward Module holds its denoiser).
-    No EMA; resumes / selects / exports the raw arm (ADR-0006/0012).
+    Holds the **trainable JiT UNet** (Mode-1 policy) OR the **frozen base UNet +
+    trainable ControlNet** (Mode-2 policy), plus the **frozen**
+    :class:`~manifold.RewardModel` (unregistered via ``object.__setattr__``). No EMA;
+    resumes / selects / exports the raw arm (ADR-0006/0012).
+
+    **Two modes (ADR-0028).** The transition ``x_θ`` source is unified behind
+    :meth:`_x0_policy`: Mode-1 reads it from the trainable UNet; Mode-2 reads it from
+    the frozen base + trainable ControlNet (the base forward consumes the ControlNet's
+    residual injections through the out-of-place residual forward — ADR-0026's
+    corrected hazard, so the Mode-2 perturbed-step backward is autograd-safe). The
+    optimizer wires the UNet params (Mode-1) or the ControlNet params (Mode-2). The
+    KL anchor is ``deepcopy`` of the **policy** — Mode-2 captures base **and**
+    ControlNet, so the closed-form diagonal-Gaussian KL stays valid while the
+    ControlNet drifts (``σ`` is θ-independent ⇒ trace + log-det cancel). The spine
+    (:func:`gaussian_log_prob`, :meth:`_transition_kl`, :func:`group_advantage`,
+    :func:`clipped_surrogate_loss`, the multi-step PPO inner loop, the singular-branch
+    rollout) reuses verbatim in both modes.
 
     Args:
-        policy: the trainable JiT x0-denoiser UNet (the policy).
-        reward_model: the frozen :class:`~manifold.RewardModel` scoring the terminal latent.
+        policy: the trainable JiT x0-denoiser UNet (Mode-1 policy). In Mode-2 this is
+            the **frozen base** UNet (held unregistered — see ``controlnet``).
+        reward_model: the frozen :class:`~manifold.RewardModel` scoring the terminal
+            latent (Mode-1: ``reward(z_K)``; Mode-2: ``reward(cat([x_src, z_K]))``).
         scheduler: a stateless :class:`FlowMatchGRPOScheduler`.
         G: the group size (siblings per conditioning).
         eta_step_list: the perturbed step indices (the noisy-half, e.g. ``[0..7]``).
         clip_range: ε for the clipped surrogate (the tight PPO trust region).
-        lr: the Adam LR over the policy UNet.
+        lr: the Adam LR over the optimized params (UNet in Mode-1, ControlNet in Mode-2).
         adv_clip_max: the advantage-magnitude clip.
         num_steps: the anchor grid resolution (train rollout + validation Heun steps).
         latent_shape: the rollout latent shape ``(C, D, H, W)`` (GRPO is generative —
             the Module samples the group noise of this shape).
-        reference_policy: optional frozen deepcopy of the pretrained JiT UNet — the KL
-            anchor (ADR-0015). ``None`` ⇒ no KL (the v1 default).
+        reference_policy: optional frozen deepcopy of the policy — the KL anchor
+            (ADR-0015). Mode-2: a ``(base, controlnet)`` pair (see
+            :meth:`_transition_kl`). ``None`` ⇒ no KL (the v1 default).
         kl_coef: β for the KL-to-reference penalty; ``≤ 0`` disables it (v1 default 0.0).
         reward_bound: ``"none"`` (raw logit, v1) or ``"tanh"`` (soft-clip, ADR-0015).
         reward_temp: the tanh temperature (≈ the real-data reward std, ~8 from calibration).
+        controlnet: optional :class:`~manifold.ControlNet3DConditionModel`. When set
+            (with ``freeze_unet=True``) the module runs **Mode-2**: the base UNet is
+            frozen + unregistered, the ControlNet is the only optimized arm, and the
+            batch must carry ``src_latent`` / ``src_label`` / ``tgt_label``.
+        freeze_unet: freeze + unregister the base UNet (required in Mode-2; a no-op
+            guard in Mode-1). When ``controlnet`` is set this must be ``True``.
     """
 
     def __init__(
@@ -312,17 +375,39 @@ class GRPOModule(spt.Module):
         kl_coef: float = 0.0,
         reward_bound: str = "none",
         reward_temp: float = 8.0,
+        controlnet: Any = None,
+        freeze_unet: bool = False,
     ):
         if G < 2:
             # group_advantage normalizes over the G siblings via torch.std (Bessel,
             # needs ≥2 samples); G=1 ⇒ std=NaN ⇒ NaN advantage ⇒ NaN grads destroy
             # the policy in one step. GRPO needs ≥2 siblings by definition.
             raise ValueError(f"G must be >= 2 (need >= 2 siblings per group), got {G}.")
+        if controlnet is not None and not freeze_unet:
+            raise ValueError(
+                "Mode-2 (controlnet set) requires freeze_unet=True — the base UNet must "
+                "be frozen + unregistered so only the ControlNet is optimized."
+            )
         # NOTE: forward is NOT passed to spt.Module — training_step is overridden
         # directly (the multi-step inner loop cannot fit the single-loss seam).
         super().__init__(hparams={"lr": lr, "G": G, "clip_range": clip_range,
-                                  "num_steps": num_steps, "adv_clip_max": adv_clip_max})
-        self.unet = policy  # registered → the only optimized / checkpointed arm
+                                  "num_steps": num_steps, "adv_clip_max": adv_clip_max,
+                                  "freeze_unet": freeze_unet})
+        self.freeze_unet = bool(freeze_unet)
+        if controlnet is not None:
+            # Mode-2: the base UNet is FROZEN + UNregistered (object.__setattr__ bypasses
+            # nn.Module registration) → off parameters()/state_dict()/optimizer/DDP,
+            # moved to the device in on_fit_start. The ControlNet is the only registered
+            # (optimized + checkpointed) arm.
+            policy = policy.eval()
+            for p in policy.parameters():
+                p.requires_grad_(False)
+            object.__setattr__(self, "unet", policy)
+            self.controlnet = controlnet  # registered → optimized / checkpointed
+        else:
+            # Mode-1: the UNet is the trainable policy (registered).
+            self.unet = policy
+            self.controlnet = None
         self.scheduler = scheduler  # carries η (the SDE exploration knob)
         # Frozen reward, held UNregistered (object.__setattr__ bypasses nn.Module
         # registration) → absent from parameters()/state_dict()/optimizer/DDP, moved
@@ -332,17 +417,29 @@ class GRPOModule(spt.Module):
             p.requires_grad_(False)
         object.__setattr__(self, "reward_model", reward_model)
 
-        # Frozen reference policy (the KL anchor, ADR-0015): a deepcopy of the pretrained
-        # JiT UNet, held UNregistered exactly like the reward → off parameters()/
-        # state_dict()/optimizer/DDP, moved to the device in on_fit_start. ``None`` ⇒ no
-        # KL term (the v1 default; backward-compat). ``kl_coef ≤ 0`` also disables it.
+        # Frozen reference policy (the KL anchor, ADR-0015): a deepcopy of the policy,
+        # held UNregistered exactly like the reward. Mode-2: a ``(base, controlnet)``
+        # pair — both frozen + unregistered. ``None`` ⇒ no KL (v1 default).
         if reference_policy is not None:
-            reference_policy = reference_policy.eval()
-            for p in reference_policy.parameters():
-                p.requires_grad_(False)
-            object.__setattr__(self, "reference_unet", reference_policy)
+            if controlnet is not None:
+                ref_base, ref_controlnet = reference_policy
+                ref_base = ref_base.eval()
+                for p in ref_base.parameters():
+                    p.requires_grad_(False)
+                ref_controlnet = ref_controlnet.eval()
+                for p in ref_controlnet.parameters():
+                    p.requires_grad_(False)
+                object.__setattr__(self, "reference_unet", ref_base)
+                object.__setattr__(self, "reference_controlnet", ref_controlnet)
+            else:
+                reference_policy = reference_policy.eval()
+                for p in reference_policy.parameters():
+                    p.requires_grad_(False)
+                object.__setattr__(self, "reference_unet", reference_policy)
+                object.__setattr__(self, "reference_controlnet", None)
         else:
             object.__setattr__(self, "reference_unet", None)
+            object.__setattr__(self, "reference_controlnet", None)
 
         self.G = int(G)
         self.eta_step_list = tuple(int(k) for k in eta_step_list)
@@ -356,6 +453,119 @@ class GRPOModule(spt.Module):
         self.reward_temp = float(reward_temp)
         self._val_reward_sum = 0.0
         self._val_reward_count = 0
+
+    # -- Mode-2 (ControlNet) helpers ------------------------------------------
+
+    def _policy_device(self) -> torch.device:
+        """Device of the optimized arm (Mode-1 UNet / Mode-2 ControlNet)."""
+        params_owner = self.controlnet if self.controlnet is not None else self.unet
+        return next(params_owner.parameters()).device
+
+    def _controlnet_forward(self, controlnet, z, t, x_src, spacing_t, src_labels, tgt_labels):
+        """One ControlNet-conditioned base x0 forward (frozen base + ControlNet residuals)."""
+        return _controlnet_x0(self.unet, controlnet, z, t, x_src, spacing_t, src_labels, tgt_labels)
+
+    def _reference_x0(self, z, t, spacing_t, class_labels, x_src=None, src_labels=None, tgt_labels=None):
+        """The frozen KL-anchor x0 at ``z`` (Mode-1 UNet / Mode-2 base+ControlNet)."""
+        if self.reference_controlnet is not None:
+            return _controlnet_x0(
+                self.reference_unet, self.reference_controlnet, z, t, x_src, spacing_t, src_labels, tgt_labels
+            )
+        return self.reference_unet(sample=z, timestep=t, spacing=spacing_t, class_labels=class_labels)
+
+    def _mode2_rollout_fns(self, x_src, spacing_t, src_labels, tgt_labels):
+        """Build the Mode-2 ``(x0_fn, reward_fn, fn_labels_bg)`` the rollout consumes.
+
+        ``x0_fn`` is the frozen-base + trainable-ControlNet x0 prediction (the unified
+        ``x_θ`` source); the inner-loop grad flows into the ControlNet through the base's
+        out-of-place residual forward (ADR-0026 corrected hazard). ``reward_fn`` is the
+        condition-aware reward ``reward(cat([x_src_bg, z_K]))``. ``x_src`` /
+        ``src_labels`` / ``tgt_labels`` are G-expanded ONCE here (flat index ``b·G+g``
+        is sibling ``g`` of ``b``) — matching ``z_kplus1.reshape(B·G, ...)`` and the
+        suffix ``(B·G,)`` batch — so a single ``fn_labels_bg`` tuple serves the perturbed
+        eval, the suffix, AND the reward concat without a second expansion (D9).
+        """
+        G = self.G
+        x_src_bg = x_src.repeat_interleave(G, dim=0)  # (B·G, C, ...)
+        src_labels_bg = src_labels.repeat_interleave(G)
+        tgt_labels_bg = tgt_labels.repeat_interleave(G)
+        spacing_bg = spacing_t.repeat_interleave(G, dim=0) if spacing_t.dim() == 2 else spacing_t
+        fn_labels_bg = (x_src_bg, spacing_bg, src_labels_bg, tgt_labels_bg)
+
+        def x0_fn(z_, t_, labels):
+            xs_bg, sp_bg, sl_bg, tl_bg = labels
+            # The rollout calls x0_fn on TWO batch sizes: the anchor / perturbed eval at
+            # (B,) and the suffix at (B·G,). ``labels`` is pre-G-expanded to (B·G,) in
+            # repeat_interleave layout [b0g0, b0g1, …, b1g0, …] (so the suffix + reward
+            # concat reuse one expansion, D9); for the (B,) anchor/perturbed batch stride
+            # by G (b's sibling-0 slot) to recover the per-b conditioning.
+            b = z_.shape[0]
+            if b == xs_bg.shape[0]:  # suffix batch (B·G,) — use the full expansion
+                xs, sp, sl, tl = xs_bg, sp_bg, sl_bg, tl_bg
+            else:  # anchor/perturbed batch (B,) — stride G
+                xs, sl, tl = xs_bg[:: self.G], sl_bg[:: self.G], tl_bg[:: self.G]
+                sp = sp_bg[:: self.G] if sp_bg.dim() == 2 else sp_bg
+            return self._controlnet_forward(self.controlnet, z_, t_, xs, sp, sl, tl)
+
+        def reward_fn(z_K_bg):
+            return self.reward_model(torch.cat([x_src_bg, z_K_bg], dim=1))
+
+        return x0_fn, reward_fn, fn_labels_bg
+
+    def _conditioning(self, batch: GRPOBatch):
+        """Unified batch conditioning → ``(spacing_t, class_labels, B, cond)``.
+
+        Mode-1: ``class_labels`` is the modality label and ``cond`` is ``None``. Mode-2:
+        ``class_labels`` is the per-sample ``tgt_label`` (the base's own modality
+        embedding sees the target contrast only) and ``cond`` is
+        ``(x_src, src_labels, tgt_labels)`` — the ControlNet's control signal + the
+        (src, tgt) direction pair. ``B`` is the batch size (Mode-1 = #labels, Mode-2 =
+        ``x_src`` batch).
+        """
+        spacing_t = torch.as_tensor(batch["spacing"], device=self.device)
+        if self.controlnet is not None:
+            x_src = batch["src_latent"].to(device=self.device, dtype=self._policy_dtype())
+            B = int(x_src.shape[0])
+            src_labels = self._mode2_labels(batch["src_label"], B)
+            tgt_labels = self._mode2_labels(batch["tgt_label"], B)
+            return spacing_t, tgt_labels, B, (x_src, src_labels, tgt_labels)
+        label = batch["label"]
+        if isinstance(label, Tensor):
+            class_labels = label.to(device=self.device, dtype=torch.long)
+        else:
+            class_labels = torch.full((1,), int(label), dtype=torch.long, device=self.device)
+        return spacing_t, class_labels, int(class_labels.shape[0]), None
+
+    def _mode2_labels(self, labels, B: int) -> Tensor:
+        """Coerce a (src|tgt) label to a ``(B,)`` long tensor (scalar broadcast or ``(B,)``)."""
+        if isinstance(labels, Tensor):
+            out = labels.to(device=self.device, dtype=torch.long)
+            if out.dim() == 0:
+                out = out.expand(B)
+            return out
+        return torch.full((B,), int(labels), dtype=torch.long, device=self.device)
+
+    def _policy_and_reference_pair(self):
+        """``deepcopy`` of the policy → the Mode-aware KL-anchor ``reference_policy`` arg.
+
+        Mode-1: a plain deepcopy of the UNet. Mode-2: the ``(base, controlnet)`` pair
+        (``reference_unet`` / ``reference_controlnet``). Callers (grpo_cli) use this to
+        snapshot the anchor BEFORE any GRPO update (ADR-0015).
+        """
+        import copy
+
+        if self.controlnet is not None:
+            return (copy.deepcopy(self.unet), copy.deepcopy(self.controlnet))
+        return copy.deepcopy(self.unet)
+
+    def _score_reward(self, z_K: Tensor, cond) -> Tensor:
+        """Bound the frozen reward on the terminal latent(s) (Mode-1 / Mode-2 unified)."""
+        if cond is not None:
+            x_src, _, _ = cond
+            raw = self.reward_model(torch.cat([x_src, z_K], dim=1)).float()
+        else:
+            raw = self.reward_model(z_K).float()
+        return self._bound_reward(raw)
 
     def on_validation_epoch_start(self) -> None:
         self._val_reward_sum = 0.0
@@ -384,48 +594,58 @@ class GRPOModule(spt.Module):
         self.reward_model.to(self.device)
         if self.reference_unet is not None:
             self.reference_unet.to(self.device)
+        if self.controlnet is not None:
+            # Mode-2: the base UNet is unregistered (object.__setattr__) → Lightning's
+            # .to(device) skips it too; move it here like the reward/reference.
+            self.unet.to(self.device)
+            if self.reference_controlnet is not None:
+                self.reference_controlnet.to(self.device)
 
     # -- optimizer ------------------------------------------------------------
 
     def configure_optimizers(self):
-        """Adam over the policy UNet only (the frozen reward is unregistered)."""
-        return {"optimizer": torch.optim.Adam(self.unet.parameters(), lr=self.lr)}
+        """Adam over the optimized arm only — the UNet (Mode-1) or the ControlNet (Mode-2).
+
+        The frozen base UNet + reward + reference are unregistered (off the optimizer)."""
+        params = self.controlnet.parameters() if self.controlnet is not None else self.unet.parameters()
+        return {"optimizer": torch.optim.Adam(params, lr=self.lr)}
 
     # -- training_step: rollout + multi-step PPO inner loop -------------------
 
     def _policy_dtype(self) -> torch.dtype:
-        return next(self.unet.parameters()).dtype
-
-    def _conditioning_tensors(self, batch: GRPOBatch) -> tuple[Tensor, Tensor, int]:
-        """Build ``(spacing_t, class_labels, B)`` for the batch's manifold conditioning."""
-        spacing_t = torch.as_tensor(batch["spacing"], device=self.device)
-        label = batch["label"]
-        if isinstance(label, Tensor):
-            class_labels = label.to(device=self.device, dtype=torch.long)
-        else:
-            class_labels = torch.full((1,), int(label), dtype=torch.long, device=self.device)
-        return spacing_t, class_labels, int(class_labels.shape[0])
+        params_owner = self.controlnet if self.controlnet is not None else self.unet
+        return next(params_owner.parameters()).dtype
 
     def _new_log_prob(
-        self, step: RolloutStep, spacing_t: Tensor, class_labels: Tensor
+        self, step: RolloutStep, spacing_t: Tensor, class_labels: Tensor, cond=None
     ) -> tuple[Tensor, Tensor, Tensor | float]:
         """Recompute the transition log-prob under grad (the inner-loop grad eval).
 
-        Re-evaluates the UNet at the stored anchor node ``z_k`` (the single live grad
-        eval per branch — peak autograd memory is one UNet-forward) and forms the
-        Gaussian transition density at the stored ``z_{k+1}``. ``old_log_prob`` was
-        computed at rollout time; the ratio ``exp(new − old)`` is what the clip bounds.
-        Returns ``(log_prob, mean_new, std_new)`` so the caller can reuse ``mean_new``
-        for the KL term (no second policy forward) — ADR-0015.
+        Re-evaluates the policy at the stored anchor node ``z_k`` (the single live grad
+        eval per branch — peak autograd memory is one policy-forward) and forms the
+        Gaussian transition density at the stored ``z_{k+1}``. The ``x_θ`` source is
+        unified: Mode-1 is the trainable UNet; Mode-2 is the frozen base + trainable
+        ControlNet (grad reaches the ControlNet through the base's out-of-place residual
+        forward). ``old_log_prob`` was computed at rollout time; the ratio
+        ``exp(new − old)`` is what the clip bounds. Returns ``(log_prob, mean_new,
+        std_new)`` so the caller can reuse ``mean_new`` for the KL term (no second policy
+        forward) — ADR-0015.
         """
         z_k = step["z_k"]  # (B, *spatial) — detached anchor node
-        x0 = self.unet(sample=z_k, timestep=step["t_k"], spacing=spacing_t, class_labels=class_labels)
+        if cond is not None:
+            x_src, src_labels, tgt_labels = cond
+            x0 = self._controlnet_forward(
+                self.controlnet, z_k, step["t_k"], x_src, spacing_t, src_labels, tgt_labels
+            )
+        else:
+            x0 = self.unet(sample=z_k, timestep=step["t_k"], spacing=spacing_t, class_labels=class_labels)
         mean_new, std_new = self.scheduler.sde_step_mean(x0, z_k, step["t_k"], step["t_next"])
         log_prob = gaussian_log_prob(step["z_kplus1"], mean_new, std_new)  # (B, G)
         return log_prob, mean_new, std_new
 
     def _transition_kl(
-        self, step: RolloutStep, mean_new: Tensor, std_new, spacing_t: Tensor, class_labels: Tensor
+        self, step: RolloutStep, mean_new: Tensor, std_new, spacing_t: Tensor, class_labels: Tensor,
+        cond=None,
     ) -> Tensor | None:
         """The per-transition KL anchor ``0.5·‖μ_θ − μ_ref‖²/σ²`` (ADR-0015), or ``None``.
 
@@ -433,17 +653,23 @@ class GRPOModule(spt.Module):
         transition share **equal variance** (``σ_t = η·sqrt((1−t)/t)`` depends only on
         ``t``, not on the policy weights), so the diagonal-Gaussian KL collapses to the
         squared-mean difference over ``σ²`` (the trace / log-det terms cancel). The
-        reference mean is a frozen, no-grad forward at the stored ``z_k``; grad flows
-        through ``μ_θ`` only. Returns ``None`` (no KL added) when the reference is absent
-        or ``kl_coef ≤ 0`` — the v1 backward-compat default. ``mean_new`` / ``std_new``
-        are the caller's grad-bearing policy outputs (reused, not recomputed).
+        reference mean is a frozen, no-grad forward at the stored ``z_k`` (Mode-2: the
+        frozen base + frozen ControlNet snapshot); grad flows through ``μ_θ`` only.
+        Returns ``None`` (no KL added) when the reference is absent or ``kl_coef ≤ 0`` —
+        the v1 backward-compat default. ``mean_new`` / ``std_new`` are the caller's
+        grad-bearing policy outputs (reused, not recomputed).
         """
         if self.reference_unet is None or self.kl_coef <= 0.0:
             return None
         with torch.no_grad():
-            x0_ref = self.reference_unet(
-                sample=step["z_k"], timestep=step["t_k"], spacing=spacing_t, class_labels=class_labels
-            )
+            if cond is not None:
+                x_src, src_labels, tgt_labels = cond
+                x0_ref = self._reference_x0(
+                    step["z_k"], step["t_k"], spacing_t, class_labels,
+                    x_src=x_src, src_labels=src_labels, tgt_labels=tgt_labels,
+                )
+            else:
+                x0_ref = self._reference_x0(step["z_k"], step["t_k"], spacing_t, class_labels)
         mean_ref, _ = self.scheduler.sde_step_mean(x0_ref, step["z_k"], step["t_k"], step["t_next"])
         var = max(float(std_new) ** 2, 1e-12)  # the η=0 degenerate floor (mirrors gaussian_log_prob)
         return 0.5 * ((mean_new - mean_ref) ** 2 / var).flatten(start_dim=1).mean(dim=1)  # (B,)
@@ -478,16 +704,24 @@ class GRPOModule(spt.Module):
         if not isinstance(batch, dict):
             raise ValueError(f"batch is expected to be a dict, not {type(batch)}")
         batch["batch_idx"] = batch_idx
-        spacing_t, class_labels, B = self._conditioning_tensors(batch)
+        spacing_t, class_labels, B, cond = self._conditioning(batch)
         # One shared group noise (identical across the G siblings ⇒ a shared anchor).
         noise = torch.randn(B, *self.latent_shape, device=self.device, dtype=self._policy_dtype())
         # The v2 reward bound (ADR-0015): None for the v1 raw-logit default (no-op),
         # else ``_bound_reward`` (tanh) caps the reward the rollout scores + groups.
         reward_transform = self._bound_reward if self.reward_bound != "none" else None
+        # Mode-2: inject the ControlNet-conditioned x0 prediction + the condition-aware
+        # reward into the shared rollout (Mode-1 leaves all three None — the plain UNet +
+        # unconditional reward path). The spine reuses verbatim in both modes.
+        x0_fn = reward_fn = fn_labels_bg = None
+        if cond is not None:
+            x_src, src_labels, tgt_labels = cond
+            x0_fn, reward_fn, fn_labels_bg = self._mode2_rollout_fns(x_src, spacing_t, src_labels, tgt_labels)
         buffer = singular_branch_rollout(
             self.unet, self.scheduler, self.reward_model, noise, spacing_t, class_labels,
             G=self.G, eta_step_list=self.eta_step_list, num_steps=self.num_steps,
             adv_clip_max=self.adv_clip_max, reward_transform=reward_transform,
+            x0_fn=x0_fn, reward_fn=reward_fn, fn_labels_bg=fn_labels_bg,
         )
 
         opt = self.optimizers()
@@ -495,17 +729,20 @@ class GRPOModule(spt.Module):
         if not isinstance(sched, (list, tuple)) and sched is not None:
             sched = [sched]
         # Eval mode for every policy eval (rollout + inner loop) — matches the deployed
-        # sampler (deterministic; GroupNorm running stats, no dropout).
+        # sampler (deterministic; GroupNorm running stats, no dropout). Mode-2 also evals
+        # the ControlNet (the frozen base is already eval).
         self.unet.eval()
+        if self.controlnet is not None:
+            self.controlnet.eval()
         losses = []
         for step in buffer:
-            new_lp, mean_new, std_new = self._new_log_prob(step, spacing_t, class_labels)
+            new_lp, mean_new, std_new = self._new_log_prob(step, spacing_t, class_labels, cond)
             loss = clipped_surrogate_loss(
                 new_lp, step["old_log_prob"], step["advantage"], self.clip_range
             )
             # The v2 KL anchor (ADR-0015): a separate term outside the PPO ratio clip —
             # ``None`` (kl_coef=0 / no reference) adds nothing, preserving v1 behavior.
-            kl = self._transition_kl(step, mean_new, std_new, spacing_t, class_labels)
+            kl = self._transition_kl(step, mean_new, std_new, spacing_t, class_labels, cond)
             if kl is not None:
                 loss = loss + self.kl_coef * kl.mean()
             self.manual_backward(loss)
@@ -577,7 +814,7 @@ class GRPOModule(spt.Module):
         so no rank blocks.
         """
         batch["batch_idx"] = batch_idx
-        spacing_t, class_labels, B = self._conditioning_tensors(batch)
+        spacing_t, class_labels, B, cond = self._conditioning(batch)
         # Rank/epoch-strided validation noise (codex #116 P2): under DDP the ranks run
         # identical RNG-consuming training steps, so a plain torch.randn produces the
         # SAME noise on every rank - scoring duplicate generations rather than a
@@ -592,13 +829,25 @@ class GRPOModule(spt.Module):
         gen = torch.Generator(device=self.device)
         gen.manual_seed(1234 + 1000 * rank + batch_idx)
         noise = torch.randn(B, *self.latent_shape, generator=gen, device=self.device, dtype=self._policy_dtype())
-        z_K = sample_latent_flow(
-            self.unet, self.scheduler, noise, spacing_t, int(class_labels[0].item()),
-            num_inference_steps=self.num_steps,
-        )
+        if cond is not None:
+            # Mode-2: the deployed deterministic ControlNet noise→data rollout from the
+            # batch's own source (per-sample direction, NOT the bridge SDE), scored by the
+            # condition-aware reward cat([x_src, z_K]).
+            x_src, src_labels, tgt_labels = cond
+            z_K = controlnet_rollout(
+                self.unet, self.controlnet, self.scheduler, noise, x_src, spacing_t,
+                src_labels, tgt_labels, num_inference_steps=self.num_steps,
+            )
+        else:
+            # Mode-1: a mixed-label val batch is generated under ``label[0]``
+            # (``sample_latent_flow`` takes a scalar modality — single-modality v1).
+            z_K = sample_latent_flow(
+                self.unet, self.scheduler, noise, spacing_t, int(class_labels[0].item()),
+                num_inference_steps=self.num_steps,
+            )
         # The same bound the rollout applies (ADR-0015) — val/mean_reward is reported on
         # the bounded scale so it tracks the training signal (raw logit otherwise).
-        rewards = self._bound_reward(self.reward_model(z_K).float())
+        rewards = self._score_reward(z_K, cond)
         valid = ~batch.get(
             "_is_padding", torch.zeros(B, dtype=torch.bool, device=rewards.device)
         ).to(rewards.device).bool()
