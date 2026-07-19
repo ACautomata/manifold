@@ -367,3 +367,100 @@ def test_export_cli_matches_function(tmp_path):
     )
     assert vol.shape == (1, 1, 8, 8, 8)
     assert torch.isfinite(vol).all()
+
+
+# -- ControlNet export baking (issue #144) -------------------------------------
+
+
+def _tiny_base_and_controlnet():
+    """A seeded tiny base UNet + ControlNet with NON-trivial ControlNet weights.
+
+    The ControlNet clones the base encoder, then its zero-conv out projections are
+    perturbed so the round-trip assertion is load-bearing (a zero-init ControlNet
+    would round-trip trivially). The base ``out`` conv is re-initialized too (the
+    MONAI zero-init would mask the residual effect, mirroring the Mode-2 helpers).
+    """
+    from manifold import ControlNet3DConditionModel
+
+    torch.manual_seed(0)
+    base = UNet3DConditionModel(num_class_embeds=4, include_spacing_input=True)
+    for p in base.unet.out.parameters():
+        if p.abs().sum().item() == 0.0:
+            nn.init.normal_(p, std=0.01)
+    controlnet = ControlNet3DConditionModel(num_class_embeds=4, include_spacing_input=True)
+    controlnet.load_base_encoder_weights(base)
+    with torch.no_grad():
+        for p in controlnet.parameters():
+            p.add_(0.001 * torch.randn_like(p))  # non-trivial ControlNet weights
+    return base, controlnet
+
+
+def _write_supervised_controlnet_ckpt(path, controlnet) -> None:
+    """Write a supervised-ControlNet Lightning ckpt (state_dict = controlnet.* only).
+
+    Mirrors the ControlNetLatentFlowModule checkpoint layout: the trainable ControlNet
+    is the ONLY registered arm (the frozen base is held unregistered, off the
+    checkpoint), so the state_dict keys are rooted at ``controlnet.``.
+    """
+    state = {f"controlnet.{k}": v for k, v in controlnet.state_dict().items()}
+    torch.save({"state_dict": state}, str(path))
+
+
+def test_export_controlnet_bakes_and_round_trips(tmp_path):
+    """A supervised ControlNet ckpt exports to a native dir that from_pretrained loads
+    back into a base UNet + ControlNet + VAE with bit-identical weights (#144)."""
+    from manifold import ControlNetLatentFlowPipeline
+
+    base, controlnet = _tiny_base_and_controlnet()
+    ckpt_path = tmp_path / "controlnet.ckpt"
+    _write_supervised_controlnet_ckpt(ckpt_path, controlnet)
+
+    # Fresh base + ControlNet (built from the network config in the real CLI). The
+    # export bakes the ckpt's controlnet.* into the fresh ControlNet; the base is
+    # passed through verbatim (the supervised ckpt carries no base keys).
+    fresh_base, fresh_controlnet = _tiny_base_and_controlnet()
+    # Scramble the fresh ControlNet so the bake is what restores the weights.
+    with torch.no_grad():
+        for p in fresh_controlnet.parameters():
+            p.add_(torch.randn_like(p))
+    vae = AutoencoderKL(scaling_factor=0.5)
+
+    source = export_to_native(
+        str(ckpt_path), str(tmp_path / "native"),
+        unet=fresh_base, controlnet=fresh_controlnet, vae=vae,
+        scheduler=FlowMatchHeunDiscreteScheduler(),
+        pipeline_cls=ControlNetLatentFlowPipeline,
+    )
+    assert source == "controlnet_state_dict"
+
+    loaded = ControlNetLatentFlowPipeline.from_pretrained(str(tmp_path / "native"))
+    # Base UNet + ControlNet round-trip bit-identical to the originals.
+    for k, v in base.state_dict().items():
+        assert torch.equal(loaded.unet.state_dict()[k], v), f"base mismatch at {k}"
+    for k, v in controlnet.state_dict().items():
+        assert torch.equal(loaded.controlnet.state_dict()[k], v), f"controlnet mismatch at {k}"
+    assert float(loaded.vae.scaling_factor) == 0.5
+
+
+def test_export_controlnet_raises_without_controlnet_keys(tmp_path):
+    """A ckpt with no controlnet.* keys (e.g. a plain JiT ckpt) -> clear ValueError."""
+    from manifold import ControlNetLatentFlowPipeline
+
+    base, _ = _tiny_base_and_controlnet()
+    ckpt_path = tmp_path / "jit.ckpt"
+    # A plain JiT-style ckpt: only unet.unet.* keys, no controlnet.* keys.
+    torch.save(
+        {"state_dict": {f"unet.unet.{k}": v for k, v in base.unet.state_dict().items()}},
+        str(ckpt_path),
+    )
+    fresh_base, fresh_controlnet = _tiny_base_and_controlnet()
+    import pytest
+
+    with pytest.raises(ValueError, match="controlnet"):
+        export_to_native(
+            str(ckpt_path), str(tmp_path / "native"),
+            unet=fresh_base, controlnet=fresh_controlnet,
+            vae=AutoencoderKL(scaling_factor=0.5),
+            scheduler=FlowMatchHeunDiscreteScheduler(),
+            pipeline_cls=ControlNetLatentFlowPipeline,
+        )
