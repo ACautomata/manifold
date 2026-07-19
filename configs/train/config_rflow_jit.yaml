@@ -8,7 +8,7 @@
 # Consumed by manifold-train (#28).
 
 diffusion_unet_train:
-  batch_size: 32
+  batch_size: 8
   cache_rate: 0
   lr: 1.0e-4            # base peak LR at lr_ref_batch_size (auto-scales with the effective batch)
   n_epochs: 50
