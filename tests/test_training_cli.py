@@ -464,3 +464,69 @@ def test_export_controlnet_raises_without_controlnet_keys(tmp_path):
             scheduler=FlowMatchHeunDiscreteScheduler(),
             pipeline_cls=ControlNetLatentFlowPipeline,
         )
+
+
+def test_export_cli_controlnet_pipeline(tmp_path):
+    """--pipeline controlnet: load the frozen base export + bake the ControlNet (codex #152 P1).
+
+    The export CLI's controlnet mode loads the frozen base UNet + VAE scale from
+    --base-native-dir (the JiT export the supervised ControlNet trained against),
+    builds the ControlNet from the network config, bakes the ckpt's controlnet.*
+    weights, and writes a ControlNetLatentFlowPipeline dir that from_pretrained
+    round-trips bit-identical.
+    """
+    from manifold import ControlNetLatentFlowPipeline
+    from manifold.config import load_config
+    from manifold.config.builder import build_controlnet, build_pipeline
+
+    env, train, net = _write_tiny_configs(tmp_path)
+    cfg = load_config(net, None, net)
+
+    # A JiT base export (the supervised stage's frozen base + VAE scale source).
+    base_pipe = build_pipeline(cfg)
+    base_dir = tmp_path / "base_native"
+    base_pipe.save_pretrained(str(base_dir))
+
+    # A supervised-ControlNet ckpt (controlnet.* keys only) with non-trivial weights.
+    controlnet = build_controlnet(cfg)
+    controlnet.load_base_encoder_weights(base_pipe.unet)
+    with torch.no_grad():
+        for p in controlnet.parameters():
+            p.add_(0.001 * torch.randn_like(p))
+    ckpt_path = tmp_path / "controlnet.ckpt"
+    _write_supervised_controlnet_ckpt(ckpt_path, controlnet)
+
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
+    import export_checkpoint as cli  # type: ignore[import-not-found]
+
+    rc = cli.main(
+        ["--ckpt", str(ckpt_path), "--output", str(tmp_path / "cn_native"),
+         "--network-config", net, "--pipeline", "controlnet",
+         "--base-native-dir", str(base_dir)]
+    )
+    assert rc == 0
+
+    loaded = ControlNetLatentFlowPipeline.from_pretrained(str(tmp_path / "cn_native"))
+    # Base UNet + ControlNet round-trip bit-identical to the originals.
+    for k, v in base_pipe.unet.state_dict().items():
+        assert torch.equal(loaded.unet.state_dict()[k], v), f"base mismatch at {k}"
+    for k, v in controlnet.state_dict().items():
+        assert torch.equal(loaded.controlnet.state_dict()[k], v), f"controlnet mismatch at {k}"
+
+
+def test_export_cli_controlnet_requires_base_native_dir(tmp_path):
+    """--pipeline controlnet without --base-native-dir -> clear ValueError (codex #152 P1)."""
+    import pytest
+
+    env, train, net = _write_tiny_configs(tmp_path)
+    ckpt_path = tmp_path / "c.ckpt"
+    torch.save({"state_dict": {}}, str(ckpt_path))
+
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
+    import export_checkpoint as cli  # type: ignore[import-not-found]
+
+    with pytest.raises(ValueError, match="base-native-dir"):
+        cli.main(
+            ["--ckpt", str(ckpt_path), "--output", str(tmp_path / "cn_native"),
+             "--network-config", net, "--pipeline", "controlnet"]
+        )
