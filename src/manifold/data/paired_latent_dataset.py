@@ -45,6 +45,30 @@ from .latent_dataset import EncodeFn, _load_cache, _save_cache
 from .paired_volume_dataset import PairedNiftiVolumeDataset
 
 
+def paired_cache_tag(base_tag: str, target_dim, divisor: int) -> str:
+    """Fold the encode geometry into the paired cache tag (issue #147).
+
+    The disk-cache filename is ``<stem>__<cache_tag>__<sha1(sample_id)>.pt`` and the
+    ``sample_id`` is **path-derived only** (it carries no ``target_dim``/``divisor``),
+    so a plain ``cache_tag`` would silently reuse a stale latent encoded at a
+    different volume shape / VAE divisor. Suffixing the tag with the geometry makes
+    a geometry change produce a disjoint filename — a fresh encode instead of a
+    stale hit that would surface far downstream as a latent-shape mismatch.
+
+    Args:
+        base_tag: the caller's logical tag (e.g. ``"paired_train"``).
+        target_dim: the volume's ``(D0, D1, D2)`` resize target (reads
+            ``.target_dim`` when handed a volume dataset).
+        divisor: the VAE spatial downsampling factor (reads ``.divisor`` likewise).
+
+    Returns:
+        ``"{base_tag}__d{D0}x{D1}x{D2}__div{N}"`` — stable and filename-safe.
+    """
+    dims = tuple(int(d) for d in getattr(target_dim, "target_dim", target_dim))
+    div = int(getattr(divisor, "divisor", divisor))
+    return f"{base_tag}__d{'x'.join(str(d) for d in dims)}__div{div}"
+
+
 class PairedLatentDataset(MedicalDataset):
     """Paired latent dataset (shared unique-volume cache, scale-on-read).
 
@@ -248,4 +272,4 @@ def estimate_paired_scale_factor(
     return scale
 
 
-__all__ = ["PairedLatentDataset", "estimate_paired_scale_factor"]
+__all__ = ["PairedLatentDataset", "estimate_paired_scale_factor", "paired_cache_tag"]

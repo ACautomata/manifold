@@ -298,7 +298,7 @@ def _real_inputs(
     from ..config.builder import build_controlnet, build_scheduler
     from ..data.latent_pipeline import make_encode_fn
     from ..data.paired_brats import build_brats_pair_manifest
-    from ..data.paired_latent_dataset import PairedLatentDataset
+    from ..data.paired_latent_dataset import PairedLatentDataset, paired_cache_tag
     from ..data.paired_volume_dataset import PairedNiftiVolumeDataset
     from ..pipelines.latent_flow import LatentFlowPipeline
     from .paired_reward_cli import _train_val_manifests
@@ -357,7 +357,11 @@ def _real_inputs(
         latents_dir
         or opt(cfg, "latent_cache_dir", os.path.join(str(cfg.model_dir), "paired_latent_cache"))
     )
-    cache_tag = str(opt(cfg, "controlnet.cache_tag", "paired_train"))
+    # Fold the encode geometry (target_dim / divisor) into the cache tag (issue #147):
+    # the disk filename is keyed by sample_id (path-derived, geometry-free), so a plain
+    # tag would silently reuse a stale cache encoded at a different shape/divisor.
+    # The geometry suffix makes a config change produce a disjoint cache entry.
+    cache_tag = paired_cache_tag(str(opt(cfg, "controlnet.cache_tag", "paired_train")), target_dim, divisor)
 
     def _ds(manifest_split):
         vol_ds = PairedNiftiVolumeDataset(manifest_split, target_dim=target_dim, divisor=divisor)

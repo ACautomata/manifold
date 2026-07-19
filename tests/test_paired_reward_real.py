@@ -887,3 +887,121 @@ def test_real_inputs_mirrors_val_fraction_for_non_directory_val_dir(tmp_path, mo
     assert seen["val_fraction"] == 0.25, (
         "paired_reward.val_fraction must mirror to root even for a non-directory val_data_base_dir"
     )
+
+
+# -- codex #148 regression: legacy-tag fallback ---------------------------------
+
+
+def _write_paired_cache(cache_dir, sids, cache_tag, latent):
+    """Materialize per-volume paired cache files under *cache_tag* (the on-disk layout)."""
+    from manifold.data.latent_dataset import _save_cache
+
+    Path(cache_dir).mkdir(parents=True, exist_ok=True)
+    for sid in sids:
+        _save_cache(str(cache_dir), sid, cache_tag, {"latent": latent, "sample_id": sid})
+
+
+def _run_resolve_tag(tmp_path, monkeypatch, cache_files_tag, n_train=4, n_val=2):
+    """Drive _real_inputs up to the cache-tag choice; return the tags _ds picked.
+
+    Fakes the ControlNet export + manifest/split + PairedLatentDataset (capturing the
+    ``cache_tag`` each ``_ds`` call receives) and pre-writes cache files under
+    ``cache_files_tag`` so ``_resolve_tag``'s hit-probe sees them. Returns the list of
+    tags chosen for [train, val].
+    """
+    import omegaconf
+
+    from manifold.data import paired_brats as pb
+    from manifold.data import paired_latent_dataset as pld_mod
+    from manifold.data import paired_volume_dataset as pvd_mod
+    from manifold.training import paired_reward_cli
+
+    _save_controlnet_export(tmp_path / "native")
+
+    sids = [f"s{i}" for i in range(n_train)] + [f"v{i}" for i in range(n_val)]
+    train_manifest = [
+        {"src": f"/t/{s}-t1n.nii.gz", "tgt": f"/t/{s}-t1c.nii.gz", "src_label": 0, "tgt_label": 1}
+        for s in sids[:n_train]
+    ]
+    val_manifest = [
+        {"src": f"/v/{s}-t1n.nii.gz", "tgt": f"/v/{s}-t1c.nii.gz", "src_label": 0, "tgt_label": 1}
+        for s in sids[n_train:]
+    ]
+    monkeypatch.setattr(pb, "build_brats_pair_manifest", lambda *a, **k: train_manifest + val_manifest)
+    monkeypatch.setattr(
+        paired_reward_cli, "_train_val_manifests", lambda cfg, manifest: (train_manifest, val_manifest)
+    )
+
+    # A fake volume dataset whose unique_sample_ids are the sids for that split.
+    class _FakeVolDS:
+        def __init__(self, manifest, target_dim=None, divisor=None):
+            self._sids = [m["src"].split("/")[-1].split("-")[0] for m in manifest]
+
+        def unique_sample_ids(self):
+            return self._sids
+
+    monkeypatch.setattr(pvd_mod, "PairedNiftiVolumeDataset", _FakeVolDS)
+
+    # Pre-write the on-disk cache under the given tag (matching geometry latents).
+    cache_dir = tmp_path / "cache"
+    latent = torch.randn(C_LATENT, 8, 8, 8)  # matches dim [8,8,8]/divisor... not shape-checked here
+    _write_paired_cache(cache_dir, sids[:n_train] + sids[n_train:], cache_files_tag, latent)
+
+    chosen = []
+
+    class _FakePLD:
+        def __init__(self, vol_ds, encode_fn=None, cache_dir=None, cache_tag=None):
+            chosen.append(cache_tag)
+            self._n = len(vol_ds.unique_sample_ids())
+            self.scaling_factor = None
+
+        def warm_cache(self, *a, **k):
+            return None
+
+        def __len__(self):
+            return self._n
+
+        def __getitem__(self, i):
+            return {
+                "src_latent": latent, "tgt_latent": latent,
+                "src_label": 0, "tgt_label": 1, "spacing": torch.tensor([1.0, 1.0, 1.0]),
+            }
+
+    monkeypatch.setattr(pld_mod, "PairedLatentDataset", _FakePLD)
+
+    cfg = omegaconf.OmegaConf.create(
+        {
+            "data_base_dir": "/tmp/_unused_",
+            "latent_cache_dir": str(cache_dir),
+            "diffusion_unet_inference": {"dim": [8, 8, 8]},
+            "autoencoder": {"num_channels": [8, 8]},
+            "paired_reward": {"num_steps": 2, "precompute_num_steps": 2, "n_probe": 4, "gen_batch_size": 4},
+            "random_seed": 0,
+        }
+    )
+    paired_reward_cli._real_inputs(
+        cfg, str(tmp_path / "native"), str(cache_dir), torch.device("cpu")
+    )
+    return chosen
+
+
+def test_real_inputs_prefers_geometry_tag_when_fully_warm(tmp_path, monkeypatch):
+    """A fully-warm geometry-suffixed cache is used directly (no legacy fallback)."""
+    from manifold.data.paired_latent_dataset import paired_cache_tag
+
+    geo_tag = paired_cache_tag("paired_train", (8, 8, 8), 2)  # autoencoder 2 levels -> div 2
+    chosen = _run_resolve_tag(tmp_path, monkeypatch, cache_files_tag=geo_tag)
+    assert chosen == [geo_tag, geo_tag], "geometry tag must be preferred on a full hit"
+
+
+def test_real_inputs_falls_back_to_legacy_tag(tmp_path, monkeypatch):
+    """A legacy plain-tag cache (same geometry) is reused via the fallback (codex #148).
+
+    The geometry-suffixed lookup misses (the cache predates the suffix); the legacy
+    'paired_train' tag fully covers the split, so _ds falls back to it instead of
+    cache-missing. The shape validation stays as the guard for wrong-geometry caches.
+    """
+    chosen = _run_resolve_tag(tmp_path, monkeypatch, cache_files_tag="paired_train")
+    assert chosen == ["paired_train", "paired_train"], (
+        "legacy plain tag must be used when the suffixed tag misses but legacy fully covers"
+    )
