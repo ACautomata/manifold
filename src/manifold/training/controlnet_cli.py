@@ -298,7 +298,7 @@ def _real_inputs(
     from ..config.builder import build_controlnet, build_scheduler
     from ..data.latent_pipeline import make_encode_fn
     from ..data.paired_brats import build_brats_pair_manifest
-    from ..data.paired_latent_dataset import PairedLatentDataset, estimate_paired_scale_factor
+    from ..data.paired_latent_dataset import PairedLatentDataset
     from ..data.paired_volume_dataset import PairedNiftiVolumeDataset
     from ..pipelines.latent_flow import LatentFlowPipeline
     from .paired_reward_cli import _train_val_manifests
@@ -327,6 +327,17 @@ def _real_inputs(
             f"No paired BraTS volumes found under data_base_dir={brats_dir} "
             f"(need >=1 subject with all 4 contrasts)."
         )
+    # Mirror the recipe's controlnet.val_fraction to the root val_fraction read by
+    # _train_val_manifests, ONLY when the native-split DIRECTORY path is not taken
+    # and the root key is unset (an explicit root override wins) — mirrors
+    # paired_reward_cli._real_inputs (codex #99/#100).
+    val_dir = opt(cfg, "val_data_base_dir", None)
+    if not (val_dir and os.path.isdir(str(val_dir))):
+        from omegaconf import OmegaConf
+
+        if OmegaConf.select(cfg, "val_fraction", default=None) is None:
+            cn_val_fraction = float(opt(cfg, "controlnet.val_fraction", 0.0))
+            cfg = OmegaConf.merge(cfg, OmegaConf.create({"val_fraction": cn_val_fraction}))
     train_manifest, val_manifest = _train_val_manifests(cfg, manifest)
     if not val_manifest:
         raise ValueError(
@@ -336,8 +347,11 @@ def _real_inputs(
         )
 
     # 4. Warm the paired latent cache over each split (one encode per unique volume;
-    # ADR-0014 — disjoint sample_ids ⇒ free disk hits across splits), then estimate
-    # one scale over the union of src+tgt unique latents.
+    # ADR-0014 — disjoint sample_ids ⇒ free disk hits across splits). Scale-on-read
+    # uses the BASE EXPORT's scaling_factor VERBATIM (ADR-0021): the frozen base was
+    # trained on latents scaled by that factor, so re-estimating it from this paired
+    # subset would move both src+tgt into a normalization space the base never saw.
+    # Never re-estimate; assign the export factor to BOTH datasets.
     encode_fn = make_encode_fn(vae, device, cfg)
     cache_dir = str(
         latents_dir
@@ -352,15 +366,20 @@ def _real_inputs(
         return ds
 
     train_ds, val_ds = _ds(train_manifest), _ds(val_manifest)
-    # One scale over the union of src+tgt (estimate_paired_scale_factor sets
-    # vae.scaling_factor + train_ds.scaling_factor); mirror it to the val split.
-    estimate_paired_scale_factor(train_ds, vae)
-    val_ds.scaling_factor = train_ds.scaling_factor
+    scaling_factor = float(vae.scaling_factor)  # the base export's factor (verbatim)
+    train_ds.scaling_factor = scaling_factor
+    val_ds.scaling_factor = scaling_factor
+    # Free BOTH encoder closures (train + val) and move the VAE off the training
+    # GPU: supervised validation is latent-only (no decode), so the VAE is only
+    # needed for the warm. The frozen base + ControlNet + activations already fill
+    # the device; a lingering GPU VAE can turn a feasible 3D run into an OOM.
     train_ds.free_encoder()
+    val_ds.free_encoder()
+    vae.to("cpu")
     rank_zero_info(
         "ControlNet supervised: %d train / %d val paired pairs; base frozen, "
-        "ControlNet trainable (fresh zero-conv clone).",
-        len(train_ds), len(val_ds),
+        "ControlNet trainable (fresh zero-conv clone); scale_factor=%.6f (base export).",
+        len(train_ds), len(val_ds), scaling_factor,
     )
     return ControlNetInputs(
         unet=base,

@@ -35,7 +35,6 @@ formulation:
   p_mean: -0.8           # t ~ sigmoid(N(p_mean, p_std))
   p_std: 0.8
   t_eps: 0.05            # (1-t)^-2 loss / derived-velocity clamp
-  noise_scale: 1.0       # noise-std multiplier on the normalized latent
   # Optional L1 (MAA) term on the target prediction (default 0.0 = off). The
   # L1+direction-offset lever from the prior paired experiments; non-trivial only
   # alongside the direction conditioning already on the ControlNet.
@@ -48,6 +47,10 @@ formulation:
 # against); selection is on the supervised val loss.
 controlnet:
   num_inference_steps: 15   # Heun steps for the validation rollout (mirrors JiT inference)
+  # Held-out subject fraction for the val split when env.val_data_base_dir is not a
+  # BraTS DIRECTORY (the shipped environment_brats2023.yaml points it at a manifest
+  # JSON, which _train_val_manifests rejects → falls back to this fraction).
+  val_fraction: 0.2
 
 # Stock Lightning ModelCheckpoint (ADR-0006): the raw optimizer arm (no EMA —
 # ADR-0006). Single-GPU monitors the supervised val loss; under DDP falls back to

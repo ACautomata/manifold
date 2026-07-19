@@ -41,8 +41,16 @@ def build_vae(cfg: DictConfig) -> AutoencoderKL:
 
 
 def build_unet(cfg: DictConfig) -> UNet3DConditionModel:
-    """Instantiate the :class:`UNet3DConditionModel` from the ``diffusion_unet`` block."""
-    return UNet3DConditionModel(**_block_kwargs(cfg, "diffusion_unet"))
+    """Instantiate the :class:`UNet3DConditionModel` from the ``diffusion_unet`` block.
+
+    The shipped ``config_network.yaml`` still carries ``paired_direction_offset``
+    (the ControlNet's direction-MLP knob, ADR-0028), but the base UNet wrapper no
+    longer accepts it (the paired branch was removed in #130 T8). Pop it so the
+    shared block builds the base cleanly — ``build_controlnet`` forwards it.
+    """
+    kwargs = _block_kwargs(cfg, "diffusion_unet")
+    kwargs.pop("paired_direction_offset", None)  # ControlNet-only (ADR-0028); not a base arg
+    return UNet3DConditionModel(**kwargs)
 
 
 def build_controlnet(cfg: DictConfig) -> ControlNet3DConditionModel:

@@ -149,6 +149,19 @@ def run_grpo_training(
         and inputs.real_latents is not None
         and (inputs.feature_net is not None or inputs.feature_net_factory is not None)
     )
+    # Mode-2 (ADR-0028): the base UNet is frozen and only the ControlNet trains, but
+    # the FID callback's unconditional `module.sample()` rollout ignores the
+    # ControlNet — so val/fid would be a CONSTANT frozen-base metric, independent of
+    # the learned policy. Selecting on it is meaningless; skip the unconditional FID
+    # in Mode-2 and select on the conditional reward (val/mean_reward).
+    mode2 = getattr(module, "controlnet", None) is not None
+    if mode2 and fid_active:
+        rank_zero_info(
+            "Mode-2 (ControlNet on frozen base): skipping unconditional FID — it "
+            "ignores the ControlNet (a constant frozen-base metric). Monitoring "
+            "val/mean_reward (the conditional-reward progress signal) instead."
+        )
+        fid_active = False
     if monitor_metric is None:
         monitor_metric = "val/fid" if fid_active else "val/mean_reward"
     if mode is None:

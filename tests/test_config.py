@@ -88,7 +88,10 @@ diffusion_unet_train:
   batch_size: 1
 formulation:
   mode: x0-denoiser
-  cfg_interval: [0.1, 1.0]
+  p_mean: -0.8
+  p_std: 0.8
+  t_eps: 0.05
+  l1_weight: 0.0
 diffusion_unet_inference:
   num_inference_steps: 15
   modality: 1
@@ -393,6 +396,30 @@ def test_build_controlnet_maps_diffusion_unet_block(tmp_path: Path) -> None:
     )
     assert mid_res is not None
     assert len(down_res) > 0
+
+
+def test_build_unet_pops_controlnet_only_paired_direction_offset() -> None:
+    """Regression (codex #142): the shipped ``config_network.yaml`` carries
+    ``paired_direction_offset`` (the ControlNet's direction-MLP knob), but the base
+    UNet wrapper no longer accepts it. ``build_unet`` must pop it so the shared
+    block builds the base without a TypeError; ``build_controlnet`` forwards it."""
+    from manifold.config import merge_overrides
+
+    cfg = load_config(
+        str(_REPOS / "configs/env/environment_brats2023.yaml"),
+        str(_REPOS / "configs/train/config_rflow_jit.yaml"),
+        str(_REPOS / "configs/network/config_network.yaml"),
+    )
+    # The shipped block has the ControlNet-only knob; GPU-only flash attention is
+    # disabled so the wrapper constructs on CPU.
+    assert cfg.diffusion_unet.paired_direction_offset == 0
+    cfg = merge_overrides(cfg, {}, ["diffusion_unet.use_flash_attention=false"])
+
+    unet = build_unet(cfg)  # would TypeError on paired_direction_offset before the fix
+    assert type(unet) is UNet3DConditionModel
+    assert "paired_direction_offset" not in unet.config
+    # build_controlnet consumes the same block (forwards the knob) without popping it.
+    assert build_controlnet(cfg).config["paired_direction_offset"] == 0
 
 
 def test_env_configs_are_tracked_in_repo() -> None:

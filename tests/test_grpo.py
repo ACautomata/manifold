@@ -1182,3 +1182,49 @@ def test_main_mode2_requires_controlnet(tmp_path):
             ["-e", env, "-c", train, "-t", net, "-g", "1", "--grpo-mode", "2"],
             data_provider=lambda cfg, device: _inputs(),  # Mode-1 inputs — no controlnet
         )
+
+
+def test_run_grpo_training_mode2_skips_unconditional_fid(tmp_path):
+    """Regression (codex #142): Mode-2 skips the unconditional FID and monitors
+    ``val/mean_reward`` even when the FID triple is present.
+
+    The base UNet is frozen and only the ControlNet trains, but FIDCallback's
+    unconditional ``module.sample()`` rollout ignores the ControlNet — so val/fid
+    would be a CONSTANT frozen-base metric, independent of the learned policy.
+    ``run_grpo_training`` must not attach it in Mode-2.
+    """
+    from manifold.modules import GRPOModule
+    from manifold.training.grpo_cli import GRPOInputs, run_grpo_training
+
+    class _FakeVAE:  # FID triple present — would force fid_active=True in Mode-1
+        pass
+
+    base = _mode2_base()
+    cn = _mode2_controlnet(base)
+    inputs = GRPOInputs(
+        policy=base,
+        reward_model=_mode2_reward(),
+        scheduler=FlowMatchGRPOScheduler(eta=0.5),
+        train_ds=_ToyPairedCondDS(),
+        val_ds=_ToyPairedCondDS(),
+        latent_shape=(4, 16, 16, 8),
+        controlnet=cn,
+        vae=_FakeVAE(),
+        real_latents=torch.randn(2, 4, 16, 16, 8),
+        feature_net=object(),
+    )
+    module = GRPOModule(
+        base, inputs.reward_model, FlowMatchGRPOScheduler(eta=0.5),
+        G=2, eta_step_list=[0], num_steps=3, latent_shape=(4, 16, 16, 8),
+        controlnet=cn, freeze_unet=True, lr=1e-5,
+    )
+    trainer, ckpt = run_grpo_training(
+        module=module, inputs=inputs, model_dir=str(tmp_path),
+        max_epochs=1, devices=1, accelerator="cpu", batch_size=2,
+    )
+    from manifold.metrics import FIDCallback
+
+    assert not any(isinstance(c, FIDCallback) for c in trainer.callbacks), (
+        "FIDCallback attached in Mode-2 — a constant frozen-base metric"
+    )
+    assert ckpt.monitor == "val/mean_reward"
