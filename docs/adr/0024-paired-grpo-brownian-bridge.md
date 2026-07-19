@@ -1,5 +1,12 @@
 # Paired GRPO (G2RPO) — Brownian-bridge singular-branch GRPO on the paired src→tgt flow
 
+> **Status: Superseded by [ADR-0028](0028-two-mode-grpo-unify-controlnet-delete-bridge.md).**
+> The bridge scheduler, `singular_branch_rollout_paired`, and `PairedGRPOModule` are
+> deleted; paired GRPO is now Mode-2 of the unified `GRPOModule` on the noise→data
+> transport (the `grpo.py` spine reuses verbatim). The bridge-noise launch gate demotes to
+> an optional sanity probe (the supervised ControlNet init is already a real translator,
+> ADR-0027). Kept as decision history.
+
 The trained Paired JiT UNet is post-trained with **Granular-GRPO** (singular
 branching, arXiv 2510.01982) against the frozen paired reward (ADR-0018–0023), over a
 **data-to-data Brownian bridge** `Z_t = (1−t)·X_src + t·X_tgt + √(η·t·(1−t))·ε`. GRPO

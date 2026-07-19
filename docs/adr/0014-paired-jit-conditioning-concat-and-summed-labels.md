@@ -1,5 +1,11 @@
 # Paired JiT conditioning — concat the source latent at the input, sum the contrast labels in the embedding pathway; train from scratch
 
+> **Status: Retired — see [ADR-0026](0026-controlnet-via-monai-native-residual-interface.md)
+> / [ADR-0028](0028-two-mode-grpo-unify-controlnet-delete-bridge.md).** The `2·C_latent`
+> concat UNet and its summed-label conditioning are deleted; the source enters via a
+> ControlNet residual pathway, and the direction conditioning moves onto the ControlNet.
+> Kept as decision history.
+
 The Paired JiT UNet conditions on the source by **concatenation**: the input is
 `[z_t, x_src_latent]` along channels, so `in_channels = 2·C_latent` (the MAISI
 class is unchanged — only the config value). This puts `x_src` in view at *every*

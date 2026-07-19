@@ -183,6 +183,8 @@ class UNet3DConditionModel(ModelMixin):
         *,
         class_labels_src: Tensor | None = None,
         class_labels_tgt: Tensor | None = None,
+        down_block_additional_residuals: tuple[Tensor, ...] | None = None,
+        mid_block_additional_residual: Tensor | None = None,
     ) -> Tensor:
         """Predict the clean latent x0 given a noised latent and medical conditions.
 
@@ -200,6 +202,10 @@ class UNet3DConditionModel(ModelMixin):
                 ``MLP(concat(embed(src), embed(tgt+paired_direction_offset)))`` at the
                 backbone's class-embedding injection point (ADR-0014 addendum); they
                 must be passed together and require ``num_class_embeds`` to be set.
+            down_block_additional_residuals / mid_block_additional_residual: the
+                ControlNet residual injections (ADR-0026) — passed straight through to the
+                MONAI backbone's native forward args. ``None`` (the noise→data JiT path)
+                leaves the backbone byte-unchanged.
         """
         b = sample.shape[0]
         timesteps = self._scaled_timesteps(timestep, b, sample.device, sample.dtype)
@@ -258,6 +264,8 @@ class UNet3DConditionModel(ModelMixin):
                     context=context,
                     class_labels=class_labels_src,
                     spacing_tensor=spacing_tensor,
+                    down_block_additional_residuals=down_block_additional_residuals,
+                    mid_block_additional_residual=mid_block_additional_residual,
                 )
             finally:
                 self.unet.class_embedding = original
@@ -268,4 +276,6 @@ class UNet3DConditionModel(ModelMixin):
             context=context,
             class_labels=class_labels,
             spacing_tensor=spacing_tensor,
+            down_block_additional_residuals=down_block_additional_residuals,
+            mid_block_additional_residual=mid_block_additional_residual,
         )

@@ -7,7 +7,13 @@ subclass the ``diffusers`` library (ADR-0001).
 """
 
 from .configuration import ConfigMixin
-from .models import AutoencoderKL, ModelMixin, RewardModel, UNet3DConditionModel
+from .models import (
+    AutoencoderKL,
+    ControlNet3DConditionModel,
+    ModelMixin,
+    RewardModel,
+    UNet3DConditionModel,
+)
 from .modules import LatentFlowModule, PairedLatentFlowModule
 from .pipelines import DiffusionPipeline, LatentFlowPipeline, PairedLatentFlowPipeline
 from .schedulers import (
@@ -23,6 +29,7 @@ __version__ = "0.1.0"
 __all__ = [
     "AutoencoderKL",
     "ConfigMixin",
+    "ControlNet3DConditionModel",
     "DiffusionPipeline",
     "FlowMatchBridgeGRPOScheduler",
     "FlowMatchGRPOScheduler",
