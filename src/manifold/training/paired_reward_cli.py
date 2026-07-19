@@ -328,7 +328,7 @@ def _real_inputs(
 
     from ..config import autoencoder_divisor
     from ..data.paired_brats import build_brats_pair_manifest
-    from ..data.paired_latent_dataset import PairedLatentDataset
+    from ..data.paired_latent_dataset import PairedLatentDataset, paired_cache_tag
     from ..data.paired_reward_pairs import build_paired_reward_inputs, load_frozen_controlnet_generator
     from ..data.paired_volume_dataset import PairedNiftiVolumeDataset
 
@@ -389,11 +389,13 @@ def _real_inputs(
     # every volume from disk (encode_fn=None is tolerated on cache hits). A partial
     # cache fails fast (PairedLatentDataset raises a clear "cache miss - no encoder"
     # error) rather than silently re-encoding. --latents-dir overrides latent_cache_dir.
+    # The tag folds in target_dim/divisor (issue #147) so a geometry change reuses
+    # no stale entry — it produces a disjoint cache file instead of a shape mismatch.
     cache_dir = str(
         latents_dir
         or opt(cfg, "latent_cache_dir", os.path.join(str(cfg.model_dir), "paired_latent_cache"))
     )
-    cache_tag = str(opt(cfg, "paired_reward.cache_tag", "paired_train"))
+    cache_tag = paired_cache_tag(str(opt(cfg, "paired_reward.cache_tag", "paired_train")), target_dim, divisor)
 
     def _ds(manifest_split):
         vol_ds = PairedNiftiVolumeDataset(manifest_split, target_dim=target_dim, divisor=divisor)
