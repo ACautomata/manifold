@@ -895,8 +895,10 @@ def test_codex116_padding_mask_uses_global_sum_count():
 # ============================================================================
 #
 # The two-mode unification: Mode-2 freezes the base UNet, trains the ControlNet
-# against the condition-aware reward, and reuses the SAME spine (transition
-# log-prob / KL anchor / advantage / clipped surrogate / singular-branch rollout).
+# against the frozen reward on z_K (unconditional — the ControlNet's conditional
+# fidelity is driven by the policy x0, not the reward input), and reuses the SAME
+# spine (transition log-prob / KL anchor / advantage / clipped surrogate /
+# singular-branch rollout).
 # The Mode-2 perturbed-step backward is autograd-safe ONLY because the base
 # wrapper's out-of-place residual forward (ADR-0026 corrected hazard) neutralizes
 # MONAI's in-place residual adds — these tests pin that contract.
@@ -926,9 +928,13 @@ def _mode2_controlnet(base) -> ControlNet3DConditionModel:
 
 
 def _mode2_reward() -> RewardModel:
-    """Condition-aware reward (in_channels = 2·C_latent) scoring cat([x_src, z_K])."""
+    """Single-latent reward (in_channels = C_latent) scoring z_K unconditionally.
+
+    Mode-2 scores the terminal latent ``z_K`` only (``reward(z_K)``) — the same
+    single-latent reward Mode-1 uses, NOT a 2·C condition-aware concat.
+    """
     torch.manual_seed(0)
-    return RewardModel(spatial_dims=3, in_channels=8, channels=8, num_layers_d=1)
+    return RewardModel(spatial_dims=3, in_channels=4, channels=8, num_layers_d=1)
 
 
 def _mode2_batch() -> dict:
@@ -1150,7 +1156,7 @@ def test_main_runs_end_to_end_mode2(tmp_path):
     """main() ``--grpo-mode 2``: the ControlNet path runs end-to-end via the CLI seam.
 
     The Mode-2 entry-point acceptance (#141): ``--grpo-mode 2`` freezes the base
-    UNet and trains the ControlNet against the condition-aware reward. The
+    UNet and trains the ControlNet against the frozen reward on z_K. The
     data_provider injects a frozen base + trainable ControlNet + paired conditioning;
     main wires ``controlnet`` / ``freeze_unet`` into GRPOModule (the --grpo-mode
     flag's load-bearing path) and writes a checkpoint.
@@ -1228,3 +1234,366 @@ def test_run_grpo_training_mode2_skips_unconditional_fid(tmp_path):
         "FIDCallback attached in Mode-2 — a constant frozen-base metric"
     )
     assert ckpt.monitor == "val/mean_reward"
+
+
+# -- the real _real_inputs_mode2 CLI path (#143) ------------------------------
+#
+# Mode-2's real-data path loads the supervised ControlNet export (frozen base +
+# ControlNet) and resolves the paired conditioning split, then constructs a
+# GRPOInputs with controlnet set so main() reaches run_grpo_training without the
+# "requires a ControlNet" guard. The real BraTS + VAE path is cluster-only; these
+# tests fake the manifest / split / warmed cache / reward ckpt (the same seam
+# paired_reward_cli's real-inputs test uses).
+
+
+def _save_mode2_reward_ckpt(path, *, in_channels=4) -> None:
+    """Write a minimal reward ckpt (state_dict keys prefixed ``reward_model.``).
+
+    Mode-2's reward scores the terminal latent ``z_K`` unconditionally
+    (``in_channels = C_latent``, the same single-latent reward Mode-1 uses) — NOT the
+    2·C condition-aware paired reward. _real_inputs_mode2 strips the ``reward_model.``
+    Lightning prefix.
+    """
+    rm = RewardModel(spatial_dims=3, in_channels=in_channels, channels=8, num_layers_d=1)
+    torch.save({"state_dict": {f"reward_model.{k}": v for k, v in rm.state_dict().items()}}, str(path))
+
+
+def _fake_mode2_manifests(n_train=4, n_val=2):
+    train = [
+        {"src": f"/t/s{i}-t1n.nii.gz", "tgt": f"/t/s{i}-t1c.nii.gz", "src_label": 0, "tgt_label": 1}
+        for i in range(n_train)
+    ]
+    val = [
+        {"src": f"/v/s{i}-t1n.nii.gz", "tgt": f"/v/s{i}-t1c.nii.gz", "src_label": 0, "tgt_label": 1}
+        for i in range(n_val)
+    ]
+    return train, val
+
+
+class _FakeMode2PairedDS(Dataset):
+    """A warmed ``PairedLatentDataset`` stand-in emitting the paired conditioning keys.
+
+    Serves scaled latents + labels + spacing; carries a settable ``scaling_factor``
+    sentinel so the test asserts _real_inputs_mode2 overwrote it with the export's
+    (ADR-0021 scale-consistency). ``warm_cache`` is a no-op (the fake is pre-warmed).
+    """
+
+    def __init__(self, n):
+        self._n = n
+        self.scaling_factor = None  # sentinel: _real_inputs_mode2 must set this
+        torch.manual_seed(0)
+        self._lat = torch.randn(n, 4, 16, 16, 8)
+
+    def warm_cache(self, *a, **k):
+        return None
+
+    def __len__(self):
+        return self._n
+
+    def __getitem__(self, i):
+        return {
+            "src_latent": self._lat[i],
+            "spacing": torch.tensor([1.0, 1.0, 1.0]),
+            "src_label": torch.tensor(0, dtype=torch.long),
+            "tgt_label": torch.tensor(1, dtype=torch.long),
+        }
+
+
+def _mode2_cfg(tmp_path):
+    import omegaconf
+
+    return omegaconf.OmegaConf.create(
+        {
+            "data_base_dir": "/tmp/_unused_",
+            "latent_cache_dir": str(tmp_path / "cache"),
+            "diffusion_unet_inference": {"dim": [128, 128, 64]},
+            "autoencoder": {"num_channels": [8, 8]},
+            "latent_channels": 4,
+            "reward_model": {"spatial_dims": 3, "channels": 8, "num_layers_d": 1, "norm": "BATCH"},
+            "grpo": {"cache_tag": "paired_train", "val_fraction": 0.0},
+            "grpo_train": {"latent_shape": [4, 16, 16, 8], "eta": 0.7},
+            "random_seed": 0,
+        }
+    )
+
+
+def test_real_inputs_mode2_loads_controlnet_and_builds_paired_conditioning(tmp_path, monkeypatch):
+    """_real_inputs_mode2: frozen base + trainable ControlNet + paired conditioning (#143).
+
+    Loads the supervised ControlNet export via load_frozen_controlnet_generator,
+    keeps the base frozen, unfreezes ONLY the ControlNet, resolves the paired
+    train/val split, and returns GRPOInputs.controlnet — so main() --grpo-mode 2
+    reaches run_grpo_training without the "requires a ControlNet" guard.
+    """
+    from tests.test_paired_reward_real import _save_controlnet_export
+
+    from manifold.data import paired_brats as pb
+    from manifold.data import paired_latent_dataset as pld_mod
+    from manifold.training import grpo_cli, paired_reward_cli
+
+    _save_controlnet_export(tmp_path / "native")
+    _save_mode2_reward_ckpt(tmp_path / "reward.ckpt", in_channels=4)
+
+    train_manifest, val_manifest = _fake_mode2_manifests()
+    monkeypatch.setattr(pb, "build_brats_pair_manifest", lambda *a, **k: train_manifest + val_manifest)
+    monkeypatch.setattr(
+        paired_reward_cli, "_train_val_manifests", lambda cfg, manifest: (train_manifest, val_manifest)
+    )
+
+    # Fake the warmed paired cache: two instances (train then val), pre-warmed.
+    built = []
+    fake_train, fake_val = _FakeMode2PairedDS(4), _FakeMode2PairedDS(2)
+    _queue = [fake_val, fake_train]  # first build pops train, second pops val
+
+    class _FakePLD:
+        def __init__(self, vol_ds, encode_fn=None, cache_dir=None, cache_tag=None):
+            self._ds = _queue.pop()
+            self.scaling_factor = None  # sentinel
+            built.append(self)
+
+        def warm_cache(self, *a, **k):
+            return None
+
+        def __len__(self):
+            return len(self._ds)
+
+        def __getitem__(self, i):
+            return self._ds[i]
+
+    monkeypatch.setattr(pld_mod, "PairedLatentDataset", _FakePLD)
+
+    cfg = _mode2_cfg(tmp_path)
+    inputs = grpo_cli._real_inputs_mode2(
+        cfg, str(tmp_path / "native"), str(tmp_path / "reward.ckpt"),
+        str(tmp_path / "cache"), torch.device("cpu"),
+    )
+
+    # The ControlNet is supplied (main() won't trip the "requires a ControlNet" guard).
+    assert inputs.controlnet is not None
+    # Base frozen; the ControlNet is the ONLY trainable arm.
+    assert not any(p.requires_grad for p in inputs.policy.parameters())
+    assert any(p.requires_grad for p in inputs.controlnet.parameters())
+    # The reward is frozen and scores z_K unconditionally (in_channels = C_latent).
+    assert not any(p.requires_grad for p in inputs.reward_model.parameters())
+    # Paired conditioning datasets (train 4 / val 2).
+    assert len(inputs.train_ds) == 4
+    assert len(inputs.val_ds) == 2
+    item = inputs.train_ds[0]
+    for key in ("src_latent", "spacing", "src_label", "tgt_label"):
+        assert key in item, f"paired conditioning batch missing {key}"
+    # ADR-0021: both datasets' scaling_factor set to the export's (0.5 in the helper).
+    assert len(built) == 2
+    assert all(ds.scaling_factor == 0.5 for ds in built), (
+        "_real_inputs_mode2 must set ds.scaling_factor = the export's scaling_factor (ADR-0021)"
+    )
+    # No FID triple in Mode-2 (the unconditional FID is a constant frozen-base metric).
+    assert inputs.vae is None and inputs.real_latents is None and inputs.feature_net is None
+    # The KL anchor (ADR-0015): a (base, controlnet) pair snapshot, so the recipe's
+    # kl_coef does not silently disable (codex #151 P1). Weight-matched to the loaded
+    # arms (a pre-update deepcopy; the GRPOModule freezes + unregisters it).
+    assert inputs.reference_policy is not None
+    ref_base, ref_cn = inputs.reference_policy
+    for k, v in inputs.policy.state_dict().items():
+        assert torch.equal(ref_base.state_dict()[k], v)
+    for k, v in inputs.controlnet.state_dict().items():
+        assert torch.equal(ref_cn.state_dict()[k], v)
+
+
+def test_real_inputs_mode2_raises_on_no_val_split(tmp_path, monkeypatch):
+    """No held-out val split -> clear ValueError (train never reused as val)."""
+    from tests.test_paired_reward_real import _save_controlnet_export
+
+    from manifold.data import paired_brats as pb
+    from manifold.training import grpo_cli, paired_reward_cli
+
+    _save_controlnet_export(tmp_path / "native")
+    _save_mode2_reward_ckpt(tmp_path / "reward.ckpt", in_channels=4)
+
+    train_manifest, _ = _fake_mode2_manifests()
+    monkeypatch.setattr(pb, "build_brats_pair_manifest", lambda *a, **k: train_manifest)
+    monkeypatch.setattr(
+        paired_reward_cli, "_train_val_manifests", lambda cfg, manifest: (train_manifest, [])
+    )
+
+    cfg = _mode2_cfg(tmp_path)
+    with pytest.raises(ValueError, match="val split"):
+        grpo_cli._real_inputs_mode2(
+            cfg, str(tmp_path / "native"), str(tmp_path / "reward.ckpt"),
+            str(tmp_path / "cache"), torch.device("cpu"),
+        )
+
+
+def test_real_inputs_mode2_rejects_condition_aware_reward_ckpt(tmp_path, monkeypatch):
+    """A 2·C condition-aware paired-reward ckpt fails fast with a readable error.
+
+    Mode-2 scores z_K unconditionally (in_channels = C_latent = 4). Passing a
+    2·C paired-reward ckpt (in_channels = 8, from manifold-train-paired-reward)
+    must raise a clear ValueError BEFORE load_state_dict's cryptic shape error
+    (codex #151: the z_K-only reward is an intentional design decision; the check
+    turns the real 2·C-ckpt incompatibility into an actionable message).
+    """
+    from tests.test_paired_reward_real import _save_controlnet_export
+
+    from manifold.data import paired_brats as pb
+    from manifold.training import grpo_cli, paired_reward_cli
+
+    _save_controlnet_export(tmp_path / "native")
+    # 2·C condition-aware ckpt: in_channels = 8 = 2 * C_latent(4).
+    _save_mode2_reward_ckpt(tmp_path / "reward.ckpt", in_channels=8)
+
+    train_manifest, val_manifest = _fake_mode2_manifests()
+    monkeypatch.setattr(pb, "build_brats_pair_manifest", lambda *a, **k: train_manifest + val_manifest)
+    monkeypatch.setattr(
+        paired_reward_cli, "_train_val_manifests", lambda cfg, manifest: (train_manifest, val_manifest)
+    )
+
+    cfg = _mode2_cfg(tmp_path)
+    with pytest.raises(ValueError, match="in_channels=8"):
+        grpo_cli._real_inputs_mode2(
+            cfg, str(tmp_path / "native"), str(tmp_path / "reward.ckpt"),
+            str(tmp_path / "cache"), torch.device("cpu"),
+        )
+
+
+def test_main_mode2_real_path_dispatches_and_builds_controlnet_module(tmp_path, monkeypatch):
+    """main() --grpo-mode 2 dispatches to _real_inputs_mode2 and reaches fit (no guard).
+
+    Exercises the full main() wiring (arg dispatch → _real_inputs_mode2 → GRPOModule
+    with controlnet + freeze_unet → run_grpo_training) with the paired cache faked.
+    """
+    from tests.test_paired_reward_real import _save_controlnet_export
+
+    from manifold.data import paired_brats as pb
+    from manifold.data import paired_latent_dataset as pld_mod
+    from manifold.training import grpo_cli, paired_reward_cli
+
+    env, train, net = _write_tiny_configs(tmp_path)
+    # Mode-2 requires data_base_dir + the paired/reward config blocks; the tiny configs
+    # already carry model_dir. Point data_base_dir at a throwaway dir and add the
+    # network-side blocks _real_inputs_mode2 reads (inference dim / autoencoder divisor /
+    # reward_model arch / grpo.cache_tag).
+    import omegaconf
+    extra_env = omegaconf.OmegaConf.create({"data_base_dir": str(tmp_path)})
+    env_cfg = omegaconf.OmegaConf.merge(omegaconf.OmegaConf.load(env), extra_env)
+    omegaconf.OmegaConf.save(env_cfg, env)
+    extra_net = omegaconf.OmegaConf.create(
+        {
+            "diffusion_unet_inference": {"dim": [128, 128, 64]},
+            "autoencoder": {"num_channels": [8, 8]},
+            "reward_model": {"spatial_dims": 3, "channels": 8, "num_layers_d": 1, "norm": "BATCH"},
+            "grpo": {"cache_tag": "paired_train", "val_fraction": 0.0},
+        }
+    )
+    net_cfg = omegaconf.OmegaConf.merge(omegaconf.OmegaConf.load(net), extra_net)
+    omegaconf.OmegaConf.save(net_cfg, net)
+
+    _save_controlnet_export(tmp_path / "native")
+    _save_mode2_reward_ckpt(tmp_path / "reward.ckpt", in_channels=4)
+
+    train_manifest, val_manifest = _fake_mode2_manifests()
+    monkeypatch.setattr(pb, "build_brats_pair_manifest", lambda *a, **k: train_manifest + val_manifest)
+    monkeypatch.setattr(
+        paired_reward_cli, "_train_val_manifests", lambda cfg, manifest: (train_manifest, val_manifest)
+    )
+    fake_train, fake_val = _FakeMode2PairedDS(4), _FakeMode2PairedDS(2)
+    _queue = [fake_val, fake_train]
+
+    class _FakePLD:
+        def __init__(self, vol_ds, encode_fn=None, cache_dir=None, cache_tag=None):
+            self._ds = _queue.pop()
+            self.scaling_factor = None
+
+        def warm_cache(self, *a, **k):
+            return None
+
+        def __len__(self):
+            return len(self._ds)
+
+        def __getitem__(self, i):
+            return self._ds[i]
+
+    monkeypatch.setattr(pld_mod, "PairedLatentDataset", _FakePLD)
+
+    rc = grpo_cli.main(
+        ["-e", env, "-c", train, "-t", net, "-g", "1", "--max-epochs", "1",
+         "--grpo-mode", "2", "grpo_train.latent_shape=[4,16,16,8]",
+         "--native-dir", str(tmp_path / "native"),
+         "--reward-path", str(tmp_path / "reward.ckpt"),
+         "--latents-dir", str(tmp_path / "cache")],
+    )
+    assert rc == 0
+    ckpts = list(Path(str(tmp_path / "model")).glob("*.ckpt"))
+    assert any(p.name == "last.ckpt" for p in ckpts)
+
+
+# -- codex #151 regression guards ----------------------------------------------
+
+
+def test_mode2_recipe_resolves_inference_dim():
+    """The committed Mode-2 recipe defines diffusion_unet_inference.dim (codex #151 P1).
+
+    _real_inputs_mode2 reads cfg.diffusion_unet_inference.dim directly (load-bearing
+    for the paired cache's target_dim / divisor); the recipe must define it so the
+    documented launch does not raise ConfigAttributeError.
+    """
+    from manifold.config import load_config
+
+    cfg = load_config(
+        "configs/env/environment.yaml",
+        "configs/train/config_controlnet_grpo.yaml",
+        "configs/network/config_network.yaml",
+    )
+    assert tuple(int(d) for d in cfg.diffusion_unet_inference.dim) == (256, 256, 128)
+
+
+def test_real_inputs_mode2_rejects_stale_cache_shape(tmp_path, monkeypatch):
+    """A paired cache warmed at a different target_dim -> fail-fast ValueError (codex #151 P2).
+
+    The cache key is sample_id + tag (NOT target_dim), so a stale cache silently
+    reuses wrong-shape src latents. _real_inputs_mode2 validates every unique
+    latent's spatial shape against the recipe's target_dim / divisor and raises.
+    """
+    from tests.test_paired_reward_real import _save_controlnet_export
+
+    from manifold.data import paired_brats as pb
+    from manifold.data import paired_latent_dataset as pld_mod
+    from manifold.training import grpo_cli, paired_reward_cli
+
+    _save_controlnet_export(tmp_path / "native")
+    _save_mode2_reward_ckpt(tmp_path / "reward.ckpt", in_channels=4)
+
+    train_manifest, val_manifest = _fake_mode2_manifests()
+    monkeypatch.setattr(pb, "build_brats_pair_manifest", lambda *a, **k: train_manifest + val_manifest)
+    monkeypatch.setattr(
+        paired_reward_cli, "_train_val_manifests", lambda cfg, manifest: (train_manifest, val_manifest)
+    )
+
+    # A fake PairedLatentDataset exposing the real cache interface (source + raw_latent)
+    # but serving a WRONG-shape latent. The recipe target_dim [128,128,64] / divisor 4
+    # (autoencoder [64,128,256] -> div 4) expects ceil -> (32,32,16); serve (16,16,8).
+    class _FakePLDStale:
+        class source:
+            @staticmethod
+            def unique_sample_ids():
+                return ["s0", "s1", "s2", "s3"]
+
+        def __init__(self, vol_ds, encode_fn=None, cache_dir=None, cache_tag=None):
+            self.scaling_factor = None
+
+        def warm_cache(self, *a, **k):
+            return None
+
+        def __len__(self):
+            return 4
+
+        def raw_latent(self, sid):
+            return torch.randn(4, 16, 16, 8)  # WRONG spatial (16,16,8) != (32,32,16)
+
+    monkeypatch.setattr(pld_mod, "PairedLatentDataset", _FakePLDStale)
+
+    cfg = _mode2_cfg(tmp_path)  # dim [128,128,64]; autoencoder [8,8] -> divisor 2 -> (64,64,32)
+    with pytest.raises(ValueError, match="Cached paired latent"):
+        grpo_cli._real_inputs_mode2(
+            cfg, str(tmp_path / "native"), str(tmp_path / "reward.ckpt"),
+            str(tmp_path / "cache"), torch.device("cpu"),
+        )

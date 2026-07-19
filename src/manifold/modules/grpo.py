@@ -181,10 +181,9 @@ def singular_branch_rollout(
             forward and the current conditioning (``z_k``-batch for anchor/perturbed,
             ``(B·G,)`` for the suffix — the same ``fn_labels_bg`` batching). ``None``
             (Mode-1) uses the plain ``unet(sample, timestep, spacing, class_labels)``.
-        reward_fn: optional Mode-2 condition-aware reward override, called
-            ``reward_fn(z_K_bg)`` on the ``(B·G,)`` terminal latents (the caller
-            concats the G-expanded ``x_src`` inside). ``None`` (Mode-1) calls
-            ``reward_model(z_K)``.
+        reward_fn: optional Mode-2 reward override, called ``reward_fn(z_K_bg)`` on the
+            ``(B·G,)`` terminal latents (scores the terminal latent unconditionally,
+            like Mode-1). ``None`` (Mode-1) calls ``reward_model(z_K)``.
         fn_labels_bg: the ``(B·G,)``-batched conditioning labels forwarded to
             ``x0_fn`` (Mode-2); ignored in Mode-1.
 
@@ -259,7 +258,7 @@ def singular_branch_rollout(
             # group-normalization (std / (r−mean)) must run in fp32 to avoid the
             # fp16 square overflowing for large rewards (mirrors validation_step).
             if reward_fn is not None:
-                rewards = reward_fn(z_K).float().reshape(B, G)  # (B, G) — Mode-2 condition-aware
+                rewards = reward_fn(z_K).float().reshape(B, G)  # (B, G) — Mode-2 (z_K only)
             else:
                 rewards = reward_model(z_K).float().reshape(B, G)  # (B, G) — Mode-1 unconditional
             if reward_transform is not None:  # the v2 bound (ADR-0015) — caps the raw logit
@@ -334,7 +333,7 @@ class GRPOModule(spt.Module):
         policy: the trainable JiT x0-denoiser UNet (Mode-1 policy). In Mode-2 this is
             the **frozen base** UNet (held unregistered — see ``controlnet``).
         reward_model: the frozen :class:`~manifold.RewardModel` scoring the terminal
-            latent (Mode-1: ``reward(z_K)``; Mode-2: ``reward(cat([x_src, z_K]))``).
+            latent (Mode-1 and Mode-2 both score ``z_K`` unconditionally, ``reward(z_K)``).
         scheduler: a stateless :class:`FlowMatchGRPOScheduler`.
         G: the group size (siblings per conditioning).
         eta_step_list: the perturbed step indices (the noisy-half, e.g. ``[0..7]``).
@@ -478,12 +477,14 @@ class GRPOModule(spt.Module):
 
         ``x0_fn`` is the frozen-base + trainable-ControlNet x0 prediction (the unified
         ``x_θ`` source); the inner-loop grad flows into the ControlNet through the base's
-        out-of-place residual forward (ADR-0026 corrected hazard). ``reward_fn`` is the
-        condition-aware reward ``reward(cat([x_src_bg, z_K]))``. ``x_src`` /
+        out-of-place residual forward (ADR-0026 corrected hazard). ``reward_fn`` scores
+        the terminal latent ``z_K`` unconditionally (``reward(z_K)``) — the ControlNet's
+        conditional fidelity is driven by the policy x0 (which sees ``x_src``), not by
+        the reward input. ``x_src`` /
         ``src_labels`` / ``tgt_labels`` are G-expanded ONCE here (flat index ``b·G+g``
         is sibling ``g`` of ``b``) — matching ``z_kplus1.reshape(B·G, ...)`` and the
         suffix ``(B·G,)`` batch — so a single ``fn_labels_bg`` tuple serves the perturbed
-        eval, the suffix, AND the reward concat without a second expansion (D9).
+        eval and the suffix without a second expansion (D9).
         """
         G = self.G
         x_src_bg = x_src.repeat_interleave(G, dim=0)  # (B·G, C, ...)
@@ -508,7 +509,7 @@ class GRPOModule(spt.Module):
             return self._controlnet_forward(self.controlnet, z_, t_, xs, sp, sl, tl)
 
         def reward_fn(z_K_bg):
-            return self.reward_model(torch.cat([x_src_bg, z_K_bg], dim=1))
+            return self.reward_model(z_K_bg)
 
         return x0_fn, reward_fn, fn_labels_bg
 
@@ -559,12 +560,14 @@ class GRPOModule(spt.Module):
         return copy.deepcopy(self.unet)
 
     def _score_reward(self, z_K: Tensor, cond) -> Tensor:
-        """Bound the frozen reward on the terminal latent(s) (Mode-1 / Mode-2 unified)."""
-        if cond is not None:
-            x_src, _, _ = cond
-            raw = self.reward_model(torch.cat([x_src, z_K], dim=1)).float()
-        else:
-            raw = self.reward_model(z_K).float()
+        """Bound the frozen reward on the terminal latent ``z_K`` (Mode-1 / Mode-2 unified).
+
+        The reward scores the generated terminal latent ``z_K`` unconditionally in both
+        modes (``reward(z_K)``) — Mode-2 does NOT concat ``x_src``. The ControlNet's
+        conditional fidelity is driven by the *policy* x0 (which sees ``x_src``), not by
+        the reward input; the reward stays a plain realism/fidelity scorer on ``z_K``.
+        """
+        raw = self.reward_model(z_K).float()
         return self._bound_reward(raw)
 
     def on_validation_epoch_start(self) -> None:
@@ -710,8 +713,8 @@ class GRPOModule(spt.Module):
         # The v2 reward bound (ADR-0015): None for the v1 raw-logit default (no-op),
         # else ``_bound_reward`` (tanh) caps the reward the rollout scores + groups.
         reward_transform = self._bound_reward if self.reward_bound != "none" else None
-        # Mode-2: inject the ControlNet-conditioned x0 prediction + the condition-aware
-        # reward into the shared rollout (Mode-1 leaves all three None — the plain UNet +
+        # Mode-2: inject the ControlNet-conditioned x0 prediction + the z_K reward into
+        # the shared rollout (Mode-1 leaves all three None — the plain UNet + the same
         # unconditional reward path). The spine reuses verbatim in both modes.
         x0_fn = reward_fn = fn_labels_bg = None
         if cond is not None:
@@ -832,7 +835,7 @@ class GRPOModule(spt.Module):
         if cond is not None:
             # Mode-2: the deployed deterministic ControlNet noise→data rollout from the
             # batch's own source (per-sample direction, NOT the bridge SDE), scored by the
-            # condition-aware reward cat([x_src, z_K]).
+            # frozen reward on the terminal latent z_K (unconditional, like Mode-1).
             x_src, src_labels, tgt_labels = cond
             z_K = controlnet_rollout(
                 self.unet, self.controlnet, self.scheduler, noise, x_src, spacing_t,

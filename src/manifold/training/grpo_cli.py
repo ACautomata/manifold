@@ -256,9 +256,9 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         choices=(1, 2),
         default=1,
         help="GRPO mode (ADR-0028): 1 = train the UNet policy (default, unchanged); "
-        "2 = freeze the base UNet and train the ControlNet against the condition-aware "
-        "reward (requires the ControlNet + a paired conditioning batch carrying "
-        "src_latent / src_label / tgt_label).",
+        "2 = freeze the base UNet and train the ControlNet against the frozen reward "
+        "on the terminal latent z_K (requires the ControlNet + a paired conditioning "
+        "batch carrying src_latent / src_label / tgt_label).",
     )
     parser.add_argument(
         "--resume", default=None, help="resume a Lightning .ckpt (trainer.fit(ckpt_path=...))."
@@ -312,11 +312,21 @@ def main(argv: list[str] | None = None, *, data_provider=None) -> int:
         # here, only on the real path.
         if not args.native_dir or not args.reward_path or not args.latents_dir:
             raise ValueError(
-                "GRPO needs --native-dir <native JiT export (raw arm)>, "
-                "--reward-path <trained RewardModel .ckpt>, and "
-                "--latents-dir <latent cache> (or inject a data_provider for the smoke)."
+                "GRPO needs --native-dir <native export>, --reward-path <trained "
+                "RewardModel .ckpt>, and --latents-dir <latent cache> (or inject a "
+                "data_provider for the smoke). Mode-1: --native-dir is the raw-arm JiT "
+                "export; Mode-2: it is the supervised ControlNet export (frozen base + "
+                "ControlNet) and --latents-dir is the paired latent cache."
             )
-        inputs = _real_inputs(cfg, args.native_dir, args.reward_path, args.latents_dir, device)
+        if args.grpo_mode == 2:
+            # Mode-2 builds the paired conditioning from data_base_dir (the BraTS
+            # manifest); Mode-1 reads the latent-cache files directly and needs no
+            # data dir. Require it only here so a ??? data_base_dir fails fast with
+            # CLI-override guidance instead of a deep MissingMandatoryValue.
+            require_paths(cfg, keys=("model_dir", "data_base_dir"))
+            inputs = _real_inputs_mode2(cfg, args.native_dir, args.reward_path, args.latents_dir, device)
+        else:
+            inputs = _real_inputs(cfg, args.native_dir, args.reward_path, args.latents_dir, device)
 
     gcfg = cfg.grpo_train
     latent_shape = tuple(int(s) for s in opt(gcfg, "latent_shape", [4, 64, 64, 32]))
@@ -566,4 +576,224 @@ def _real_inputs(
         feature_net=feature_net,
         fid_modality=int(opt(cfg, "grpo.modality", 1)),
         fid_spacing=list(opt(cfg, "grpo.spacing", [1.0, 1.0, 1.0])),
+    )
+
+
+def _real_inputs_mode2(
+    cfg, native_dir: str, reward_path: str, latents_dir: str, device: torch.device
+) -> GRPOInputs:
+    """Build the real Mode-2 GRPO inputs (frozen base + trainable ControlNet) (#143).
+
+    Mirrors ``controlnet_cli._real_inputs``'s paired-input construction, but starts
+    GRPO from a **supervised ControlNet export** (ADR-0027 stage 1 → ADR-0028 Mode-2):
+
+    - ``--native-dir`` is the **ControlNet native export** (frozen base UNet +
+      ControlNet + VAE + scheduler — the layout ``ControlNetLatentFlowPipeline``
+      writes / #144 bakes). ``load_frozen_controlnet_generator`` loads both arms
+      frozen; we then **unfreeze the ControlNet** (the only trainable arm in Mode-2)
+      and keep the base UNet frozen (``requires_grad_(False)`` — the GRPOModule also
+      holds it unregistered, off the optimizer/checkpoint).
+    - The conditioning is the **paired** latent cache (``--latents-dir``): each batch
+      carries ``{src_latent, src_label, tgt_label, spacing}`` (the ControlNet control
+      signal + the translation direction). Warmed over the paired train/val split via
+      the same ``paired_train`` cache as the reward/supervised stages.
+    - The reward scores the terminal latent ``z_K`` **unconditionally** — the same
+      single-latent reward (``in_channels = C_latent``) Mode-1 uses, loaded from a
+      ``RewardModule`` ``.ckpt``. Mode-2 does NOT use the 2·C condition-aware paired
+      reward: the ControlNet's conditional fidelity is driven by the policy x0 (which
+      sees ``x_src``), not by the reward input.
+
+    Scale-consistency (ADR-0021): scale-on-read uses the ControlNet export's
+    ``vae.scaling_factor`` verbatim (never re-estimated).
+    """
+    from torch.utils.data import Dataset
+
+    from ..config import autoencoder_divisor
+    from ..data.paired_brats import build_brats_pair_manifest
+    from ..data.paired_latent_dataset import PairedLatentDataset
+    from ..data.paired_reward_pairs import load_frozen_controlnet_generator
+    from ..data.paired_volume_dataset import PairedNiftiVolumeDataset
+    from ..models.reward_model import RewardModel
+    from ..schedulers.scheduling_flow_match_grpo import FlowMatchGRPOScheduler
+    from .paired_reward_cli import _train_val_manifests
+
+    # 1. Frozen base UNet + ControlNet + base scheduler + scaling_factor from the
+    # ControlNet native export (the supervised stage-1 artifact, ADR-0027). Both arms
+    # come back frozen + eval; the ControlNet is then made the ONLY trainable arm.
+    base, controlnet, base_scheduler, scaling_factor = load_frozen_controlnet_generator(native_dir)
+    base.to(device).eval()
+    for p in base.parameters():
+        p.requires_grad_(False)  # the base stays frozen (held unregistered by GRPOModule)
+    controlnet.to(device)
+    for p in controlnet.parameters():
+        p.requires_grad_(True)  # the ControlNet is the only Mode-2 trainable arm
+    # The frozen KL anchor (ADR-0015): a deepcopy of the initial (base, controlnet)
+    # pair taken BEFORE any GRPO update. The recipe enables kl_coef (anti-reward-hacking);
+    # without this reference the GRPOModule's _transition_kl early-returns and the
+    # anchor silently disables (codex #151 P1). The Module freezes + unregisters both.
+    reference_policy = (copy.deepcopy(base), copy.deepcopy(controlnet))
+
+    # 2. Paired conditioning: the paired train/val split warmed from the paired latent
+    # cache. The cache carries UNSCALED latents; scale-on-read uses the export factor.
+    inf_cfg = cfg.diffusion_unet_inference
+    target_dim = tuple(int(d) for d in inf_cfg.dim)
+    divisor = autoencoder_divisor(cfg)
+    brats_dir = str(cfg.data_base_dir)
+    manifest = build_brats_pair_manifest(brats_dir)
+    if not manifest:
+        raise FileNotFoundError(
+            f"No paired BraTS volumes found under data_base_dir={brats_dir} "
+            f"(need >=1 subject with all 4 contrasts)."
+        )
+    # Mirror the recipe's grpo.val_fraction to the root key _train_val_manifests reads
+    # (only when the native-split dir path is not taken and the root key is unset).
+    import os
+
+    from omegaconf import OmegaConf
+
+    val_dir = opt(cfg, "val_data_base_dir", None)
+    if not (val_dir and os.path.isdir(str(val_dir))):
+        if OmegaConf.select(cfg, "val_fraction", default=None) is None:
+            g_val_fraction = float(opt(cfg, "grpo.val_fraction", 0.0))
+            cfg = OmegaConf.merge(cfg, OmegaConf.create({"val_fraction": g_val_fraction}))
+    train_manifest, val_manifest = _train_val_manifests(cfg, manifest)
+    if not val_manifest:
+        raise ValueError(
+            "Mode-2 GRPO needs a held-out val split (val_data_base_dir set, or "
+            "val_fraction > 0); train data is never reused as val."
+        )
+
+    cache_dir = str(
+        latents_dir
+        or opt(cfg, "latent_cache_dir", os.path.join(str(cfg.model_dir), "paired_latent_cache"))
+    )
+    cache_tag = str(opt(cfg, "grpo.cache_tag", "paired_train"))
+
+    def _ds(manifest_split):
+        vol_ds = PairedNiftiVolumeDataset(manifest_split, target_dim=target_dim, divisor=divisor)
+        ds = PairedLatentDataset(vol_ds, encode_fn=None, cache_dir=cache_dir, cache_tag=cache_tag)
+        ds.warm_cache(device, show_progress=False)
+        ds.scaling_factor = float(scaling_factor)  # the export factor verbatim (ADR-0021)
+        return ds
+
+    train_ds, val_ds = _ds(train_manifest), _ds(val_manifest)
+
+    # The paired cache is keyed by sample_id + cache_tag (NOT target_dim), so a
+    # --latents-dir pointing at a cache warmed at a DIFFERENT target_dim silently
+    # reuses wrong-shape src latents — the Mode-2 ControlNet then fails at the first
+    # forward (its sampled rollout shape != the cached src shape). Mirror the
+    # every-entry shape check paired_reward_cli._real_inputs uses (codex #151 P2):
+    # validate EVERY unique latent's spatial shape (both splits) against this
+    # recipe's target_dim / divisor and fail fast. CEIL division (the volume dataset
+    # zero-pads each dim up to a divisor multiple before encoding, so the latent
+    # spatial is ceil(target_dim / divisor)). Test fakes (no source/raw_latent)
+    # bypass this — they don't model the encode.
+    if hasattr(train_ds, "raw_latent") and hasattr(train_ds, "source"):
+        expected_spatial = tuple(-(-d // divisor) for d in target_dim)  # ceil(d / divisor)
+        for split_name, ds in (("train", train_ds), ("val", val_ds)):
+            for sid in ds.source.unique_sample_ids():
+                cached_spatial = tuple(ds.raw_latent(sid).shape[1:])
+                if cached_spatial != expected_spatial:
+                    raise ValueError(
+                        f"Cached paired latent ({split_name}, {sid}) spatial shape "
+                        f"{cached_spatial} does not match the Mode-2 recipe's "
+                        f"target_dim={target_dim} / divisor={divisor} = {expected_spatial} "
+                        f"(ceil). The paired cache was built with a different target_dim "
+                        f"(or is a mixed/partial cache); point --latents-dir at a matching "
+                        f"cache or re-warm it."
+                    )
+
+    # GRPO is generative — the rollout samples the group noise; the batch carries only
+    # the ControlNet condition ({src_latent, src_label, tgt_label, spacing}). Normalize
+    # the labels/spacing to tensors on read so the default collate batches them.
+    class _PairedCondDS(Dataset):
+        def __init__(self, paired_ds):
+            self._ds = paired_ds
+
+        def __len__(self):
+            return len(self._ds)
+
+        def __getitem__(self, i):
+            item = self._ds[i]
+            return {
+                "src_latent": item["src_latent"],
+                "spacing": torch.as_tensor(item["spacing"], dtype=torch.float32),
+                "src_label": torch.as_tensor(item["src_label"], dtype=torch.long),
+                "tgt_label": torch.as_tensor(item["tgt_label"], dtype=torch.long),
+            }
+
+    # 3. Reward (frozen) from its RewardModule Lightning checkpoint. Mode-2 scores the
+    # terminal latent z_K UNCONDITIONALLY (reward(z_K), in_channels = C_latent) — the
+    # same single-latent reward Mode-1 uses, NOT the 2·C condition-aware paired reward.
+    # The ControlNet's conditional fidelity is driven by the policy x0 (which sees
+    # x_src), not by the reward input. weights_only=True first; fall back to False only
+    # for the weights_only restriction (mirrors _real_inputs).
+    latent_c = int(opt(cfg, "latent_channels", 4))
+    reward_cfg = opt(cfg, "reward_model", {})
+    reward_model = RewardModel(
+        spatial_dims=int(opt(reward_cfg, "spatial_dims", 3)),
+        in_channels=latent_c,
+        channels=int(opt(reward_cfg, "channels", 64)),
+        num_layers_d=int(opt(reward_cfg, "num_layers_d", 3)),
+        norm=str(opt(reward_cfg, "norm", "BATCH")),
+    )
+    import pickle
+
+    try:
+        ckpt = torch.load(str(reward_path), map_location="cpu", weights_only=True)
+    except (pickle.UnpicklingError, ValueError):
+        rank_zero_info("reward ckpt %s needs weights_only=False; loading trusted.", reward_path)
+        ckpt = torch.load(str(reward_path), map_location="cpu", weights_only=False)
+    state = ckpt.get("state_dict", ckpt)
+    reward_sd = {k[len("reward_model."):]: v for k, v in state.items() if k.startswith("reward_model.")}
+    if not reward_sd:
+        raise ValueError(
+            f"No 'reward_model.*' keys in {reward_path} — not a trained RewardModule checkpoint."
+        )
+    # Fail fast on a channel mismatch BEFORE load_state_dict's cryptic shape error:
+    # Mode-2 scores z_K unconditionally (in_channels = C_latent), so a 2·C
+    # condition-aware paired-reward ckpt (from manifold-train-paired-reward) is
+    # incompatible here — it must be used with the paired-reward path, not Mode-2.
+    # Detect via the first conv's input-channel dim (shape [out, in, kD, kH, kW]).
+    first_conv = reward_sd.get("discriminator.initial_conv.conv.weight")
+    if first_conv is not None and int(first_conv.shape[1]) != latent_c:
+        raise ValueError(
+            f"Reward checkpoint {reward_path} has in_channels={int(first_conv.shape[1])}, "
+            f"but Mode-2 scores z_K unconditionally and needs a single-latent reward "
+            f"(in_channels={latent_c}). This looks like a 2·C condition-aware paired-reward "
+            "ckpt (manifold-train-paired-reward) — Mode-2 intentionally does NOT concat "
+            "x_src into the reward (the policy x0 sees x_src instead). Point --reward-path "
+            "at a single-latent (Mode-1-style) RewardModule checkpoint."
+        )
+    reward_model.load_state_dict(reward_sd, strict=True)
+    reward_model.eval().to(device)
+    for p in reward_model.parameters():
+        p.requires_grad_(False)
+
+    # 4. GRPO scheduler preserving the export's transport settings (t_eps /
+    # num_train_timesteps); only eta is the GRPO addition (mirrors _real_inputs).
+    sched_cfg = base_scheduler.config
+    scheduler = FlowMatchGRPOScheduler(
+        num_train_timesteps=int(sched_cfg.get("num_train_timesteps", 1000)),
+        t_eps=float(sched_cfg.get("t_eps", 0.05)),
+        eta=float(opt(cfg.grpo_train, "eta", 0.7)),
+    )
+
+    latent_shape = tuple(int(s) for s in opt(cfg.grpo_train, "latent_shape", [4, 64, 64, 32]))
+    rank_zero_info(
+        "GRPO Mode-2 real inputs: frozen base + trainable ControlNet (%d train / %d val "
+        "paired conditioning); reward on z_K (in_channels=%d); scale_factor=%.6f (export).",
+        len(train_ds), len(val_ds), latent_c, float(scaling_factor),
+    )
+    return GRPOInputs(
+        policy=base,  # the FROZEN base (GRPOModule holds it unregistered in Mode-2)
+        reward_model=reward_model,
+        scheduler=scheduler,
+        train_ds=_PairedCondDS(train_ds),
+        val_ds=_PairedCondDS(val_ds),
+        latent_shape=latent_shape,
+        reference_policy=reference_policy,  # the (base, controlnet) KL anchor (ADR-0015)
+        controlnet=controlnet,  # the ONLY trainable arm
+        # No FID triple: Mode-2 selects on val/mean_reward (the unconditional FID would
+        # be a constant frozen-base metric — see run_grpo_training's mode2 skip).
     )
