@@ -61,8 +61,13 @@ zero-conv (ADR-0026). Replaces the supervised Paired JiT (ADR-0013/0014, superse
   pattern, fixed-sample re-seed (the noise→data analogue of Paired JiT's determinism —
   here reproducibility comes from re-seeded generation noise, since the `t = 0`
   endpoint is Gaussian again).
-- **EMA:** the ControlNet carries an EMA arm for validation (mirrors the JiT supervised
-  EMA). GRPO Mode-2 trains **raw** (ADR-0012 — RL shadows are laggy + memory-heavy).
+- **No EMA (raw arm).** ~~the ControlNet carries an EMA arm for validation (mirrors the
+  JiT supervised EMA).~~ **Corrected 2026-07-19:** the "JiT supervised EMA" this line
+  referenced no longer exists — EMA training was removed repo-wide by ADR-0006
+  (2026-07-14); every supervised module, the export, and the validation callbacks run
+  the **raw optimizer arm**. The ControlNet supervised stage follows suit: validation,
+  checkpoint selection, and the export all use the raw ControlNet weights (no EMA
+  shadow). GRPO Mode-2 also trains raw (ADR-0012).
 - **Export:** a native ControlNet artifact `{unet (frozen base state), controlnet,
   scaling_factor}` via a new `training/export.py` arm.
   `load_frozen_controlnet_generator(native_dir)` returns

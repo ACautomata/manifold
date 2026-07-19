@@ -14,7 +14,7 @@ from .models import (
     RewardModel,
     UNet3DConditionModel,
 )
-from .modules import LatentFlowModule, PairedLatentFlowModule
+from .modules import ControlNetLatentFlowModule, LatentFlowModule, PairedLatentFlowModule
 from .pipelines import (
     ControlNetLatentFlowPipeline,
     DiffusionPipeline,
@@ -35,6 +35,7 @@ __all__ = [
     "AutoencoderKL",
     "ConfigMixin",
     "ControlNet3DConditionModel",
+    "ControlNetLatentFlowModule",
     "ControlNetLatentFlowPipeline",
     "DiffusionPipeline",
     "FlowMatchBridgeGRPOScheduler",

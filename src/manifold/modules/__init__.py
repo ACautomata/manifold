@@ -5,6 +5,7 @@ the ``(1−t)⁻²`` loss weight, the MSE); the transport and reverse step live 
 scheduler (ADR-0001).
 """
 
+from .controlnet_latent_flow import ControlNetLatentFlowModule, ControlNetSampleDict
 from .controlnet_sampler import controlnet_partial_rollout, controlnet_rollout
 from .grpo import (
     GRPOBatch,
@@ -29,6 +30,8 @@ from .reward import RewardBatch, RewardModule, bradley_terry_loss, reward_roc_au
 from .sampler import sample_latent_flow
 
 __all__ = [
+    "ControlNetLatentFlowModule",
+    "ControlNetSampleDict",
     "GRPOBatch",
     "GRPOModule",
     "LatentFlowModule",
