@@ -44,7 +44,34 @@ import torch
 from torch import Tensor
 
 from ..schedulers.scheduling_partial_flow_match_heun import PartialFlowMatchHeunScheduler
-from .paired_sampler import _as_label_tensor
+
+
+def _as_label_tensor(labels: int | Tensor | Sequence[int], batch_size: int, device: torch.device) -> Tensor:
+    """Coerce ``labels`` to a ``[batch_size]`` long tensor on ``device``.
+
+    A scalar — a Python ``int`` or a 0-d tensor like ``torch.tensor(0)`` — is
+    broadcast (the inference contract — one direction per call); a ``[B]`` tensor
+    of per-sample labels is passed through unchanged (the validation contract — a
+    val batch mixes all 12 contrast directions). Fails fast on a tensor whose
+    length disagrees with the batch — a silent broadcast there would condition
+    samples on the wrong contrast.
+    """
+    if torch.is_tensor(labels):
+        # A 0-d tensor is a scalar — broadcast it (preserves the prior
+        # ``int(src_label)`` behavior for scalar-as-tensor callers).
+        if labels.ndim == 0:
+            return torch.full((batch_size,), int(labels.item()), dtype=torch.long, device=device)
+        out = labels.to(device=device, dtype=torch.long)
+    elif isinstance(labels, Sequence):
+        out = torch.as_tensor(list(labels), dtype=torch.long, device=device)
+    else:
+        return torch.full((batch_size,), int(labels), dtype=torch.long, device=device)
+    if out.shape[0] != batch_size:
+        raise ValueError(
+            f"labels batch ({out.shape[0]}) != batch_size ({batch_size}); pass a scalar "
+            "to broadcast or a [B] per-sample tensor matching the batch."
+        )
+    return out
 
 
 def _controlnet_x0(
@@ -270,4 +297,4 @@ def controlnet_partial_rollout(
     return z
 
 
-__all__ = ["controlnet_partial_rollout", "controlnet_rollout"]
+__all__ = ["_as_label_tensor", "controlnet_partial_rollout", "controlnet_rollout"]

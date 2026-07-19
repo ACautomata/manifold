@@ -110,7 +110,7 @@ def test_f3_no_rank_world_kwargs_at_cli_call_sites():
     (the warm derives them from dist)."""
     import re
 
-    for path in ("src/manifold/training/cli.py", "src/manifold/training/paired_cli.py"):
+    for path in ("src/manifold/training/cli.py",):
         with open(path) as f:
             body = f.read()
         # The warm_fn closures call warm_latent_pipeline / warm_cache WITHOUT
@@ -205,20 +205,18 @@ def test_p1_resolve_warm_device_returns_local_rank_under_ddp(monkeypatch):
 
 
 def test_p1_warm_fn_uses_local_rank_device_not_launch_device():
-    """The JiT + paired ``_warm_data`` warm_fn rebuild the encode_fn on the
+    """The JiT ``_warm_data`` warm_fn rebuild the encode_fn on the
     per-rank device (P1): the VAE is built on CPU pre-PG and re-staged inside
     warm_fn via ``resolve_warm_device`` + ``make_encode_fn``. Source-level guard so
     the launch-time ``device=device`` capture cannot sneak back into warm_fn."""
     from manifold.data.latent_pipeline import make_encode_fn, resolve_warm_device
     from manifold.training import cli as jit_cli
-    from manifold.training import paired_cli
 
-    for mod, name in [(jit_cli, "JiT"), (paired_cli, "Paired")]:
-        src = inspect.getsource(mod._warm_data)
-        assert "resolve_warm_device" in src, f"{name} _warm_data missing resolve_warm_device (P1)"
-        assert "make_encode_fn" in src, f"{name} _warm_data missing make_encode_fn rebuild (P1)"
-        # The VAE is built on CPU pre-PG (no GPU-0 placement before LOCAL_RANK).
-        assert 'torch.device("cpu")' in src, f"{name} _warm_data must build the VAE on CPU pre-PG (P1)"
+    src = inspect.getsource(jit_cli._warm_data)
+    assert "resolve_warm_device" in src, "JiT _warm_data missing resolve_warm_device (P1)"
+    assert "make_encode_fn" in src, "JiT _warm_data missing make_encode_fn rebuild (P1)"
+    # The VAE is built on CPU pre-PG (no GPU-0 placement before LOCAL_RANK).
+    assert 'torch.device("cpu")' in src, "JiT _warm_data must build the VAE on CPU pre-PG (P1)"
     assert callable(make_encode_fn)
     assert callable(resolve_warm_device)
 

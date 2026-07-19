@@ -78,6 +78,26 @@ def _save_controlnet_export(native_dir) -> None:
     ).save_pretrained(str(native_dir))
 
 
+def _tiny_controlnet():
+    """A tiny real ControlNet3DConditionModel (base encoder cloned from a fresh base).
+
+    In-memory sibling of :func:`_save_controlnet_export`'s ControlNet for the builder
+    unit tests (which call ``build_paired_reward_inputs/pairs/probe`` directly with a
+    fake base generator + a real ControlNet). The base ``out`` conv is re-initialized
+    so the residual effect is non-trivial (a zero-init ``out`` would mask it).
+    """
+    from manifold import ControlNet3DConditionModel, UNet3DConditionModel
+
+    torch.manual_seed(0)
+    base = UNet3DConditionModel(num_class_embeds=4, include_spacing_input=True)
+    for p in base.unet.out.parameters():
+        if p.abs().sum().item() == 0.0:
+            nn.init.normal_(p, std=0.01)
+    controlnet = ControlNet3DConditionModel(num_class_embeds=4, include_spacing_input=True)
+    controlnet.load_base_encoder_weights(base)
+    return controlnet
+
+
 class _FakePairedLatentDS(Dataset):
     """A warmed ``PairedLatentDataset`` stand-in: emits the 5-key paired contract.
 
@@ -120,6 +140,7 @@ def test_build_paired_reward_inputs_emits_train_val_probe_pairs():
         train_ds=train_ds,
         val_ds=val_ds,
         generator=gen,
+        controlnet=_tiny_controlnet(),
         base_scheduler=sched,
         num_steps=2,
         probe_num_steps=2,
@@ -140,11 +161,13 @@ def test_build_paired_reward_inputs_emits_train_val_probe_pairs():
 
 
 def test_build_paired_reward_inputs_is_deterministic():
-    """Re-building with the same seed + generator yields byte-identical pairs (ADR-0020).
+    """Re-building reproduces the deterministic outputs (ADR-0020/0027).
 
-    The paired rollout is deterministic given x_src (no stochastic input); only the
-    probe's t-draws are seeded, so the same seed reproduces the probe. Train/val
-    pairs are fully deterministic (no RNG in the loser rollout).
+    Winners are deterministic (``cat([x_src, real_tgt])`` - no RNG); the probe is
+    seeded (its t-draws + the ControlNet corruption ε use a fresh seeded generator),
+    so re-building with the same seed reproduces it byte-for-byte. The losers are the
+    ControlNet noise→data rollout (a fresh Gaussian ``t = 0`` endpoint, ADR-0027), so
+    they are NOT byte-identical across rebuilds - only their shape + finiteness hold.
     """
     gen = _IdentityPairedGen()
     sched = FlowMatchHeunDiscreteScheduler()
@@ -154,6 +177,7 @@ def test_build_paired_reward_inputs_is_deterministic():
         train_ds=train_ds,
         val_ds=val_ds,
         generator=gen,
+        controlnet=_tiny_controlnet(),
         base_scheduler=sched,
         num_steps=2,
         probe_num_steps=2,
@@ -164,9 +188,15 @@ def test_build_paired_reward_inputs_is_deterministic():
     )
     a = build_paired_reward_inputs(**kw)
     b = build_paired_reward_inputs(**kw)
+    # Winners: deterministic (cat([x_src, real_tgt])).
     assert torch.equal(a.train_pair_ds.winners, b.train_pair_ds.winners)
-    assert torch.equal(a.train_pair_ds.losers, b.train_pair_ds.losers)
+    # Losers: the ControlNet noise→data rollout (fresh Gaussian) - not byte-identical,
+    # but well-formed.
+    assert a.train_pair_ds.losers.shape == b.train_pair_ds.losers.shape
+    assert torch.isfinite(a.train_pair_ds.losers).all()
+    # Probe: seeded -> byte-identical across rebuilds.
     assert torch.equal(a.val_probe.winners, b.val_probe.winners)
+    assert torch.equal(a.val_probe.losers, b.val_probe.losers)
 
 
 def test_build_paired_reward_inputs_threads_scaling_factor():
@@ -193,6 +223,7 @@ def test_build_paired_reward_inputs_threads_scaling_factor():
         train_ds=_ds(1.0),
         val_ds=_ds(1.0),
         generator=gen,
+        controlnet=_tiny_controlnet(),
         base_scheduler=sched,
         num_steps=2,
         probe_num_steps=2,
@@ -205,6 +236,7 @@ def test_build_paired_reward_inputs_threads_scaling_factor():
         train_ds=_ds(2.0),
         val_ds=_ds(2.0),
         generator=gen,
+        controlnet=_tiny_controlnet(),
         base_scheduler=sched,
         num_steps=2,
         probe_num_steps=2,
@@ -227,6 +259,7 @@ def test_build_paired_reward_inputs_runs_end_to_end_training(tmp_path):
         train_ds=_FakePairedLatentDS(n=8),
         val_ds=_FakePairedLatentDS(n=4),
         generator=gen,
+        controlnet=_tiny_controlnet(),
         base_scheduler=sched,
         num_steps=2,
         probe_num_steps=2,
@@ -276,6 +309,7 @@ def test_build_paired_reward_inputs_uses_partial_scheduler_for_probe():
             train_ds=_FakePairedLatentDS(n=4),
             val_ds=_FakePairedLatentDS(n=4),
             generator=gen,
+        controlnet=_tiny_controlnet(),
             base_scheduler=sched,
             num_steps=2,
             probe_num_steps=2,
@@ -302,7 +336,6 @@ def test_real_inputs_loads_generator_and_resolves_paired_split(tmp_path, monkeyp
     import omegaconf
 
     from manifold.data import paired_brats as pb
-    from manifold.training import paired_cli as pcli
     from manifold.training import paired_reward_cli
 
     # Write a minimal ControlNet native export directly (the reward's fake source is
@@ -325,7 +358,7 @@ def test_real_inputs_loads_generator_and_resolves_paired_split(tmp_path, monkeyp
         pb, "build_brats_pair_manifest", lambda *a, **k: train_manifest + val_manifest
     )
     monkeypatch.setattr(
-        pcli, "_train_val_manifests", lambda cfg, manifest: (train_manifest, val_manifest)
+        paired_reward_cli, "_train_val_manifests", lambda cfg, manifest: (train_manifest, val_manifest)
     )
 
     # Fake the warmed cache: replace PairedLatentDataset with a fake that serves
@@ -399,7 +432,6 @@ def test_real_inputs_raises_on_no_val_split(tmp_path, monkeypatch):
     import omegaconf
 
     from manifold.data import paired_brats as pb
-    from manifold.training import paired_cli as pcli
     from manifold.training import paired_reward_cli
 
     # A minimal ControlNet native export so the generator loads (T7).
@@ -411,7 +443,7 @@ def test_real_inputs_raises_on_no_val_split(tmp_path, monkeypatch):
     ]
     monkeypatch.setattr(pb, "build_brats_pair_manifest", lambda *a, **k: train_manifest)
     monkeypatch.setattr(
-        pcli, "_train_val_manifests", lambda cfg, manifest: (train_manifest, [])
+        paired_reward_cli, "_train_val_manifests", lambda cfg, manifest: (train_manifest, [])
     )  # empty val
 
     cfg = omegaconf.OmegaConf.create(
@@ -470,6 +502,7 @@ def test_build_paired_reward_pairs_rejects_device_mismatch():
             x_src,
             x_tgt,
             gen,
+            _tiny_controlnet(),
             sched,
             src_label=0,
             tgt_label=1,
@@ -495,6 +528,7 @@ def test_build_paired_reward_probe_rejects_device_mismatch():
             x_src,
             x_tgt,
             gen,
+            _tiny_controlnet(),
             sched,
             src_label=0,
             tgt_label=1,
@@ -517,7 +551,6 @@ def test_real_inputs_mirrors_paired_reward_val_fraction_to_root(tmp_path, monkey
     import omegaconf
 
     from manifold.data import paired_brats as pb
-    from manifold.training import paired_cli as pcli
     from manifold.training import paired_reward_cli
 
     _save_controlnet_export(tmp_path / "native")
@@ -535,7 +568,7 @@ def test_real_inputs_mirrors_paired_reward_val_fraction_to_root(tmp_path, monkey
         # Return empty val to short-circuit before the cache build (we only assert the mirror).
         return manifest, []
 
-    monkeypatch.setattr(pcli, "_train_val_manifests", fake_split)
+    monkeypatch.setattr(paired_reward_cli, "_train_val_manifests", fake_split)
 
     cfg = omegaconf.OmegaConf.create(
         {
@@ -568,7 +601,6 @@ def test_real_inputs_rejects_stale_cache_shape(tmp_path, monkeypatch):
 
     from manifold.data import paired_brats as pb
     from manifold.data import paired_latent_dataset as pld_mod
-    from manifold.training import paired_cli as pcli
     from manifold.training import paired_reward_cli
 
     _save_controlnet_export(tmp_path / "native")
@@ -585,7 +617,7 @@ def test_real_inputs_rejects_stale_cache_shape(tmp_path, monkeypatch):
         pb, "build_brats_pair_manifest", lambda *a, **k: train_manifest + val_manifest
     )
     monkeypatch.setattr(
-        pcli, "_train_val_manifests", lambda cfg, manifest: (train_manifest, val_manifest)
+        paired_reward_cli, "_train_val_manifests", lambda cfg, manifest: (train_manifest, val_manifest)
     )
 
     # A fake PairedLatentDataset that exposes the real cache interface (source +
@@ -655,7 +687,6 @@ def test_real_inputs_preserves_explicit_root_val_fraction(tmp_path, monkeypatch)
     import pytest
 
     from manifold.data import paired_brats as pb
-    from manifold.training import paired_cli as pcli
     from manifold.training import paired_reward_cli
 
     _save_controlnet_export(tmp_path / "native")
@@ -672,7 +703,7 @@ def test_real_inputs_preserves_explicit_root_val_fraction(tmp_path, monkeypatch)
         seen["val_fraction"] = float(omegaconf.OmegaConf.select(cfg, "val_fraction", default=-1.0))
         return manifest, []
 
-    monkeypatch.setattr(pcli, "_train_val_manifests", fake_split)
+    monkeypatch.setattr(paired_reward_cli, "_train_val_manifests", fake_split)
 
     # Root val_fraction=0.5 is set EXPLICITLY; paired_reward.val_fraction=0.1 must NOT
     # overwrite it. _train_val_manifests reads the root -> sees 0.5.
@@ -703,7 +734,6 @@ def test_real_inputs_rejects_mixed_cache_shape(tmp_path, monkeypatch):
 
     from manifold.data import paired_brats as pb
     from manifold.data import paired_latent_dataset as pld_mod
-    from manifold.training import paired_cli as pcli
     from manifold.training import paired_reward_cli
 
     _save_controlnet_export(tmp_path / "native")
@@ -720,7 +750,7 @@ def test_real_inputs_rejects_mixed_cache_shape(tmp_path, monkeypatch):
         pb, "build_brats_pair_manifest", lambda *a, **k: train_manifest + val_manifest
     )
     monkeypatch.setattr(
-        pcli, "_train_val_manifests", lambda cfg, manifest: (train_manifest, val_manifest)
+        paired_reward_cli, "_train_val_manifests", lambda cfg, manifest: (train_manifest, val_manifest)
     )
 
     # A mixed cache: the FIRST train entry matches expected (2,2,2); a LATER train
@@ -821,7 +851,6 @@ def test_real_inputs_mirrors_val_fraction_for_non_directory_val_dir(tmp_path, mo
     import pytest
 
     from manifold.data import paired_brats as pb
-    from manifold.training import paired_cli as pcli
     from manifold.training import paired_reward_cli
 
     _save_controlnet_export(tmp_path / "native")
@@ -838,7 +867,7 @@ def test_real_inputs_mirrors_val_fraction_for_non_directory_val_dir(tmp_path, mo
         seen["val_fraction"] = float(omegaconf.OmegaConf.select(cfg, "val_fraction", default=-1.0))
         return manifest, []  # empty val -> short-circuit (we only assert the mirror)
 
-    monkeypatch.setattr(pcli, "_train_val_manifests", fake_split)
+    monkeypatch.setattr(paired_reward_cli, "_train_val_manifests", fake_split)
 
     # A NON-DIRECTORY val_data_base_dir (a JSON manifest path, as the BraTS2023 profile
     # sets). _train_val_manifests falls back to val_fraction -> the mirror must fire.

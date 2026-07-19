@@ -110,38 +110,3 @@ def test_l1_fid_no_rank0_gate():
     assert "is_global_zero" not in src, "FIDCallback._gated still has a rank-0 guard"
     assert "_log.warning" not in src, "FIDCallback._gated still has a rank-0 warning"
     assert "every_n_epochs" in src, "FIDCallback._gated lost its cadence check"
-
-
-# -- M5: PSNR is all-rank (all_reduce global mean) -----------------------------
-
-
-def test_m5_psnr_all_ranks():
-    """The PSNR callback's ``_gated`` is cadence-only (no rank-0 guard/warning), and
-    ``on_validation_epoch_end`` ``all_reduce``s ``(psnr_sum, ssim_sum, count)`` for the
-    global mean. Metric names (``val/psnr`` / ``val/ssim``) are unchanged."""
-    from manifold.metrics import psnr_ssim_callback
-
-    src = inspect.getsource(psnr_ssim_callback.PairedPSNRSSIMCallback._gated)
-    assert "is_global_zero" not in src, "PSNR _gated still has the rank-0 guard"
-    assert "_log.warning" not in src, "PSNR _gated still has the rank-0 warning"
-    end_src = inspect.getsource(psnr_ssim_callback.PairedPSNRSSIMCallback.on_validation_epoch_end)
-    assert "all_reduce" in end_src, "PSNR on_validation_epoch_end lost the global all_reduce"
-    assert 'log("val/psnr"' in end_src
-    assert 'log("val/ssim"' in end_src
-
-
-def test_m5_metric_names_unchanged():
-    """``val/psnr`` / ``val/ssim`` metric names are unchanged (the consumers key on
-    them). No ``sync_dist=`` on the PSNR ``log(...)`` calls: the manual ``all_reduce``
-    already produced the global value, so a plain-float ``sync_dist`` would re-reduce
-    (a double reduce)."""
-    import re
-
-    from manifold.metrics import psnr_ssim_callback
-
-    src = inspect.getsource(psnr_ssim_callback.PairedPSNRSSIMCallback)
-    assert 'log("val/psnr"' in src
-    assert 'log("val/ssim"' in src
-    log_calls = re.findall(r"\.log\([^)]*\)", src, re.DOTALL)
-    for call in log_calls:
-        assert "sync_dist" not in call, f"PSNR log call has sync_dist (double-reduce): {call}"

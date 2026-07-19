@@ -14,8 +14,7 @@ Persistence uses the native per-component checkpoint contract (``model_index.jso
 same export path as the JiT UNet. No CFG in v1 (the ControlNet conditioning has no
 unconditional path to guide against — spec Out-of-Scope).
 
-Sibling of :class:`manifold.pipelines.LatentFlowPipeline` /
-:class:`~manifold.pipelines.PairedLatentFlowPipeline`.
+Sibling of :class:`manifold.pipelines.LatentFlowPipeline`.
 """
 
 from __future__ import annotations
@@ -159,8 +158,8 @@ class ControlNetLatentFlowPipeline(DiffusionPipeline):
         """Translate noise + a src control signal into a decoded target volume ``[B, C, D, H, W]``.
 
         The ControlNet noise→data rollout, then a float32 VAE decode with
-        ``norm_float16`` disabled (mirrors ``PairedLatentFlowPipeline`` /
-        ``FIDCallback._eval_decode``), then a per-volume min-max normalization to
+        ``norm_float16`` disabled (mirrors ``FIDCallback._eval_decode``), then a
+        per-volume min-max normalization to
         ``[0, 1]`` (the published-inference output contract).
 
         Args:
@@ -183,7 +182,7 @@ class ControlNetLatentFlowPipeline(DiffusionPipeline):
             vol = self._decode_f32(latent)
             return self._minmax_to_unit(vol)
 
-    # -- decode + post-process (mirror PairedLatentFlowPipeline / FID eval) ----
+    # -- decode + post-process (mirror FID eval) ----
 
     def _decode_f32(self, latents: Tensor) -> Tensor:
         """Float32 VAE decode with ``norm_float16`` disabled (mirrors FID eval).

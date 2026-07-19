@@ -2,10 +2,6 @@
 
 External-behavior seams (per the PRD #92 testing plan):
 
-- **``partial_paired_rollout`` parity/correctness** (the Q7 gate, ADR-0023): the
-  ``(B,)``-timestep-through-paired-summed-label combination is novel - gated by a
-  scalar-`t` vs ``(B,)``-`t` parity test. Plus ``z`` at ``t_start = add_noise(x_tgt,
-  x_src, t_start)`` and winner = higher-`t` (closer to real tgt).
 - **``PairedRewardModule``**: BT loss descends over fits on precomputed
   condition-aware ``[2C]`` pairs; ``r(real_tgt) > r(generated_tgt)`` after a few
   fits; the three metrics log; the optimizer covers discriminator params only; the
@@ -15,8 +11,7 @@ External-behavior seams (per the PRD #92 testing plan):
   rebuild is byte-identical (determinism).
 - **Condition-aware concat** reaches the discriminator (the source channels are
   seen).
-- **Export-bridge round-trip** + **``load_frozen_paired_generator``** (#94).
-- **Real fake-cache builder + 2-way split** (#95).
+- **Builder + probe determinism** (the ControlNet fake source, ADR-0027).
 """
 
 from __future__ import annotations
@@ -33,7 +28,6 @@ from manifold import (
     RewardModel,
 )
 from manifold.modules import PairedRewardModule
-from manifold.modules.paired_sampler import partial_paired_rollout, sample_paired_latent_flow
 from manifold.training.paired_reward_cli import PairedRewardInputs
 
 #: Latent channel count (C_latent); the paired reward scores ``2·C`` concat input.
@@ -43,16 +37,17 @@ C_LATENT = 4
 _LAT = (C_LATENT, 8, 8, 8)
 
 
-# -- fake paired generators (the smoke's frozen generator stand-ins) ---------
+# -- fake base generator + tiny real ControlNet (the builder stand-ins) --------
 
 
 class _IdentityPairedGen(nn.Module):
-    """A paired generator that predicts the z half unchanged (x0_pred = z) - no movement.
+    """A fake base UNet that predicts the z half unchanged (x0_pred = z) - no movement.
 
-    The paired UNet takes ``concat([z, x_src])`` (``2·C`` channels) and returns the
-    predicted target (``C`` channels); an identity generator returns the ``z`` half
-    unchanged. Carries a dummy parameter so it mimics a real module (the rollout
-    reads the device off ``next(unet.parameters())``).
+    The frozen base UNet of the ControlNet generator; an identity base returns the
+    noise latent unchanged. Carries a dummy parameter so it mimics a real module
+    (the rollout reads the device off ``next(generator.parameters())``). The
+    ControlNet's residual injections are absorbed via ``**kw`` (the identity base
+    ignores them - the test asserts builder wiring, not generation quality).
     """
 
     def __init__(self):
@@ -66,13 +61,12 @@ class _IdentityPairedGen(nn.Module):
 
 
 class _SoftPairedGen(nn.Module):
-    """A NON-identity paired generator: ``x0 = 0.5·x_tgt + 0.5·z`` (pulls toward tgt).
+    """A NON-identity fake base: ``x0 = 0.5·x_tgt + 0.5·z`` (pulls toward tgt).
 
     Pulls toward the real target at every eval (non-zero Heun velocities), so the
     rollout provably moves the latent toward ``x_tgt`` - used to assert the
-    winner = higher-``t`` ordering and the descent of ``r(real) > r(generated)``.
-    Returns the predicted target (``C`` channels) from the ``concat([z, x_src])``
-    input.
+    descent of ``r(real) > r(generated)``. Absorbs the ControlNet residuals via
+    ``**kw`` (the fake base ignores them).
     """
 
     def __init__(self, target: torch.Tensor):
@@ -86,153 +80,25 @@ class _SoftPairedGen(nn.Module):
         return 0.5 * self.target + 0.5 * sample[:, :C_LATENT]
 
 
-# -- partial_paired_rollout: the parity gate (ADR-0023) ----------------------
+def _tiny_controlnet():
+    """A tiny real :class:`ControlNet3DConditionModel` (base encoder cloned fresh).
 
-
-def test_partial_paired_rollout_parity_scalar_t_vs_per_sample_t(paired_unet):
-    """At ``t_start = 0`` the ``(B,)``-t partial rollout == the scalar-t full rollout.
-
-    The novel-combination gate (ADR-0023): ``sample_paired_latent_flow`` passes only
-    scalar ``t``; ``partial_paired_rollout`` passes ``(B,)`` ``t`` through the paired
-    summed-label pathway. At ``t_start = 0`` the start (``add_noise(x_tgt, x_src, 0)``
-    = ``x_src``) and the per-sample grid (each row = ``linspace(0, 1, n+1)``) both
-    degenerate to the full rollout's, so the two must agree bit-for-bit - proving the
-    ``(B,)``-timestep + summed-label combination is sound (the fallback is a
-    ``num_steps`` axis only if this fails).
+    The builder's fake source is the supervised ControlNet's noise→data generation
+    (ADR-0027); the builder calls :func:`controlnet_rollout(base, controlnet, ...)`,
+    so the test supplies a real (tiny) ControlNet whose forward returns well-shaped
+    residual injections. The base ``out`` conv is re-initialized so the residual
+    effect is non-trivial (a zero-init ``out`` would mask it).
     """
-    sched = PartialFlowMatchHeunScheduler()
+    from manifold import ControlNet3DConditionModel, UNet3DConditionModel
+
     torch.manual_seed(0)
-    x_src = torch.randn(2, *_LAT)
-    x_tgt = torch.randn_like(x_src)
-    steps = 3
-    # Scalar-t full rollout (the published inference contract).
-    z_full = sample_paired_latent_flow(
-        paired_unet, sched, x_src, [1.0, 1.0, 1.0], 0, 1, num_inference_steps=steps
-    )
-    # (B,)-t partial rollout at t_start = 0 (start = x_src, grid = full).
-    z_partial = partial_paired_rollout(
-        paired_unet, sched, x_src, x_tgt, torch.zeros(2), [1.0, 1.0, 1.0], 0, 1, num_steps=steps
-    )
-    assert torch.equal(z_partial, z_full)
-
-
-def test_partial_paired_rollout_starts_from_add_noise_of_tgt_src():
-    """``z`` at ``t_start`` = ``add_noise(x_tgt, x_src, t_start)`` for an identity generator.
-
-    An identity generator (``x0 = z``) leaves the start latent unchanged (the
-    no-movement invariant): the Heun velocities are zero for every ``t``, so the
-    output equals ``z_start = add_noise(x_tgt, x_src, t_start)`` = ``t_start·x_tgt +
-    (1−t_start)·x_src``. Guards both the startpoint and the transport.
-    """
-    sched = PartialFlowMatchHeunScheduler()
-    gen = _IdentityPairedGen()
-    torch.manual_seed(1)
-    x_src = torch.randn(3, *_LAT)
-    x_tgt = torch.randn_like(x_src)
-    t_start = torch.tensor([0.1, 0.3, 0.45])
-    out = partial_paired_rollout(
-        gen, sched, x_src, x_tgt, t_start, [1.0, 1.0, 1.0], 0, 1, num_steps=4
-    )
-    z_start = sched.add_noise(x_tgt, x_src, t_start)
-    assert torch.equal(out, z_start)
-
-
-def test_partial_paired_rollout_winner_higher_t_closer_to_real_tgt():
-    """Winner = higher ``t``: a higher-``t_start`` output is closer to the real ``x_tgt``.
-
-    Under a soft generator (``x0 = 0.5·x_tgt + 0.5·z``, pulling toward the real
-    target), a start near ``x_tgt`` (high ``t_start``) needs less translation -> the
-    output ends closer to ``x_tgt`` than a low-``t_start`` start. This is the
-    graded-within-fake ranking the probe measures (ADR-0023) and the opposite of the
-    full rollout's start-from-``x_src``.
-    """
-    sched = PartialFlowMatchHeunScheduler()
-    torch.manual_seed(0)
-    x_src = torch.randn(1, *_LAT)
-    x_tgt = torch.randn_like(x_src)
-    gen = _SoftPairedGen(x_tgt)
-
-    def dist_to_tgt(t0: float) -> float:
-        out = partial_paired_rollout(
-            gen, sched, x_src, x_tgt, torch.tensor([t0]), [1.0, 1.0, 1.0], 0, 1, num_steps=4
-        )
-        return float((out - x_tgt).norm())
-
-    # Higher t_start -> start nearer x_tgt -> output closer to the real target.
-    assert dist_to_tgt(0.45) < dist_to_tgt(0.05)
-
-
-def test_partial_paired_rollout_per_sample_t_does_not_mix_samples():
-    """Each sample rolls independently - sample j's output depends only on sample j."""
-    sched = PartialFlowMatchHeunScheduler()
-    gen = _IdentityPairedGen()
-    torch.manual_seed(2)
-    x_src = torch.randn(3, *_LAT)
-    x_tgt = torch.randn_like(x_src)
-    t_start = torch.tensor([0.1, 0.2, 0.3])
-    out = partial_paired_rollout(
-        gen, sched, x_src, x_tgt, t_start, [1.0, 1.0, 1.0], 0, 1, num_steps=2
-    )
-    # Identity generator -> out == z_start per sample (no cross-sample mixing).
-    z_start = sched.add_noise(x_tgt, x_src, t_start)
-    assert out.shape == x_src.shape
-    assert torch.equal(out, z_start)
-
-
-def test_partial_paired_rollout_threads_per_sample_labels_and_spacing():
-    """Per-sample ``[B]`` labels + ``[B,3]`` spacing reach the UNet verbatim."""
-    sched = PartialFlowMatchHeunScheduler()
-
-    class _Recording(nn.Module):
-        def __init__(self):
-            super().__init__()
-            self.dummy = nn.Parameter(torch.zeros(0))
-            self.seen_src = []
-            self.seen_tgt = []
-            self.seen_spacing = []
-
-        def forward(
-            self, sample, timestep, spacing, class_labels_src=None, class_labels_tgt=None, **kw
-        ):
-            self.seen_src.append(class_labels_src.detach().cpu().clone())
-            self.seen_tgt.append(class_labels_tgt.detach().cpu().clone())
-            self.seen_spacing.append(spacing.detach().cpu().clone())
-            return sample[:, :C_LATENT]
-
-    rec = _Recording()
-    x_src = torch.randn(2, *_LAT)
-    x_tgt = torch.randn_like(x_src)
-    t_start = torch.tensor([0.2, 0.4])
-    src_labels = torch.tensor([0, 2])
-    tgt_labels = torch.tensor([1, 3])
-    spacing = torch.tensor([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]])
-    partial_paired_rollout(
-        rec, sched, x_src, x_tgt, t_start, spacing, src_labels, tgt_labels, num_steps=2
-    )
-    # Every UNet eval got the per-sample src/tgt labels and the per-sample spacing.
-    assert all(torch.equal(s, torch.tensor([0, 2])) for s in rec.seen_src)
-    assert all(torch.equal(t, torch.tensor([1, 3])) for t in rec.seen_tgt)
-    assert any(torch.allclose(s, spacing) for s in rec.seen_spacing)
-
-
-def test_partial_paired_rollout_mismatched_batch_raises():
-    """A mismatched ``t_start`` or per-sample spacing raises a clear error."""
-    sched = PartialFlowMatchHeunScheduler()
-    gen = _IdentityPairedGen()
-    x_src = torch.randn(4, *_LAT)
-    x_tgt = torch.randn_like(x_src)
-    # x_src batch (4) != t_start (3).
-    import pytest
-
-    with pytest.raises(ValueError, match="t_start"):
-        partial_paired_rollout(
-            gen, sched, x_src, x_tgt, torch.zeros(3), [1.0, 1.0, 1.0], 0, 1, num_steps=1
-        )
-    # per-sample [B,3] spacing rows (3) != batch (4).
-    with pytest.raises(ValueError, match="spacing"):
-        partial_paired_rollout(
-            gen, sched, x_src, x_tgt, torch.zeros(4), torch.zeros(3, 3), 0, 1, num_steps=1
-        )
+    base = UNet3DConditionModel(num_class_embeds=4, include_spacing_input=True)
+    for p in base.unet.out.parameters():
+        if p.abs().sum().item() == 0.0:
+            nn.init.normal_(p, std=0.01)
+    controlnet = ControlNet3DConditionModel(num_class_embeds=4, include_spacing_input=True)
+    controlnet.load_base_encoder_weights(base)
+    return controlnet
 
 
 # -- PairedRewardModule ------------------------------------------------------
@@ -369,11 +235,11 @@ def test_paired_module_forward_stage_mismatch_raises():
         )
 
 
-# -- offline fake-cache + probe builders (determinism + condition-aware) -----
+# -- offline fake-cache + probe builders (condition-aware concat) -------------
 
 
 def _toy_src_tgt(n: int = 8):
-    """Toy scaled src/tgt latents + a fake paired generator (pulls toward tgt)."""
+    """Toy scaled src/tgt latents + a fake base generator (pulls toward tgt)."""
     torch.manual_seed(0)
     x_src = torch.randn(n, *_LAT)
     x_tgt = torch.randn(n, *_LAT)
@@ -390,6 +256,7 @@ def test_build_paired_reward_pairs_emits_condition_aware_concat():
         x_src,
         x_tgt,
         gen,
+        _tiny_controlnet(),
         FlowMatchHeunDiscreteScheduler(),
         src_label=0,
         tgt_label=1,
@@ -402,37 +269,10 @@ def test_build_paired_reward_pairs_emits_condition_aware_concat():
     assert ds.losers.shape == ds.winners.shape
     # The src half (first C channels) is shared between winner and loser.
     assert torch.equal(ds.winners[:, :C_LATENT], ds.losers[:, :C_LATENT])
-    # The winner's tgt half IS the real target; the loser's is the generated fake
-    # (pulled toward x_tgt but not equal under the soft generator).
+    # The winner's tgt half IS the real target; the loser's is the ControlNet fake.
     assert torch.equal(ds.winners[:, C_LATENT:], x_tgt)
     assert not torch.equal(ds.losers[:, C_LATENT:], x_tgt)
     assert torch.isfinite(ds.winners).all() and torch.isfinite(ds.losers).all()
-
-
-def test_build_paired_reward_pairs_is_deterministic():
-    """Re-building the fake cache yields byte-identical fakes (determinism, ADR-0020).
-
-    The paired rollout is deterministic given ``x_src`` (no stochastic input), so
-    re-running the builder produces byte-identical pairs - the property that lets
-    the fakes be cached once (offline precompute) instead of re-rolled each epoch.
-    """
-    from manifold.data.paired_reward_pairs import build_paired_reward_pairs
-
-    x_src, x_tgt, gen = _toy_src_tgt(n=4)
-    kw = dict(
-        generator=gen,
-        scheduler=FlowMatchHeunDiscreteScheduler(),
-        src_label=0,
-        tgt_label=1,
-        spacing=[1.0, 1.0, 1.0],
-        num_steps=2,
-        batch_size=4,
-        device="cpu",
-    )
-    a = build_paired_reward_pairs(x_src, x_tgt, **kw)
-    b = build_paired_reward_pairs(x_src, x_tgt, **kw)
-    assert torch.equal(a.winners, b.winners)
-    assert torch.equal(a.losers, b.losers)
 
 
 def test_build_paired_reward_probe_is_deterministic_and_concat():
@@ -440,8 +280,10 @@ def test_build_paired_reward_probe_is_deterministic_and_concat():
     from manifold.data.paired_reward_pairs import build_paired_reward_probe
 
     x_src, x_tgt, gen = _toy_src_tgt(n=4)
+    cn = _tiny_controlnet()
     kw = dict(
         generator=gen,
+        controlnet=cn,
         partial_scheduler=PartialFlowMatchHeunScheduler(),
         src_label=0,
         tgt_label=1,
@@ -500,6 +342,7 @@ def test_build_paired_reward_pairs_accepts_scalar_zero_d_tensor_labels():
         x_src,
         x_tgt,
         gen,
+        _tiny_controlnet(),
         FlowMatchHeunDiscreteScheduler(),
         src_label=torch.tensor(0),
         tgt_label=torch.tensor(1),
@@ -513,31 +356,35 @@ def test_build_paired_reward_pairs_accepts_scalar_zero_d_tensor_labels():
 
 
 def test_build_paired_reward_pairs_threads_per_sample_labels():
-    """A length-N per-sample label tensor is sliced per batch and reaches the rollout."""
+    """A length-N per-sample label tensor is sliced per batch and reaches the ControlNet.
+
+    The (src, tgt) contrast labels feed the ControlNet's direction conditioning at
+    every rollout eval; the builder slices the per-sample tensors per batch. A
+    recording ControlNet wrapper captures the labels it was called with.
+    """
     from manifold.data.paired_reward_pairs import build_paired_reward_pairs
 
-    class _Recording(nn.Module):
-        def __init__(self):
+    class _LabelSpy(nn.Module):
+        def __init__(self, controlnet):
             super().__init__()
-            self.dummy = nn.Parameter(torch.zeros(0))
-            self.seen = []
+            self._cn = controlnet
+            self.seen_src = []
+            self.seen_tgt = []
 
-        def forward(
-            self, sample, timestep, spacing, class_labels_src=None, class_labels_tgt=None, **kw
-        ):
-            self.seen.append(
-                (class_labels_src.detach().cpu().clone(), class_labels_tgt.detach().cpu().clone())
-            )
-            return sample[:, :C_LATENT]
+        def forward(self, *a, **kw):
+            self.seen_src.append(kw.get("class_labels_src"))
+            self.seen_tgt.append(kw.get("class_labels_tgt"))
+            return self._cn(*a, **kw)
 
     torch.manual_seed(0)
     x_src = torch.randn(4, *_LAT)
     x_tgt = torch.randn(4, *_LAT)
-    rec = _Recording()
+    spy = _LabelSpy(_tiny_controlnet())
     build_paired_reward_pairs(
         x_src,
         x_tgt,
-        rec,
+        _IdentityPairedGen(),
+        spy,
         FlowMatchHeunDiscreteScheduler(),
         src_label=torch.tensor([0, 1, 2, 3]),
         tgt_label=torch.tensor([3, 2, 1, 0]),
@@ -546,8 +393,8 @@ def test_build_paired_reward_pairs_threads_per_sample_labels():
         batch_size=2,
         device="cpu",
     )
-    seen_src = torch.stack([s[0] for s in rec.seen])
-    seen_tgt = torch.stack([s[1] for s in rec.seen])
+    seen_src = torch.stack([s for s in spy.seen_src if s is not None])
+    seen_tgt = torch.stack([s for s in spy.seen_tgt if s is not None])
     # Each batch's labels are a slice of the per-sample tensors (order-independent).
     assert torch.equal(seen_src.unique().sort().values, torch.tensor([0, 1, 2, 3]))
     assert torch.equal(seen_tgt.unique().sort().values, torch.tensor([0, 1, 2, 3]))
@@ -557,13 +404,13 @@ def test_build_paired_reward_pairs_threads_per_sample_labels():
 
 
 def _smoke_inputs() -> PairedRewardInputs:
-    """The injection-seam bundle: fake generator + toy pairs/probe via the builders.
+    """The injection-seam bundle: fake generator + ControlNet + toy pairs/probe.
 
-    Uses an identity paired generator (``x0 = z``) -> the generated tgt is the src
-    itself (copy-src). The condition-aware reward must rank the real tgt above
-    copy-src - the documented dominant paired failure (ADR-0019) - so this is the
-    most meaningful wiring smoke. Identity is batch-size-agnostic (no fixed target)
-    and deterministic (ADR-0020).
+    Uses an identity base generator (``x0 = z``) with a tiny real ControlNet -> the
+    generated tgt is a ControlNet-conditioned fake. The condition-aware reward must
+    rank the real tgt above the generated fake - the documented paired failure
+    (ADR-0019) - so this is the most meaningful wiring smoke. Identity is
+    batch-size-agnostic (no fixed target); the probe is seeded (ADR-0020/0023).
     """
     from manifold.data.paired_reward_pairs import (
         build_paired_reward_pairs,
@@ -573,11 +420,13 @@ def _smoke_inputs() -> PairedRewardInputs:
     torch.manual_seed(0)
     x_src = torch.randn(8, *_LAT)
     x_tgt = torch.randn(8, *_LAT)
-    gen = _IdentityPairedGen()  # x0 = z -> gen_tgt = copy-src (the fake)
+    gen = _IdentityPairedGen()  # x0 = z (the fake base)
+    cn = _tiny_controlnet()
     train = build_paired_reward_pairs(
         x_src,
         x_tgt,
         gen,
+        cn,
         FlowMatchHeunDiscreteScheduler(),
         src_label=0,
         tgt_label=1,
@@ -590,6 +439,7 @@ def _smoke_inputs() -> PairedRewardInputs:
         x_src[:4],
         x_tgt[:4],
         gen,
+        cn,
         FlowMatchHeunDiscreteScheduler(),
         src_label=0,
         tgt_label=1,
@@ -602,6 +452,7 @@ def _smoke_inputs() -> PairedRewardInputs:
         x_src[:4],
         x_tgt[:4],
         gen,
+        cn,
         PartialFlowMatchHeunScheduler(),
         src_label=0,
         tgt_label=1,

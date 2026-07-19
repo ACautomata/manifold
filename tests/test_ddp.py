@@ -89,55 +89,6 @@ def test_single_gpu_jit_matches_baseline(tmp_path):
     assert any(k.startswith("unet.") for k in sd), "checkpoint missing unet state"
 
 
-def test_single_gpu_paired_matches_baseline(tmp_path):
-    """Paired single-GPU (devices=1): metrics + checkpoint match the pre-PR baseline."""
-    from manifold import AutoencoderKL, FlowMatchHeunDiscreteScheduler, PairedLatentFlowModule
-    from manifold.training.paired_cli import _DataBundle, run_paired_training
-    from tests.test_paired_training_cli import _FakePairedDataset, _trainable_paired_unet
-
-    unet = _trainable_paired_unet()
-    module = PairedLatentFlowModule(
-        unet, FlowMatchHeunDiscreteScheduler(), lr=1e-2, lr_warmup_steps=0,
-        num_train_examples=4, train_batch_size=2, n_epochs=1,
-    )
-    # allow_train_as_val=True: the smoke reuses the train fixture as val so the
-    # PSNR/SSIM + x0-MAE plumbing runs (tests wiring + a stable baseline, not
-    # held-out generalization). Production leaves this False -> validation disabled.
-    bundle = _DataBundle(
-        latent_ds=_FakePairedDataset(n=4), vae=AutoencoderKL(scaling_factor=0.5),
-        allow_train_as_val=True,
-    )
-    trainer, _ckpt = run_paired_training(
-        module=module, bundle=bundle, model_dir=str(tmp_path / "p"), max_epochs=1, batch_size=2,
-        num_workers=0, limit_val_batches=2, num_inference_steps=2, every_n_epochs=1,
-    )
-    m = trainer.callback_metrics
-    baseline = {
-        "train/loss_epoch": 2.58351,
-        "train/grad_norm": 2.366393,
-        "val/x0_mae": 0.772287,
-        # val/psnr / val/ssim: this audit's C2 fix compares RAW float32 decodes
-        # (no per-volume min-max). #86 added an independent per-volume min-max on
-        # pred and tgt, which made the metrics affine-invariant (blind to
-        # gain/offset errors) and moved the baseline to 13.989718 / 0.152261.
-        # Removing it restores the pre-#86 raw-decode values exactly. C1 (per-sample
-        # labels) is a no-op on this fixture — _FakePairedDataset emits one
-        # direction (0→1), so per-sample labels == the scalar broadcast.
-        # The brain-mask + data_range-clamp fix (skull-stripped background excluded
-        # from PSNR/SSIM; dr >= 1.0) moved the baseline to 15.495928 / 0.221532 —
-        # the masked metric now reflects brain-region fidelity, not the trivially
-        # matched background (was 14.228303 / 0.096884 full-volume).
-        "val/psnr": 15.495928,  # brain-masked, dr>=1.0 (raw optimizer arm; was 14.228303 full-volume)
-        "val/ssim": 0.221532,  # brain-masked (raw optimizer arm; was 0.096884 full-volume)
-    }
-    for key, expected in baseline.items():
-        assert key in m, f"missing {key}"
-        assert torch.isfinite(m[key]), f"{key} not finite"
-        assert _close(float(m[key]), expected), f"{key}={float(m[key])} drifted from {expected}"
-    sd = _state_dict(tmp_path / "p")
-    assert any(k.startswith("unet.") for k in sd), "checkpoint missing unet state"
-
-
 def test_single_gpu_grpo_matches_baseline(tmp_path):
     """GRPO single-GPU (devices=1): val/mean_reward + checkpoint match the baseline."""
     from manifold.modules import GRPOModule

@@ -14,15 +14,13 @@ from .models import (
     RewardModel,
     UNet3DConditionModel,
 )
-from .modules import ControlNetLatentFlowModule, LatentFlowModule, PairedLatentFlowModule
+from .modules import ControlNetLatentFlowModule, LatentFlowModule
 from .pipelines import (
     ControlNetLatentFlowPipeline,
     DiffusionPipeline,
     LatentFlowPipeline,
-    PairedLatentFlowPipeline,
 )
 from .schedulers import (
-    FlowMatchBridgeGRPOScheduler,
     FlowMatchGRPOScheduler,
     FlowMatchHeunDiscreteScheduler,
     PartialFlowMatchHeunScheduler,
@@ -38,14 +36,11 @@ __all__ = [
     "ControlNetLatentFlowModule",
     "ControlNetLatentFlowPipeline",
     "DiffusionPipeline",
-    "FlowMatchBridgeGRPOScheduler",
     "FlowMatchGRPOScheduler",
     "FlowMatchHeunDiscreteScheduler",
     "LatentFlowModule",
     "LatentFlowPipeline",
     "ModelMixin",
-    "PairedLatentFlowModule",
-    "PairedLatentFlowPipeline",
     "PartialFlowMatchHeunScheduler",
     "RewardModel",
     "SchedulerMixin",
