@@ -37,6 +37,7 @@ import torch
 from monai.apps.generation.maisi.networks.diffusion_model_unet_maisi import (
     DiffusionModelUNetMaisi,
 )
+from monai.utils import convert_to_tensor
 from torch import Tensor
 from torch import nn
 
@@ -203,13 +204,36 @@ class UNet3DConditionModel(ModelMixin):
                 backbone's class-embedding injection point (ADR-0014 addendum); they
                 must be passed together and require ``num_class_embeds`` to be set.
             down_block_additional_residuals / mid_block_additional_residual: the
-                ControlNet residual injections (ADR-0026) — passed straight through to the
-                MONAI backbone's native forward args. ``None`` (the noise→data JiT path)
-                leaves the backbone byte-unchanged.
+                ControlNet residual injections (ADR-0026). When **both** are absent
+                (the noise→data JiT path) the MONAI backbone runs its own forward,
+                byte-unchanged. When residuals are supplied the wrapper runs an
+                **out-of-place** re-implementation of the backbone's forward
+                (:meth:`_forward_with_residuals`): MONAI's native ``+=`` on the
+                injected residuals and on the middle-block output is in-place, which
+                breaks any backward that flows from the base output back to the
+                ControlNet (the supervised stage AND the GRPO perturbed step — the
+                ``z_t``-requires-grad distinction does NOT matter; see ADR-0026's
+                hazard note). The out-of-place variant is forward-bit-identical.
         """
         b = sample.shape[0]
         timesteps = self._scaled_timesteps(timestep, b, sample.device, sample.dtype)
         spacing_tensor = self._batched_spacing(spacing, b)
+        inject = down_block_additional_residuals is not None or mid_block_additional_residual is not None
+
+        if inject:
+            # ControlNet residual-injection path: out-of-place forward (autograd-safe
+            # for base-output→ControlNet backward). The paired branch is being deleted
+            # (ADR-0028 step 7); ControlNet callers use the noise→data signature with
+            # class_labels + residuals, never the paired kwargs.
+            return self._forward_with_residuals(
+                sample,
+                timesteps,
+                spacing_tensor,
+                class_labels,
+                context,
+                down_block_additional_residuals,
+                mid_block_additional_residual,
+            )
 
         if class_labels_src is not None or class_labels_tgt is not None:
             # Paired JiT conditioning path (ADR-0014 addendum). Requires both
@@ -279,3 +303,59 @@ class UNet3DConditionModel(ModelMixin):
             down_block_additional_residuals=down_block_additional_residuals,
             mid_block_additional_residual=mid_block_additional_residual,
         )
+
+    def _forward_with_residuals(
+        self,
+        sample: Tensor,
+        timesteps: Tensor,
+        spacing_tensor: Tensor,
+        class_labels: Tensor | None,
+        context: Tensor | None,
+        down_block_additional_residuals: tuple[Tensor, ...] | None,
+        mid_block_additional_residual: Tensor | None,
+    ) -> Tensor:
+        """Out-of-place re-implementation of the MONAI backbone forward for ControlNet.
+
+        Structurally identical to ``DiffusionModelUNetMaisi.forward`` — same
+        ``_get_time_and_class_embedding`` / ``_get_input_embeddings`` / ``conv_in`` /
+        down / middle / up / ``out`` call sequence — with two changes, both in the
+        service of autograd safety:
+
+        - ``_apply_down_blocks``'s in-place ``down_block_res_sample += residual``
+          becomes ``down_block_res_sample + residual``; and
+        - the middle residual's in-place ``h += mid_block_additional_residual``
+          becomes ``h = h + mid_block_additional_residual``.
+
+        MONAI's in-place adds mutate (a) the ControlNet's grad-bearing residual
+        outputs and (b) the middle-block output the up-block backward needs, so any
+        backward flowing from the base output to the ControlNet raises an autograd
+        version error (ADR-0026's hazard, corrected: it bites the supervised stage
+        too, not only GRPO). The out-of-place form is **forward-bit-identical** and
+        leaves the frozen base's own parameters untouched. The backbone is composed,
+        never subclassed (ADR-0001); only this residual-injection path is
+        re-implemented, so the noise→data path stays on MONAI's own forward.
+        """
+        backbone = self.unet
+        emb = backbone._get_time_and_class_embedding(sample, timesteps, class_labels)
+        emb = backbone._get_input_embeddings(emb, None, None, spacing_tensor)
+
+        h = backbone.conv_in(sample)
+        # _apply_down_blocks, out-of-place on the residual injection.
+        down_block_res_samples: list[Tensor] = [h]
+        for downsample_block in backbone.down_blocks:
+            h, res_samples = downsample_block(hidden_states=h, temb=emb, context=context)
+            down_block_res_samples.extend(res_samples)
+        if down_block_additional_residuals is not None:
+            down_block_res_samples = [
+                sample_res + residual
+                for sample_res, residual in zip(
+                    down_block_res_samples, down_block_additional_residuals
+                )
+            ]
+
+        h = backbone.middle_block(h, emb, context)
+        if mid_block_additional_residual is not None:
+            h = h + mid_block_additional_residual  # out-of-place
+
+        h = backbone._apply_up_blocks(h, emb, context, down_block_res_samples)
+        return convert_to_tensor(backbone.out(h))

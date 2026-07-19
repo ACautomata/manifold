@@ -80,3 +80,40 @@ to a control signal.
   `base(z_t, t, spacing, class_labels=tgt_label, down_block_additional_residuals=…,
   mid_block_additional_residual=…)` with the residuals from the ControlNet (ADR-0027
   pipeline).
+
+## Hazard correction (verified 2026-07-19, MONAI 1.6): in-place residual adds bite the **supervised** stage too
+
+The Step-1 handoff recorded the in-place hazard as *supervised-safe* — "safe when the
+base is frozen AND its input `z_t` is a no-grad data tensor (the supervised regime);
+breaks only when `z_t` requires grad (the GRPO perturbed step)". **That boundary is
+wrong.** Direct probes (this branch, MONAI 1.6/CPU) show the MONAI backbone's in-place
+residual adds break **any** backward that flows from the base output back to the
+ControlNet — which is exactly the supervised stage's `(1−t)⁻²`-MSE on `x_tgt`, not just
+GRPO:
+
+- `_apply_down_blocks` does `down_block_res_sample += down_block_additional_residual`
+  **in place**. The `down_block_additional_residual` is the ControlNet's *grad-bearing
+  output tensor*; mutating it in place bumps its autograd version, so the ControlNet's
+  own backward (which saved that tensor's pre-add value) raises *"one of the variables
+  needed for gradient computation has been modified by an inplace operation … version 1;
+  expected version 0"*. This fires even with `mid_block_additional_residual=None` and
+  even when `z_t` requires no grad.
+- `forward` does `h += mid_block_additional_residual` in place on the `middle_block`
+  output `h`, which the up-block backward needs — same version-error mechanism.
+
+The reason Step-1's "gradient routing verified" claim passed is that its check used a
+loss that did **not** flow through the base output (a synthetic loss on the residual
+tensors directly). The real supervised loss — `MSE(base_output_with_residuals, x_tgt)` —
+does flow through the base output, and there the in-place adds are fatal.
+
+**Fix (implemented):** the base wrapper `UNet3DConditionModel` runs an **out-of-place**
+re-implementation of the backbone forward on the residual-injection path
+(`_forward_with_residuals`): the two in-place adds become `sample + residual` and
+`h = h + mid_block_additional_residual`. The forward output is **bit-identical** to
+MONAI's native forward (verified), the frozen base's parameters are untouched, and the
+noise→data path (no residuals) still calls MONAI's own forward unchanged. The backbone
+remains composed, never subclassed (ADR-0001); only the injection path is re-implemented.
+The supervised stage, two-mode GRPO (Mode-2 perturbed step), and the inference rollout
+all route through this single out-of-place path, so the hazard is neutralized once for
+all consumers.
+
