@@ -8,10 +8,10 @@
 # Consumed by manifold-train (#28).
 
 diffusion_unet_train:
-  batch_size: 8
+  batch_size: 32
   cache_rate: 0
   lr: 1.0e-4            # base peak LR at lr_ref_batch_size (auto-scales with the effective batch)
-  n_epochs: 1000
+  n_epochs: 50
   lr_scheduler: cosine
   lr_warmup_steps: 1000
   # Peak-LR auto-scaling by effective batch (per-device batch × world size). The
