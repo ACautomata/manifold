@@ -395,11 +395,39 @@ def _real_inputs(
         latents_dir
         or opt(cfg, "latent_cache_dir", os.path.join(str(cfg.model_dir), "paired_latent_cache"))
     )
-    cache_tag = paired_cache_tag(str(opt(cfg, "paired_reward.cache_tag", "paired_train")), target_dim, divisor)
+    base_tag = str(opt(cfg, "paired_reward.cache_tag", "paired_train"))
+    cache_tag = paired_cache_tag(base_tag, target_dim, divisor)
+
+    def _resolve_tag(vol_ds):
+        """Pick the cache tag that actually hits this split's unique volumes (#148).
+
+        The geometry-suffixed tag (issue #147) is preferred; but a cache warmed BEFORE
+        the suffix was introduced (the plain legacy ``paired_train`` tag) at the SAME
+        geometry is still valid — ``encode_fn=None`` below cannot re-encode, so a
+        suffixed-only lookup would cache-miss on every such upgrade. Fall back to the
+        legacy tag when the suffixed tag does NOT fully cover the split but the legacy
+        tag does; the every-entry shape validation below then guards that the legacy
+        entries truly match this geometry (a different-geometry legacy cache is
+        rejected there, not silently reused).
+        """
+        from ..data.latent_dataset import _load_cache
+
+        sids = vol_ds.unique_sample_ids()
+        def _hits(tag):
+            return sum(1 for sid in sids if _load_cache(cache_dir, sid, tag) is not None)
+        if _hits(cache_tag) == len(sids):
+            return cache_tag
+        if base_tag != cache_tag and _hits(base_tag) == len(sids):
+            rank_zero_info(
+                "paired_reward: geometry-tagged cache miss; falling back to the legacy "
+                "'%s' tag (shape-validated below).", base_tag,
+            )
+            return base_tag
+        return cache_tag  # neither fully covers -> warm_cache raises a clear miss
 
     def _ds(manifest_split):
         vol_ds = PairedNiftiVolumeDataset(manifest_split, target_dim=target_dim, divisor=divisor)
-        ds = PairedLatentDataset(vol_ds, encode_fn=None, cache_dir=cache_dir, cache_tag=cache_tag)
+        ds = PairedLatentDataset(vol_ds, encode_fn=None, cache_dir=cache_dir, cache_tag=_resolve_tag(vol_ds))
         ds.warm_cache(device, show_progress=False)
         # Scale-on-read uses the EXPORT scaling_factor verbatim (ADR-0021): the
         # generator trained on latents scaled by this factor, so the rollout
