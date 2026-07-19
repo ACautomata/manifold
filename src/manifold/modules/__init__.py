@@ -5,6 +5,7 @@ the ``(1−t)⁻²`` loss weight, the MSE); the transport and reverse step live 
 scheduler (ADR-0001).
 """
 
+from .controlnet_sampler import controlnet_partial_rollout, controlnet_rollout
 from .grpo import (
     GRPOBatch,
     GRPOModule,
@@ -43,6 +44,8 @@ __all__ = [
     "SampleDict",
     "bradley_terry_loss",
     "clipped_surrogate_loss",
+    "controlnet_partial_rollout",
+    "controlnet_rollout",
     "gaussian_log_prob",
     "group_advantage",
     "partial_denoise_rollout",
