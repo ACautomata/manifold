@@ -45,6 +45,10 @@ _log = logging.getLogger(__name__)
 #: The data stack (Slice 2) produces these; this module only consumes them.
 PairedSampleDict = dict[str, Any]
 
+#: Number of nodes in the ``"bridge"`` sampler's uniform grid over ``[t_min, t_max]``
+#: (aligned with the scheduler's ``num_train_timesteps=1000``).
+_BRIDGE_GRID_SIZE = 1000
+
 
 class PairedLatentFlowModule(spt.Module):
     """Paired JiT src→tgt training module (``spt.Module``).
@@ -57,7 +61,16 @@ class PairedLatentFlowModule(spt.Module):
             (shared with the noise→data JiT, ADR-0013).
         p_mean / p_std: logit-normal timestep sampler parameters
             (``t ~ sigmoid(N(p_mean, p_std))``). Defaults are JiT's published
-            values (``-0.8`` / ``0.8``).
+            values (``-0.8`` / ``0.8``). Used only when ``t_sampler="logit_normal"``.
+        t_sampler: the flow-time sampling strategy. ``"logit_normal"`` (default, the
+            noise→data JiT sampler, low-``t``-biased) or the data2data-adapted
+            ``"uniform"`` / ``"bridge"`` (see :meth:`_sample_timesteps`). The
+            inference grid is a uniform ``linspace(0, 1, n+1)``, so the logit-normal's
+            thin high-``t`` density under-trains the high-``t`` region the rollout
+            traverses densely; ``"uniform"``/``"bridge"`` cover both endpoints evenly.
+        t_min / t_max: the ``[t_min, t_max]`` sampling range for ``t_sampler``
+            ``"uniform"``/``"bridge"`` (ignored by ``"logit_normal"``). Defaults
+            cover the full transport (``0.0`` / ``1.0``).
         t_eps: floor on ``1 − t`` in the loss denominator (matches the sampler's
             endpoint clamp), avoiding the singularity as ``t → 1``.
         loss_weight: the x0-MSE weighting regime. ``"1mt_sq"`` (default, the JiT
@@ -95,6 +108,9 @@ class PairedLatentFlowModule(spt.Module):
         p_std: float = 0.8,
         t_eps: float = 0.05,
         loss_weight: str = "1mt_sq",
+        t_sampler: str = "logit_normal",
+        t_min: float = 0.0,
+        t_max: float = 1.0,
         lr: float = 1.0e-4,
         lr_warmup_steps: int = 1000,
         lr_ref_batch_size: int = 8,
@@ -112,6 +128,9 @@ class PairedLatentFlowModule(spt.Module):
                 "p_std": p_std,
                 "t_eps": t_eps,
                 "loss_weight": loss_weight,
+                "t_sampler": t_sampler,
+                "t_min": t_min,
+                "t_max": t_max,
                 "lr": lr,
                 "lr_warmup_steps": lr_warmup_steps,
                 "lr_ref_batch_size": lr_ref_batch_size,
@@ -129,6 +148,18 @@ class PairedLatentFlowModule(spt.Module):
                 f"loss_weight must be '1mt_sq' or 'uniform', got {loss_weight!r}."
             )
         self.loss_weight = str(loss_weight)
+        if t_sampler not in ("logit_normal", "uniform", "bridge"):
+            raise ValueError(
+                f"t_sampler must be 'logit_normal' | 'uniform' | 'bridge', got {t_sampler!r}."
+            )
+        self.t_sampler = str(t_sampler)
+        self.t_min = float(t_min)
+        self.t_max = float(t_max)
+        if not (0.0 <= self.t_min < self.t_max <= 1.0):
+            raise ValueError(
+                f"t_min/t_max must satisfy 0 <= t_min < t_max <= 1, "
+                f"got t_min={self.t_min}, t_max={self.t_max}."
+            )
         self.lr = float(lr)
         self.lr_warmup_steps = int(lr_warmup_steps)
         self.lr_ref_batch_size = int(lr_ref_batch_size)
@@ -148,9 +179,30 @@ class PairedLatentFlowModule(spt.Module):
         self._last_grad_norm: float | None = None
 
     def _sample_timesteps(self, batch_size: int, device: torch.device) -> Tensor:
-        """Logit-normal ``t ~ sigmoid(N(p_mean, p_std))`` in ``(0, 1)``."""
-        logits = torch.randn(batch_size, device=device) * self.p_std + self.p_mean
-        return torch.sigmoid(logits)
+        """Sample flow-times ``t`` per ``t_sampler`` (the data2data-adapted knob).
+
+        - ``"logit_normal"`` (default): ``t ~ sigmoid(N(p_mean, p_std))`` in ``(0, 1)`` —
+          the sampler inherited from the noise→data JiT; ignores ``t_min``/``t_max``.
+        - ``"uniform"``: ``t ~ U[t_min, t_max]`` — continuous uniform coverage of both
+          transport endpoints (x_src at ``t=0``, x_tgt at ``t=1``).
+        - ``"bridge"``: the data2data discrete-time sampler — a continuous uniform draw
+          quantized onto the ``_BRIDGE_GRID_SIZE``-node uniform grid over
+          ``[t_min, t_max]``, so training ``t`` lands on the same family of uniform
+          integration nodes the inference rollout traverses (``set_timesteps`` is a
+          uniform ``linspace(0, 1, n+1)``).
+        """
+        if self.t_sampler == "logit_normal":
+            logits = torch.randn(batch_size, device=device) * self.p_std + self.p_mean
+            return torch.sigmoid(logits)
+        # Both "uniform" and "bridge" draw a continuous uniform u in [t_min, t_max].
+        t = self.t_min + (self.t_max - self.t_min) * torch.rand(batch_size, device=device)
+        if self.t_sampler == "bridge":
+            # Quantize onto the n-node uniform grid over [t_min, t_max]: pick the
+            # nearest node index for each draw, then map back to its t value.
+            grid = torch.linspace(self.t_min, self.t_max, _BRIDGE_GRID_SIZE, device=device)
+            idx = torch.round((t - self.t_min) / (self.t_max - self.t_min) * (_BRIDGE_GRID_SIZE - 1))
+            t = grid[idx.long().clamp_(0, _BRIDGE_GRID_SIZE - 1)]
+        return t
 
     def forward(self, batch: PairedSampleDict, stage: str) -> dict[str, Tensor]:
         """Paired JiT forward: the x0-MSE on the target latent.

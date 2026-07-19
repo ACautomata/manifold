@@ -37,10 +37,21 @@ diffusion_unet_train:
 # each is overridable via CLI/dotlist (e.g. `formulation.p_mean=-1.0`).
 formulation:
   mode: paired-x0
-  p_mean: -0.8           # t ~ sigmoid(N(p_mean, p_std))
+  p_mean: -0.8           # t ~ sigmoid(N(p_mean, p_std)) — used only when t_sampler=logit_normal
   p_std: 0.8
   t_eps: 0.05            # (1-t)^-2 loss / derived-velocity clamp
   ode_solver: heun       # 2nd-order Heun integrator, starts from x_src
+  # Flow-time SAMPLER for this data→data transport (ADR-0013): x_src at t=0, x_tgt at
+  # t=1. The default "logit_normal" is inherited from the noise→data JiT — its density
+  # (p_mean=-0.8, center≈0.31) is thin at high t, but the inference grid set_timesteps
+  # is a UNIFORM linspace(0,1,n+1) that traverses t→1 densely, so the high-t region
+  # (where the model de-mixes z_t away from x_src) is under-trained. The data2data-
+  # adapted "uniform" (continuous t ~ U[t_min,t_max]) and "bridge" (uniform draw
+  # quantized onto a 1000-node uniform grid over [t_min,t_max], the inference node
+  # family) cover both endpoints evenly.
+  t_sampler: logit_normal  # "logit_normal" (default) | "uniform" | "bridge" (data2data)
+  t_min: 0.0             # [t_min, t_max] sampling range for uniform/bridge
+  t_max: 1.0             # (ignored by logit_normal); must satisfy 0 <= t_min < t_max <= 1
   # UNIFORM x0-MSE, NOT the (1-t)^-2 velocity-MSE (ADR-0013/0014 regime fix). The
   # (1-t)^-2 weight lets the model satisfy high-t by copying z_t (z_t≈x_tgt there)
   # while leaving the low-t transport — which the start-from-x_src rollout depends

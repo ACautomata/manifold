@@ -470,3 +470,74 @@ def test_noise_to_data_path_unchanged(paired_unet):
     out = paired_unet(sample=sample, timestep=0.5, spacing=spacing, class_labels=torch.tensor([2]))
     assert out.shape == (1, C_LATENT, 4, 4, 4)
     assert torch.isfinite(out).all()
+
+
+# -- t_sampler: the data2data-adapted flow-time sampler ------------------------
+
+
+def _timestep_module(**kwargs) -> PairedLatentFlowModule:
+    """A module built for ``_sample_timesteps`` tests only (the UNet is unused)."""
+    return PairedLatentFlowModule(_ZeroPairedUNet(), FlowMatchHeunDiscreteScheduler(), **kwargs)
+
+
+def test_invalid_t_sampler_raises():
+    """An unknown t_sampler is rejected at construction (fails fast)."""
+    with pytest.raises(ValueError, match="t_sampler"):
+        _timestep_module(t_sampler="bogus")
+
+
+def test_invalid_t_range_raises():
+    """t_min >= t_max (or out of [0, 1]) is rejected at construction (fails fast)."""
+    with pytest.raises(ValueError, match="t_min"):
+        _timestep_module(t_sampler="uniform", t_min=0.8, t_max=0.2)
+    with pytest.raises(ValueError, match="t_min"):
+        _timestep_module(t_sampler="uniform", t_min=-0.1, t_max=0.5)
+    with pytest.raises(ValueError, match="t_min"):
+        _timestep_module(t_sampler="uniform", t_min=0.5, t_max=1.1)
+
+
+def test_default_t_sampler_is_logit_normal():
+    """Omitting t_sampler keeps the inherited logit-normal sampler (backward-compat)."""
+    module = _timestep_module()
+    assert module.t_sampler == "logit_normal"
+    torch.manual_seed(0)
+    t = module._sample_timesteps(4096, torch.device("cpu"))
+    assert t.min() >= 0.0 and t.max() <= 1.0
+    # logit-normal with p_mean=-0.8 centers near sigmoid(-0.8) ≈ 0.31 (low-t biased).
+    assert module.p_mean == pytest.approx(-0.8)
+    expected_center = torch.sigmoid(torch.tensor(module.p_mean)).item()
+    assert t.mean().item() == pytest.approx(expected_center, abs=0.05)
+
+
+def test_uniform_t_sampler_covers_range():
+    """t_sampler="uniform" draws t ~ U[t_min, t_max], centered at the midpoint."""
+    t_min, t_max = 0.1, 0.9
+    module = _timestep_module(t_sampler="uniform", t_min=t_min, t_max=t_max)
+    torch.manual_seed(0)
+    t = module._sample_timesteps(4096, torch.device("cpu"))
+    assert t.min() >= t_min and t.max() <= t_max
+    assert t.mean().item() == pytest.approx((t_min + t_max) / 2, abs=0.03)
+
+
+def test_bridge_t_sampler_lands_on_uniform_grid():
+    """t_sampler="bridge" quantizes t onto the 1000-node uniform grid over [t_min, t_max]."""
+    t_min, t_max = 0.0, 1.0
+    module = _timestep_module(t_sampler="bridge", t_min=t_min, t_max=t_max)
+    torch.manual_seed(0)
+    t = module._sample_timesteps(4096, torch.device("cpu"))
+    assert t.min() >= t_min and t.max() <= t_max
+    # Every draw equals (to fp tolerance) a node of the linspace grid over [t_min, t_max].
+    grid = torch.linspace(t_min, t_max, 1000)
+    # distance from each sample to its nearest grid node is ~0
+    nearest = (t.unsqueeze(1) - grid.unsqueeze(0)).abs().min(dim=1).values
+    assert nearest.max().item() < 1e-5
+
+
+def test_uniform_and_bridge_ignore_p_mean():
+    """The data2data samplers are driven by t_min/t_max, not the logit-normal p_mean."""
+    module = _timestep_module(t_sampler="uniform", t_min=0.2, t_max=0.8, p_mean=5.0)
+    torch.manual_seed(0)
+    t = module._sample_timesteps(4096, torch.device("cpu"))
+    # p_mean=5.0 would center a logit-normal near 1.0; uniform ignores it → midpoint 0.5.
+    assert t.mean().item() == pytest.approx(0.5, abs=0.03)
+
