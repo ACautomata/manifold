@@ -281,11 +281,9 @@ def test_resolve_warmup_steps_clamps_to_horizon():
 
 def test_resolve_warmup_steps_boundary_warmup_equals_total(caplog):
     """warmup == total is also clamped (peak is one step past the last update)."""
-    import logging
-
     from manifold.modules.latent_flow import resolve_warmup_steps
 
-    with caplog.at_level(logging.WARNING, logger="manifold.modules.latent_flow"):
+    with caplog.at_level("INFO"):
         result = resolve_warmup_steps(500, None, total_steps=500)
     assert result == 499
     assert any(
@@ -309,11 +307,9 @@ def test_resolve_warmup_steps_ratio_branch_unchanged():
 
 def test_resolve_warmup_steps_warns_when_clamped(caplog):
     """Clamping fires a warning so users notice an over-long warmup."""
-    import logging
-
     from manifold.modules.latent_flow import resolve_warmup_steps
 
-    with caplog.at_level(logging.WARNING, logger="manifold.modules.latent_flow"):
+    with caplog.at_level("INFO"):
         result = resolve_warmup_steps(1000, None, total_steps=500)
     assert result == 499
     assert any(

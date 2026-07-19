@@ -28,19 +28,17 @@ Sibling of :mod:`manifold.data.reward_pairs` (the JiT reward); reuses
 
 from __future__ import annotations
 
-import logging
 from pathlib import Path
 from typing import Sequence
 
 import torch
+from lightning.pytorch.utilities.rank_zero import rank_zero_info
 from torch import Tensor
 
 from ..modules.paired_sampler import partial_paired_rollout, sample_paired_latent_flow
 from ..schedulers.scheduling_flow_match_heun import FlowMatchHeunDiscreteScheduler
 from ..schedulers.scheduling_partial_flow_match_heun import PartialFlowMatchHeunScheduler
 from .reward_pairs import RewardPairDataset
-
-_log = logging.getLogger(__name__)
 
 #: Probe corruption range (ADR-0023): ``t_start ∈ [0, 0.5)`` keeps probe samples
 #: genuinely fake (a high ``t`` starts near real ``x_tgt`` -> the probe degenerates
@@ -186,7 +184,7 @@ def build_paired_reward_pairs(
         # Condition-aware concat: cat([x_src, tgt]) along channels (in_channels = 2·C).
         winners.append(torch.cat([src_b, tgt_b], dim=1).detach().cpu())
         losers.append(torch.cat([src_b, gen_tgt], dim=1).detach().cpu())
-    _log.info("build_paired_reward_pairs: %d real-vs-fake pairs (num_steps=%d).", n, num_steps)
+    rank_zero_info("build_paired_reward_pairs: %d real-vs-fake pairs (num_steps=%d).", n, num_steps)
     return RewardPairDataset(torch.cat(winners), torch.cat(losers))
 
 
@@ -274,7 +272,7 @@ def build_paired_reward_probe(
         ).detach()
         winners.append(torch.cat([src_b, gen_w], dim=1).detach().cpu())
         losers.append(torch.cat([src_b, gen_l], dim=1).detach().cpu())
-    _log.info(
+    rank_zero_info(
         "build_paired_reward_probe: %d probe pairs (t ∈ %s, num_steps=%d).", n, t_range, num_steps
     )
     return RewardPairDataset(torch.cat(winners), torch.cat(losers))
@@ -438,7 +436,7 @@ def build_paired_reward_inputs(
         seed=seed,
         device=device,
     )
-    _log.info(
+    rank_zero_info(
         "build_paired_reward_inputs: %d train / %d val pairs + %d probe (num_steps=%d).",
         len(train_pairs),
         len(val_pairs),
@@ -558,7 +556,7 @@ def build_paired_bridge_noised_fakes(
             # Winner: real cat([x_src, x_tgt]); Loser: bridge-noised cat([x_src, z_K]).
             winners.append(torch.cat([x_src_bg, tgt_b.repeat_interleave(G, dim=0)], dim=1).detach().cpu())
             losers.append(torch.cat([x_src_bg, z_K], dim=1).detach().cpu())
-    _log.info(
+    rank_zero_info(
         "build_paired_bridge_noised_fakes: %d bridge-noised pairs (G=%d, step=%d, num_steps=%d).",
         n * G, G, perturbed_step, num_steps,
     )

@@ -51,7 +51,6 @@ the now-global metric).
 
 from __future__ import annotations
 
-import logging
 import math
 
 import torch
@@ -61,9 +60,6 @@ try:
     import lightning.pytorch as pl
 except ImportError:  # pragma: no cover — lightning is a hard dep via spt
     import pytorch_lightning as pl  # type: ignore
-
-
-_log = logging.getLogger(__name__)
 
 
 class PairedPSNRSSIMCallback(pl.Callback):

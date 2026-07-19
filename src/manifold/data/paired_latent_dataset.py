@@ -29,7 +29,6 @@ estimated scale.
 
 from __future__ import annotations
 
-import logging
 import os
 from collections.abc import Callable
 from pathlib import Path
@@ -37,6 +36,7 @@ from typing import Any
 
 import torch
 import torch.distributed as dist
+from lightning.pytorch.utilities.rank_zero import rank_zero_info
 from torch import Tensor
 from tqdm import tqdm
 
@@ -83,7 +83,6 @@ class PairedLatentDataset(MedicalDataset):
     def warm_cache(
         self,
         device: torch.device,
-        logger: logging.Logger | None = None,
         show_progress: bool = True,
         rank: int | None = None,
         world: int | None = None,
@@ -131,21 +130,20 @@ class PairedLatentDataset(MedicalDataset):
                 disable=not show_progress,
             )
             self._ram = {sid: self._materialize(sid, device) for sid in progress}
-        if logger is not None:
-            hits = (
-                sum(
-                    1
-                    for sid in sample_ids
-                    if _load_cache(self.cache_dir, sid, self.cache_tag) is not None
-                )
-                if self.cache_dir is not None
-                else 0
+        hits = (
+            sum(
+                1
+                for sid in sample_ids
+                if _load_cache(self.cache_dir, sid, self.cache_tag) is not None
             )
-            logger.info(
-                f"PairedLatentDataset: materialized {len(self._ram)} unique latents "
-                f"over {len(self.source)} pairs (disk cache {hits}/{n} hits, "
-                f"cache_dir={self.cache_dir}, sharded={sharded})."
-            )
+            if self.cache_dir is not None
+            else 0
+        )
+        rank_zero_info(
+            f"PairedLatentDataset: materialized {len(self._ram)} unique latents "
+            f"over {len(self.source)} pairs (disk cache {hits}/{n} hits, "
+            f"cache_dir={self.cache_dir}, sharded={sharded})."
+        )
 
     def free_encoder(self) -> None:
         """Drop the encoder reference so the VAE can leave GPU before UNet training."""
@@ -223,7 +221,6 @@ def estimate_paired_scale_factor(
     dataset: PairedLatentDataset,
     vae: Any,
     sample_size: int = 64,
-    logger: logging.Logger | None = None,
 ) -> Tensor:
     """Estimate ``scale_factor = 1 / std(z)`` over the warmed **unique** latents.
 
@@ -247,8 +244,7 @@ def estimate_paired_scale_factor(
     with torch.no_grad():
         vae.scaling_factor.fill_(float(scale))
     dataset.scaling_factor = float(scale)
-    if logger is not None:
-        logger.info(f"scale_factor -> {float(scale):.6f} (over {n} unique paired latents).")
+    rank_zero_info(f"scale_factor -> {float(scale):.6f} (over {n} unique paired latents).")
     return scale
 
 

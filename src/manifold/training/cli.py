@@ -14,7 +14,6 @@ fake latent cache (the issue's testing seam) instead of BraTS + a real VAE.
 from __future__ import annotations
 
 import argparse
-import logging
 import os
 from dataclasses import dataclass
 from typing import Any
@@ -23,8 +22,10 @@ import torch
 
 try:
     import lightning.pytorch as pl
+    from lightning.pytorch.utilities.rank_zero import rank_zero_info
 except ImportError:  # pragma: no cover
     import pytorch_lightning as pl  # type: ignore
+    from pytorch_lightning.utilities.rank_zero import rank_zero_info  # type: ignore
 
 from lightning.pytorch.callbacks import ModelCheckpoint
 
@@ -34,8 +35,6 @@ from ..metrics import FIDCallback
 from ..modules.latent_flow import LatentFlowModule
 from .metrics import LatentX0MAE, TrainLossLogger
 from .trainer import build_trainer
-
-_log = logging.getLogger(__name__)
 
 
 @dataclass
@@ -197,7 +196,7 @@ def run_training(
         )
         callbacks.append(fid)
     elif not val_enabled:
-        _log.warning(
+        rank_zero_info(
             "manifold-train: no held-out validation set is configured (the regular "
             "flow has no val-split plumbing). Validation is DISABLED - val/* metrics "
             "will not be logged. Reusing the train set as val would leak train metrics "
@@ -395,7 +394,7 @@ def main(argv: list[str] | None = None, *, data_provider=None) -> int:
             try:
                 return make_feature_network("resnet50")
             except Exception as exc:  # pragma: no cover - torch.hub/network only on gauss/dev
-                _log.warning("RadImageNet backbone unavailable (%r); FID will be skipped.", exc)
+                rank_zero_info("RadImageNet backbone unavailable (%r); FID will be skipped.", exc)
                 return None
 
     max_epochs = int(args.max_epochs or train_cfg.n_epochs)
@@ -453,18 +452,17 @@ def _warm_data(cfg, device) -> tuple[_DataBundle, int]:
         warm_latent_pipeline,
     )
 
-    logger = logging.getLogger("manifold.train")
     inf_cfg = cfg.diffusion_unet_inference
     target_dim = tuple(int(d) for d in inf_cfg.dim)
     vol_ds, _ = build_volume_dataset(
-        cfg, target_dim=target_dim, include_modality=True, default_modality=int(inf_cfg.modality), logger=logger
+        cfg, target_dim=target_dim, include_modality=True, default_modality=int(inf_cfg.modality)
     )
     # Build the VAE on CPU pre-PG (the launch-time ``device`` is the default cuda:0,
     # which under DDP would load on GPU 0 before LOCAL_RANK is known). The warm
     # re-stages it onto the per-rank local GPU inside setup() (P1/ADR-0017); FID's
     # decode stages it to the UNet device at eval (rank 0). The CPU encode_fn built
     # here is unused on the cold path (rebuilt on the local device in warm_fn).
-    autoencoder, _cpu_encode_fn = build_encode_pipeline(cfg, device=torch.device("cpu"), logger=logger)
+    autoencoder, _cpu_encode_fn = build_encode_pipeline(cfg, device=torch.device("cpu"))
     cache_dir = str(opt(cfg, "latent_cache_dir", os.path.join(str(cfg.model_dir), "latent_cache")))
     scale_sample = int(opt(cfg, "val_subset_size", 32))
 
@@ -479,7 +477,7 @@ def _warm_data(cfg, device) -> tuple[_DataBundle, int]:
         return warm_latent_pipeline(
             vol_ds, encode_fn, autoencoder,
             cache_dir=cache_dir, cache_tag="train",
-            device=warm_device, logger=logger,
+            device=warm_device,
             scale_factor_sample_size=scale_sample,
         )
 

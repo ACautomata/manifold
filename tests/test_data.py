@@ -277,7 +277,6 @@ def test_warm_latent_pipeline_orchestration(tmp_path) -> None:
         cache_dir=str(tmp_path / "cache"),
         cache_tag="test",
         device=torch.device("cpu"),
-        logger=None,
         scale_factor_sample_size=4,
     )
     assert bundle.latent_ds.encode_fn is None  # encoder freed after warm

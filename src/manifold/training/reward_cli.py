@@ -22,7 +22,6 @@ precompute (and offline inspection); the offline *train*-pair path is superseded
 from __future__ import annotations
 
 import argparse
-import logging
 from dataclasses import dataclass
 from typing import Any
 
@@ -30,8 +29,10 @@ import torch
 
 try:
     import lightning.pytorch as pl
+    from lightning.pytorch.utilities.rank_zero import rank_zero_info
 except ImportError:  # pragma: no cover
     import pytorch_lightning as pl  # type: ignore
+    from pytorch_lightning.utilities.rank_zero import rank_zero_info  # type: ignore
 
 from lightning.pytorch.callbacks import ModelCheckpoint
 
@@ -40,8 +41,6 @@ from ..data.datamodule import build_datamodule
 from ..models.reward_model import RewardModel
 from ..modules.reward import RewardModule
 from .trainer import build_trainer, is_multi_gpu
-
-_log = logging.getLogger(__name__)
 
 
 @dataclass
@@ -323,7 +322,7 @@ def _real_inputs(cfg, native_dir: str, latents_dir: str, device: torch.device) -
             f"Empty train ({len(train_items)}) or val ({len(val_items)}) subject split "
             f"from {len(items)} latents — adjust reward.val_fraction."
         )
-    _log.info(
+    rank_zero_info(
         "online reward inputs: %d train / %d val subjects (%d / %d latents).",
         len(train_subjects), len(val_subjects), len(train_items), len(val_items),
     )

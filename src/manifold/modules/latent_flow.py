@@ -19,20 +19,18 @@ The x0-denoiser forward: ``t = 1 → data`` matches the scheduler and the sample
 
 from __future__ import annotations
 
-import logging
 import math
 from typing import Any, Iterable
 
 import stable_pretraining as spt
 import torch
 import torch.nn.functional as F
+from lightning.pytorch.utilities.rank_zero import rank_zero_info
 from torch import Tensor
 
 from ..models.unet_3d_condition import UNet3DConditionModel
 from ..schedulers.scheduling_flow_match_heun import FlowMatchHeunDiscreteScheduler
 from .sampler import sample_latent_flow
-
-_log = logging.getLogger(__name__)
 
 #: A training batch: a scaled latent + medical conditioning. The data stack
 #: (deferred) produces these; this module only consumes them.
@@ -126,7 +124,7 @@ def resolve_warmup_steps(
     # last update and the whole run stays on the linear ramp.
     horizon = max(0, total - 1)
     if steps > horizon:
-        _log.warning(
+        rank_zero_info(
             "lr_warmup_steps=%d leaves no room for the cosine peak over %d "
             "optimizer steps (peak LR would never be reached); clamping warmup "
             "to %d so the peak is still hit. Set lr_warmup_ratio to scale "
@@ -347,7 +345,7 @@ class LatentFlowModule(spt.Module):
             eff_desc = "unknown (train_batch_size=None) → no scaling, peak = base"
         total = self._total_optimizer_steps()
         warmup = resolve_warmup_steps(self.lr_warmup_steps, self.lr_warmup_ratio, total)
-        _log.info(
+        rank_zero_info(
             "LR schedule: base=%.3e -> peak=%.3e (eff_batch: %s; rule=%s; "
             "warmup=%d/%d optimizer steps)",
             self.lr, peak_lr, eff_desc, self.lr_scale_rule, warmup, total,

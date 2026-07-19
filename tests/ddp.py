@@ -543,7 +543,7 @@ def cold_cache_ddp_worker(rank: int, world: int, results_dir: str, port: str, n_
             vol_ds, counting_encode, vae,
             cache_dir=str(__import__("pathlib").Path(results_dir) / "cache"),
             cache_tag="cold_test", device=__import__("torch").device("cpu"),
-            logger=None, scale_factor_sample_size=min(n_volumes, 4),
+            scale_factor_sample_size=min(n_volumes, 4),
         )
 
     torch.manual_seed(0)

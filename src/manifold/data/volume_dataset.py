@@ -21,6 +21,7 @@ from typing import Any
 import nibabel as nib
 import numpy as np
 import torch
+from lightning.pytorch.utilities.rank_zero import rank_zero_info
 
 from .base import LabelProvider, MedicalDataset
 from .transforms import normalize_to_01, pad_to_divisible, resize_to
@@ -118,9 +119,7 @@ class NiftiVolumeDataset(MedicalDataset):
                 continue
             items.append((path, dict(meta), int(label)))
         if skipped:
-            import logging
-
-            logging.getLogger(__name__).info(
+            rank_zero_info(
                 f"NiftiVolumeDataset: kept {len(items)}, skipped {skipped} "
                 f"file(s) (no label from provider or missing on disk)."
             )

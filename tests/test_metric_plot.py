@@ -10,7 +10,6 @@ no-CSV / no-logger no-ops, single-point visibility, and per-epoch overwrite.
 from __future__ import annotations
 
 import builtins
-import logging
 import os
 from types import SimpleNamespace
 
@@ -238,7 +237,7 @@ def test_missing_matplotlib_warns_once(tmp_path, csv_logger, monkeypatch, caplog
 
     monkeypatch.setattr(builtins, "__import__", missing_matplotlib)
     cb = MetricsPlotCallback()
-    caplog.set_level(logging.WARNING)
+    caplog.set_level("INFO")
     cb.on_train_epoch_end(_trainer([csv_logger]), module=None)
     cb.on_fit_end(_trainer([csv_logger]), module=None)
     messages = [r.message for r in caplog.records if "matplotlib is unavailable" in r.message]

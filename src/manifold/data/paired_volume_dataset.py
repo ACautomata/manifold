@@ -23,7 +23,6 @@ encode cost is independent of pair count.
 from __future__ import annotations
 
 import hashlib
-import logging
 import os
 from pathlib import Path
 from typing import Any
@@ -31,6 +30,7 @@ from typing import Any
 import nibabel as nib
 import numpy as np
 import torch
+from lightning.pytorch.utilities.rank_zero import rank_zero_info
 
 from .base import MedicalDataset
 from .transforms import normalize_to_01, pad_to_divisible, resize_to
@@ -102,7 +102,7 @@ class PairedNiftiVolumeDataset(MedicalDataset):
                 }
             )
         if self._pairs:
-            logging.getLogger(__name__).info(
+            rank_zero_info(
                 f"PairedNiftiVolumeDataset: {len(self._pairs)} pairs over "
                 f"{len(self._volumes)} unique volumes "
                 f"(encode cost = unique volumes, not pairs)."

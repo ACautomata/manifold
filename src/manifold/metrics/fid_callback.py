@@ -25,14 +25,14 @@ skips. Configurable via an optional ``fid_eval`` block.
 
 from __future__ import annotations
 
-import logging
-
 import torch
 
 try:
     import lightning.pytorch as pl
+    from lightning.pytorch.utilities.rank_zero import rank_zero_info
 except ImportError:  # pragma: no cover — lightning is a hard dep via spt
     import pytorch_lightning as pl  # type: ignore
+    from pytorch_lightning.utilities.rank_zero import rank_zero_info  # type: ignore
 
 from .fid import (
     frechet_from_moments,
@@ -40,9 +40,6 @@ from .fid import (
     moments_from_sufficient_stats,
     get_features_2p5d,
 )
-
-
-_log = logging.getLogger(__name__)
 
 
 class FIDCallback(pl.Callback):
@@ -163,7 +160,7 @@ class FIDCallback(pl.Callback):
                 try:
                     self.feature_net = self.feature_net_factory()
                 except Exception:  # pragma: no cover - backbone load failure
-                    _log.warning("RadImageNet backbone build failed; FID will be skipped.", exc_info=True)
+                    rank_zero_info("RadImageNet backbone build failed; FID will be skipped.", exc_info=True)
                     self.feature_net = None
             if self.feature_net is None:
                 self._fid_disabled = True
