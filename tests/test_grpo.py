@@ -1101,3 +1101,84 @@ def test_mode2_conditioning_reads_src_tgt_labels():
     assert torch.equal(class_labels, torch.tensor([2, 3]))
     assert torch.equal(src_labels, torch.tensor([1, 0]))
     assert torch.equal(tgt_labels, torch.tensor([2, 3]))
+
+
+# -- Mode-2 CLI entry point (#141): --grpo-mode 2 on the GRPO entry point --------
+
+
+class _ToyPairedCondDS(Dataset):
+    """A tiny PAIRED conditioning dataset for Mode-2 (train/val).
+
+    Emits ``{spacing, src_latent, src_label, tgt_label}`` — the ControlNet's control
+    signal + translation direction. GRPO samples the group noise; the paired batch
+    carries only the ControlNet condition (the rollout's stochastic input).
+    """
+
+    def __init__(self, n: int = 4):
+        self.n = n
+
+    def __len__(self):
+        return self.n
+
+    def __getitem__(self, i):
+        return {
+            "spacing": torch.tensor([1.0, 1.0, 1.0]),
+            "src_latent": torch.randn(4, 16, 16, 8),
+            "src_label": torch.tensor(1, dtype=torch.long),
+            "tgt_label": torch.tensor(2, dtype=torch.long),
+        }
+
+
+def _mode2_inputs():
+    """Mode-2 injection-seam bundle: frozen base + trainable ControlNet + reward + paired conditioning."""
+    from manifold.training.grpo_cli import GRPOInputs
+
+    base = _mode2_base()
+    cn = _mode2_controlnet(base)
+    return GRPOInputs(
+        policy=base,
+        reward_model=_mode2_reward(),
+        scheduler=FlowMatchGRPOScheduler(eta=0.5),
+        train_ds=_ToyPairedCondDS(),
+        val_ds=_ToyPairedCondDS(),
+        latent_shape=(4, 16, 16, 8),
+        controlnet=cn,
+    )
+
+
+def test_main_runs_end_to_end_mode2(tmp_path):
+    """main() ``--grpo-mode 2``: the ControlNet path runs end-to-end via the CLI seam.
+
+    The Mode-2 entry-point acceptance (#141): ``--grpo-mode 2`` freezes the base
+    UNet and trains the ControlNet against the condition-aware reward. The
+    data_provider injects a frozen base + trainable ControlNet + paired conditioning;
+    main wires ``controlnet`` / ``freeze_unet`` into GRPOModule (the --grpo-mode
+    flag's load-bearing path) and writes a checkpoint.
+    """
+    from manifold.training.grpo_cli import main as grpo_main
+
+    env, train, net = _write_tiny_configs(tmp_path)
+    rc = grpo_main(
+        ["-e", env, "-c", train, "-t", net, "-g", "1", "--max-epochs", "1",
+         "--grpo-mode", "2", "grpo_train.latent_shape=[4,16,16,8]"],
+        data_provider=lambda cfg, device: _mode2_inputs(),
+    )
+    assert rc == 0
+    ckpts = list(Path(str(tmp_path / "model")).glob("*.ckpt"))
+    assert any(p.name == "last.ckpt" for p in ckpts)
+
+
+def test_main_mode2_requires_controlnet(tmp_path):
+    """``--grpo-mode 2`` without a ControlNet (Mode-1 inputs) fails fast at main.
+
+    The Mode-2 guard: ``--grpo-mode 2`` requires ``GRPOInputs.controlnet`` (the data
+    provider / real inputs must supply it); Mode-1 inputs have none.
+    """
+    from manifold.training.grpo_cli import main as grpo_main
+
+    env, train, net = _write_tiny_configs(tmp_path)
+    with pytest.raises(ValueError, match="ControlNet"):
+        grpo_main(
+            ["-e", env, "-c", train, "-t", net, "-g", "1", "--grpo-mode", "2"],
+            data_provider=lambda cfg, device: _inputs(),  # Mode-1 inputs — no controlnet
+        )

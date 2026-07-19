@@ -1,0 +1,75 @@
+# ControlNet supervised recipe preset — ADR-0027 stage 1. Trains a ControlNet on
+# the FROZEN noise→data JiT UNet to translate x_src → x_tgt (paired MRI) before any
+# GRPO. Composed with a BraTS2023 env + the network config (the base UNet
+# architecture; the ControlNet clones the base encoder, so no separate architecture
+# block here). The frozen base loads from --native-dir (a JiT native export); the
+# ControlNet starts from a zero-conv clone of the base encoder (a safe warm-start).
+#
+# Consumed by manifold-train-controlnet (default -c). The loss is the same
+# (1-t)^-2-weighted velocity-MSE the base was trained with (ADR-0002), plus an
+# optional L1 term on the target prediction (the L1+direction lever from the prior
+# paired experiments, default off). Only the ControlNet is optimized; the base is
+# frozen + unregistered (ADR-0026/0027).
+
+diffusion_unet_train:
+  batch_size: 8
+  cache_rate: 0
+  lr: 1.0e-4            # base peak LR at lr_ref_batch_size (auto-scales with the effective batch)
+  n_epochs: 1000
+  lr_scheduler: cosine
+  lr_warmup_steps: 1000
+  # Peak-LR auto-scaling by effective batch (per-device batch × world size). The
+  # ``lr`` above is the peak AT ``lr_ref_batch_size``; the runtime derives the
+  # actual peak (see scaled_peak_lr) so a GPU-count / batch change never needs a
+  # hand-retuned LR. At eff==ref the factor is 1.0 → the single-GPU recipe is
+  # numerically unchanged.
+  lr_ref_batch_size: 8  # effective batch at which ``lr`` is the peak (8 = the single-GPU recipe)
+  lr_scale_rule: sqrt   # peak = base_lr × (eff_batch/ref)^(rule) ; sqrt | linear | none
+  # lr_warmup_ratio:    # optional: warmup as a fraction of total optimizer steps (overrides lr_warmup_steps)
+
+# The x0-denoiser Formulation (ADR-0002) — identical transport to JiT (the frozen
+# base defines it); the ControlNet only adds the residual injections. Each knob is
+# overridable via CLI/dotlist (e.g. `formulation.p_mean=-1.0`).
+formulation:
+  mode: x0-denoiser
+  p_mean: -0.8           # t ~ sigmoid(N(p_mean, p_std))
+  p_std: 0.8
+  t_eps: 0.05            # (1-t)^-2 loss / derived-velocity clamp
+  noise_scale: 1.0       # noise-std multiplier on the normalized latent
+  # Optional L1 (MAA) term on the target prediction (default 0.0 = off). The
+  # L1+direction-offset lever from the prior paired experiments; non-trivial only
+  # alongside the direction conditioning already on the ControlNet.
+  l1_weight: 0.0
+
+# Paired-MRI validation + the shared noise→data rollout. The ControlNet translates
+# a held-out src latent toward its tgt contrast; the rollout step count matches the
+# JiT denoiser's production inference count. No unconditional FID here (the
+# ControlNet is a conditional translator — there is no unconditional path to guide
+# against); selection is on the supervised val loss.
+controlnet:
+  num_inference_steps: 15   # Heun steps for the validation rollout (mirrors JiT inference)
+
+# Stock Lightning ModelCheckpoint (ADR-0006): the raw optimizer arm (no EMA —
+# ADR-0006). Single-GPU monitors the supervised val loss; under DDP falls back to
+# save_last + every_n_epochs with no monitor (rank-local selection is unreliable).
+checkpoint:
+  save_top_k: 3
+  save_last: true
+  every_n_epochs: 1        # DDP fallback cadence (no monitor)
+
+# The paired latent target shape + voxel spacing (the BraTS volume the VAE encodes
+# each unique contrast of). Reused by the paired data stack for the latent cache
+# key (target_dim) and the validation rollout's spacing.
+diffusion_unet_inference:
+  dim: [256, 256, 128]          # volume target shape [D, H, W] (the VAE encodes to latent // divisor)
+  spacing: [1.7, 1.7, 2]
+  top_region_index: [0, 1, 0, 0]
+  bottom_region_index: [0, 0, 1, 0]
+  random_seed: 0
+  num_inference_steps: 15
+  modality: 1
+  cfg_guidance_scale: 1.5
+  autoencoder_sliding_window_infer_size: [80, 80, 80]
+  autoencoder_sliding_window_infer_overlap: 0.4
+  autoencoder_encode_sliding_window_infer_size: [320, 320, 160]
+  autoencoder_encode_sliding_window_infer_overlap: 0.4

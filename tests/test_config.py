@@ -20,6 +20,7 @@ from omegaconf.errors import MissingMandatoryValue
 
 from manifold import (
     AutoencoderKL,
+    ControlNet3DConditionModel,
     FlowMatchHeunDiscreteScheduler,
     LatentFlowPipeline,
     UNet3DConditionModel,
@@ -33,7 +34,7 @@ from manifold.config import (
     opt,
     require_paths,
 )
-from manifold.config.builder import build_unet
+from manifold.config.builder import build_controlnet, build_unet
 
 # A tiny CPU-runnable network config (mirrors the conftest fixtures: 2-level VAE
 # divisor 2 → latent [1,4,4,4,4] decodes to image [1,1,8,8,8]). The shipped real
@@ -332,6 +333,66 @@ def test_jit_recipe_carries_x0_formulation() -> None:
     # The numerical-validation defaults (issue #18): 15 Heun steps, cfg 1.5.
     assert cfg.diffusion_unet_inference.num_inference_steps == 15
     assert cfg.diffusion_unet_inference.cfg_guidance_scale == 1.5
+
+
+# -- ControlNet recipes + builder (issue #141 / ADR-0027) ---------------------
+
+
+def test_controlnet_supervised_recipe_loads() -> None:
+    """The ControlNet supervised recipe loads + carries the x0 Formulation + the L1 knob."""
+    cfg = load_config(
+        str(_REPOS / "configs/env/environment_brats2023.yaml"),
+        str(_REPOS / "configs/train/config_controlnet_supervised.yaml"),
+        str(_REPOS / "configs/network/config_network.yaml"),
+    )
+    assert cfg.formulation.mode == "x0-denoiser"
+    assert cfg.formulation.l1_weight == 0.0  # the L1+direction lever, default off
+    assert cfg.diffusion_unet_train.lr == 1.0e-4
+    assert cfg.controlnet.num_inference_steps == 15  # validation rollout resolution
+
+
+def test_controlnet_grpo_recipe_loads() -> None:
+    """The ControlNet GRPO recipe (Mode-2) loads + carries the grpo_train block."""
+    cfg = load_config(
+        str(_REPOS / "configs/env/environment_brats2023.yaml"),
+        str(_REPOS / "configs/train/config_controlnet_grpo.yaml"),
+        str(_REPOS / "configs/network/config_network.yaml"),
+    )
+    # Smaller LR than the UNet policy recipe (warm-started from the supervised stage).
+    assert cfg.grpo_train.lr == 1.0e-7
+    assert list(cfg.grpo_train.eta_step_list) == [0, 1, 2, 3, 4, 5, 6, 7]
+    assert cfg.checkpoint.save_top_k == 1
+
+
+def test_build_controlnet_maps_diffusion_unet_block(tmp_path: Path) -> None:
+    """build_controlnet maps the diffusion_unet block to ControlNet kwargs + forwards on CPU.
+
+    Two keys differ from the base (ADR-0026): ``out_channels`` is base-only (the
+    ControlNet has no output conv) and ``controlnet_cond_channels`` defaults to
+    ``in_channels`` (the ``x_src`` latent width). The ControlNet forward emits the
+    base's residual-injection args.
+    """
+    env = _write(tmp_path / "env.yaml", _BASE_ENV)
+    train = _write(tmp_path / "train.yaml", _TRAIN)
+    net = _write(tmp_path / "net.yaml", _TINY_NETWORK)
+    cfg = load_config(env, train, net)
+    cn = build_controlnet(cfg)
+    assert type(cn) is ControlNet3DConditionModel
+    assert cn.config["controlnet_cond_channels"] == cfg.diffusion_unet.in_channels == 4
+    # out_channels is NOT a ControlNet config key (it was popped — base-only).
+    assert "out_channels" not in cn.config
+
+    z = torch.randn(1, 4, 4, 4, 4)
+    down_res, mid_res = cn(
+        sample=z,
+        controlnet_cond=torch.randn_like(z),
+        timestep=torch.tensor(0.5),
+        spacing=torch.tensor([1.0, 1.0, 1.0]),
+        class_labels_src=torch.tensor([1]),
+        class_labels_tgt=torch.tensor([2]),
+    )
+    assert mid_res is not None
+    assert len(down_res) > 0
 
 
 def test_env_configs_are_tracked_in_repo() -> None:

@@ -67,6 +67,11 @@ manifold-train-grpo = "manifold.training.grpo_cli:main"
 # The frozen ControlNet generator loads from --native-dir (the supervised
 # ControlNet's noise→data export, ADR-0027/T7).
 manifold-train-paired-reward = "manifold.training.paired_reward_cli:main"
+# The ControlNet supervised launcher (issue #141 / ADR-0027 stage 1): a frozen JiT
+# base UNet + a trainable ControlNet over the paired MRI latent cache -> fit. The
+# frozen base loads from --native-dir (a JiT native export); the paired cache from
+# --latents-dir. Stage 2 (ControlNet GRPO) runs via manifold-train-grpo --grpo-mode 2.
+manifold-train-controlnet = "manifold.training.controlnet_cli:main"
 
 [project.urls]
 Homepage = "https://github.com/junran/manifold"
