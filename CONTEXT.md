@@ -159,6 +159,69 @@ estimator; RadImageNet ResNet50 backbone, 2.5D (three orthogonal planes).
 Distinct from the legacy biased plug-in FID.
 _Avoid_: biased FID, plain FID.
 
+### Training callbacks & device ownership (ADR-0029–0033, pending)
+
+> The four-point architecture refactor (issue #157): make callbacks config-driven
+> + CLI-addable, single-responsibility, let Lightning own device, collapse the CLI
+> spines, eliminate `scripts/`. ADRs written; implementation pending. The
+> four-component layout (Model / Scheduler / Module / Pipeline) above is unchanged —
+> these terms name the *training-side* glue around it.
+
+**Callback registry**:
+The single `CallbackRegistry` mapping a callback **name** to a `CallbackSpec` (a
+`@dataclass` implementing `build(ctx) -> pl.Callback`), so the five training CLIs
+stop hand-assembling callback lists — a `callbacks:` config list and a `--callbacks`
+CLI flag both build the list through the registry. Construction is **two-phase**:
+`resolve` (config-time: validate names + knobs, fail-fast) then `build` (fit-prep:
+inject runtime objects via a typed `CallbackContext`), because generative callbacks
+(FID) need runtime objects (`module`, `vae`, `datamodule`) absent at config
+resolution. `ModelCheckpoint` is itself a registered spec (`name="checkpoint"`,
+with monitor validation). ADR-0029.
+_Avoid_: callback factory, callback config.
+
+**Frozen arm** (registered + dual-excluded):
+A submodule held frozen during training — the reward Module's JiT denoiser; the
+GRPO Module's reward model + reference policy; the ControlNet Module's frozen base
+UNet. Stays **off the optimizer** (built over only the trainable arm's params,
+`requires_grad=False`) and **off the checkpoint** (`state_dict()` /
+`load_state_dict()` overridden to strip its keys). Registered as a normal
+`nn.Module` child so Lightning's automatic `.to(device)` moves it (ADR-0031) —
+replacing the prior `object.__setattr__` unregistered-storage bypass that forced
+manual `on_fit_start` moves. Under DDP, `broadcast_buffers=False` keeps it off the
+per-step buffer broadcast. Bare-tensor probes (`val_probe`) stay manually moved
+(tensors cannot register).
+_Avoid_: frozen module (say frozen arm — it names the off-optimizer /
+off-checkpoint role, not merely `requires_grad=False`).
+
+**DevicePolicy**:
+The object that resolves `cuda:{LOCAL_RANK}` from the launcher environment for
+**pre-Trainer** model staging (`_real_inputs` rollouts, fake-cache builders, VAE
+cache-warm) — the models that run before `Trainer.fit`, when no process group
+exists and Lightning cannot manage them. Owns the PR #156 cuda:0-under-DDP
+contention fix in one place. Distinct from Lightning's automatic `.to(device)`,
+which owns the in-Trainer **frozen arms**. ADR-0031.
+_Avoid_: device manager, device resolver.
+
+**TrainingSpine**:
+The composed object (a `@dataclass`, not a base class) owning the shared training
+sequence — seed → callback-name merging → registry `resolve/build` → checkpoint
+injection → `build_trainer` → `fit`. The five `run_*` functions shrink to thin
+shells that build their own `module` + `datamodule` and delegate; the per-CLI
+`_real_inputs` data-assembly paths stay put (genuinely different). The single
+caller of the callback registry, and the one place that changes when a new callback
+lands. ADR-0032.
+_Avoid_: training runner, base trainer.
+
+**Collective-count invariance** (FID, DDP):
+The DDP correctness property that every rank enters the same number of `all_reduce`
+collectives in every code path of the FID staged phase. Enforced by wrapping the
+staged phase in a `try/except` that `all_reduce`s an error flag (MAX) on any
+rank-local exception, so all ranks take the same abort branch together — instead
+of the failing rank exiting while others block in the next collective (a deadlock).
+Generalizes the FID disable-flag collective; narrows ADR-0025's symmetric-all-reduce
+rule to a per-path count guarantee. ADR-0030.
+_Avoid_: DDP guard, collective symmetry (that is ADR-0025's broader rule).
+
 ### Reward model (GRPO)
 
 **Reward Model**:
