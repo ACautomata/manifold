@@ -202,6 +202,146 @@ def test_run_training_skips_validation_when_no_held_out_val(tmp_path):
     assert trainer.check_val_every_n_epoch is not None
 
 
+def test_run_training_enables_val_when_has_val(tmp_path):
+    """bundle.has_val=True (a held-out val split is configured) enables validation:
+    FIDCallback + LatentX0MAE attach and val/fid is logged. Mirrors the production
+    path where _warm_data warms val_data_base_dir into val_latent_ds (cold path:
+    warm_fn returns the (train_ds, vae, val_latent_ds) triple)."""
+    class _ValLatentDS(Dataset):
+        scaling_factor = 0.5
+
+        def __len__(self):
+            return 6
+
+        def _lat(self, i):
+            torch.manual_seed(i)
+            return torch.randn(4, 4, 4, 4)
+
+        def raw_latent(self, i):
+            return self._lat(i)
+
+        def __getitem__(self, i):
+            return {
+                "latent": self._lat(i) * self.scaling_factor,
+                "spacing": torch.tensor([1.0, 1.0, 1.0]),
+                "label": torch.tensor(i % 3, dtype=torch.long),
+            }
+
+    vae = AutoencoderKL(scaling_factor=0.5)
+    train_ds, val_ds = _LatentDS(), _ValLatentDS()
+
+    def warm_fn():
+        return train_ds, vae, val_ds
+
+    bundle = _DataBundle(vae=vae, warm_fn=warm_fn, has_val=True)
+    trainer, ckpt = run_training(
+        module=_module(), bundle=bundle, feature_net=_FakeFeatureNet(),
+        model_dir=str(tmp_path), max_epochs=1, devices=1, accelerator="cpu",
+        enable_fid=True, num_synth=2, limit_val_batches=2, cov_ridge=1e-2,
+        val_subset_size=4,
+        # Cold path (val_latents=None): the latent_shape must be supplied explicitly
+        # (main() derives it via _derive_latent_shape); match _ValLatentDS's (4,4,4,4).
+        inference_recipe={
+            "latent_shape": (1, 4, 4, 4, 4), "spacing": [1.0, 1.0, 1.0], "modality": 1,
+            "num_inference_steps": 2, "guidance_scale": 1.0, "cfg_interval": None,
+        },
+    )
+    assert any(type(c).__name__ == "FIDCallback" for c in trainer.callbacks)
+    assert any(type(c).__name__ == "LatentX0MAE" for c in trainer.callbacks)
+    assert ckpt.monitor == "val/fid"  # held-out val -> monitor active
+    assert "val/fid" in trainer.callback_metrics
+
+
+# -- held-out val plumbing (_warm_data reads val_data_base_dir) ----------------
+
+
+def test_warm_data_marks_has_val_for_val_dir(tmp_path, monkeypatch):
+    """_warm_data sets bundle.has_val=True when val_data_base_dir is a directory
+    and its warm_fn returns the (train_latent_ds, vae, val_latent_ds) triple with
+    the train-estimated scale_factor propagated to the val cache (scale-consistency:
+    one factor over both splits, never re-estimated on val)."""
+    from manifold.data import latent_dataset as lds_mod
+    from manifold.data import latent_pipeline, volume_dataset
+    from manifold.training.cli import _warm_data
+
+    (tmp_path / "val").mkdir()  # existing directory -> has_val=True
+
+    class _FakeVAE:
+        def to(self, device):
+            return self
+
+    class _FakeVolDs:
+        def __len__(self):
+            return 8
+
+    class _FakeLatentDs:
+        def __init__(self):
+            self.scaling_factor = 1.0
+
+        def warm_cache(self, device, show_progress=True):
+            pass
+
+        def free_encoder(self):
+            pass
+
+    class _FakePipeline:
+        latent_ds = _FakeVolDs()
+        autoencoder = _FakeVAE()
+        scale_factor = 2.5
+
+    fake_val_ds = _FakeLatentDs()
+    monkeypatch.setattr(latent_pipeline, "build_volume_dataset",
+                        lambda cfg, **kw: (_FakeVolDs(), lambda fn, meta: 0))
+    monkeypatch.setattr(latent_pipeline, "build_encode_pipeline",
+                        lambda cfg, **kw: (_FakeVAE(), "encode_fn"))
+    monkeypatch.setattr(volume_dataset, "NiftiVolumeDataset",
+                        lambda *a, **kw: _FakeVolDs())
+    monkeypatch.setattr(lds_mod, "LatentDataset", lambda *a, **kw: fake_val_ds)
+    monkeypatch.setattr(latent_pipeline, "warm_latent_pipeline",
+                        lambda *a, **kw: _FakePipeline())
+
+    cfg = OmegaConf.create({
+        "data_base_dir": str(tmp_path / "train"),
+        "val_data_base_dir": str(tmp_path / "val"),
+        "model_dir": str(tmp_path / "model"),
+        "val_subset_size": 4,
+        "diffusion_unet_inference": {"dim": [4, 4, 4], "modality": 1},
+        "autoencoder": {"num_channels": [8, 8]},
+    })
+    bundle, num_examples = _warm_data(cfg, torch.device("cpu"))
+    assert bundle.has_val is True
+    assert num_examples == 8
+
+    train_ds, vae, val_ds = bundle.warm_fn()
+    assert val_ds is fake_val_ds
+    assert fake_val_ds.scaling_factor == 2.5  # train scale propagated to val
+
+
+def test_warm_data_no_val_when_val_data_base_dir_unset(tmp_path, monkeypatch):
+    """_warm_data leaves has_val=False when val_data_base_dir is unset (validation
+    stays disabled — the pre-held-out-val behavior)."""
+    from manifold.data import latent_pipeline
+    from manifold.training.cli import _warm_data
+
+    class _FakeVolDs:
+        def __len__(self):
+            return 8
+
+    monkeypatch.setattr(latent_pipeline, "build_volume_dataset",
+                        lambda cfg, **kw: (_FakeVolDs(), lambda fn, meta: 0))
+    monkeypatch.setattr(latent_pipeline, "build_encode_pipeline",
+                        lambda cfg, **kw: ("vae", "encode_fn"))
+
+    cfg = OmegaConf.create({
+        "data_base_dir": str(tmp_path / "train"),
+        "model_dir": str(tmp_path / "model"),
+        "diffusion_unet_inference": {"dim": [4, 4, 4], "modality": 1},
+        "autoencoder": {"num_channels": [8, 8]},
+    })
+    bundle, _ = _warm_data(cfg, torch.device("cpu"))
+    assert bundle.has_val is False
+
+
 def test_build_checkpoint_monitor_matches_logged_arm(tmp_path):
     """The checkpoint monitor tracks the single arm that is logged: ``val/fid``
     (the raw optimizer arm). A mismatch would make Lightning error on a

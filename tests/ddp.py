@@ -539,12 +539,15 @@ def cold_cache_ddp_worker(rank: int, world: int, results_dir: str, port: str, n_
         dist_at_warm[0] = __import__("torch").distributed.is_initialized()
         from manifold.data.latent_pipeline import warm_latent_pipeline
 
-        return warm_latent_pipeline(
+        pipeline = warm_latent_pipeline(
             vol_ds, counting_encode, vae,
             cache_dir=str(__import__("pathlib").Path(results_dir) / "cache"),
             cache_tag="cold_test", device=__import__("torch").device("cpu"),
             scale_factor_sample_size=min(n_volumes, 4),
         )
+        # LatentWarmDataModule.setup() expects (latent_ds, autoencoder,
+        # val_latent_ds); no held-out val on this cold-cache fixture -> None.
+        return pipeline.latent_ds, pipeline.autoencoder, None
 
     torch.manual_seed(0)
     module = _tiny_jit_module()

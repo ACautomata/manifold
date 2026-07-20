@@ -54,9 +54,12 @@ class _DataBundle:
       ``= len(vol_ds)``) so it does not need ``len(latent_ds)`` pre-warm.
 
     ``allow_train_as_val``: smoke-only opt-in to reuse the train cache as the val
-    loader + derive ``val_latents`` from it. Production leaves it ``False``: the
-    regular flow has no held-out val split, so :func:`run_training` DISABLES
-    validation (no FID, no ``val/x0_mae``) rather than leak train metrics as val.
+    loader + derive ``val_latents`` from it. Production leaves it ``False``.
+    ``has_val``: production flag — a held-out val split (``val_data_base_dir``) is
+    configured and ``warm_fn`` will materialize ``val_latent_ds`` inside
+    ``setup()``; :func:`run_training` then ENABLES validation (FID + ``val/x0_mae``).
+    When both ``allow_train_as_val`` and ``has_val`` are ``False`` (no held-out val
+    source), validation is DISABLED rather than leak train metrics as val.
     """
 
     latent_ds: Any = None
@@ -64,6 +67,7 @@ class _DataBundle:
     val_latents: torch.Tensor | None = None
     warm_fn: Any = None
     allow_train_as_val: bool = False
+    has_val: bool = False
 
 
 def _dict_subset(d: dict | None, keys: tuple[str, ...]) -> dict:
@@ -147,13 +151,13 @@ def run_training(
         feature_net: the FID feature network (RadImageNet, or a test fake).
         ckpt_path: optional warm-start / resume checkpoint passed to ``fit``.
     """
-    # Validation requires a held-out set. The regular ``manifold-train`` flow has
-    # no val-split plumbing, so production (allow_train_as_val=False) DISABLES
-    # validation rather than silently reuse the train set - val/* metrics would
-    # otherwise be train metrics (val/train leakage). The CPU smoke opts in via
-    # allow_train_as_val=True to exercise the FID + x0-MAE plumbing on the train
-    # fixture (it tests wiring, not held-out generalization).
-    val_enabled = bundle.allow_train_as_val
+    # Validation requires a held-out set. Two ways in: (1) the production held-out
+    # val split (bundle.has_val — warmed from ``val_data_base_dir`` in setup()), or
+    # (2) the CPU smoke opt-in (allow_train_as_val=True, reuses the train fixture to
+    # exercise the FID + x0-MAE plumbing — it tests wiring, not held-out
+    # generalization). With neither, validation is DISABLED rather than silently
+    # reuse the train set (val/* metrics would otherwise be train metrics — leakage).
+    val_enabled = bundle.allow_train_as_val or bundle.has_val
     callbacks: list = [TrainLossLogger()]
     if val_enabled:
         callbacks.append(LatentX0MAE())
@@ -197,10 +201,11 @@ def run_training(
         callbacks.append(fid)
     elif not val_enabled:
         rank_zero_info(
-            "manifold-train: no held-out validation set is configured (the regular "
-            "flow has no val-split plumbing). Validation is DISABLED - val/* metrics "
-            "will not be logged. Reusing the train set as val would leak train metrics "
-            "into validation, which is refused; wire a held-out val source to enable."
+            "manifold-train: no held-out validation set is configured "
+            "(val_data_base_dir is unset or not a directory). Validation is DISABLED "
+            "- val/* metrics will not be logged. Reusing the train set as val would "
+            "leak train metrics into validation, which is refused; set "
+            "val_data_base_dir to a held-out BraTS directory to enable."
         )
 
     ckpt = _build_checkpoint(
@@ -438,12 +443,21 @@ def _warm_data(cfg, device) -> tuple[_DataBundle, int]:
     ADR-0017 / F1+F4 (issue #84): the warm is DEFERRED to ``DataModule.setup()``
     (post-PG) so the per-rank ``i % world == rank`` sharding activates. Returns a
     ``_DataBundle`` carrying ``warm_fn`` (a closure over
-    :func:`warm_latent_pipeline` - the atomic ``warm_cache`` -> ``free_encoder`` ->
-    ``estimate_scale_factor`` unit) with NO pre-warmed ``latent_ds`` / ``val_latents``
-    (those are populated inside ``setup()``). ``num_examples`` is the source volume
-    count ``len(vol_ds)`` (known pre-warm) so the Module's LR horizon is set without
-    needing ``len(latent_ds)``.
+    :func:`warm_latent_pipeline` for train + an optional held-out val warm) with NO
+    pre-warmed ``latent_ds`` / ``val_latents`` (those are populated inside
+    ``setup()``). ``num_examples`` is the source volume count ``len(vol_ds)``
+    (known pre-warm) so the Module's LR horizon is set without needing
+    ``len(latent_ds)``.
+
+    When ``cfg.val_data_base_dir`` is a BraTS directory, a held-out val
+    :class:`~manifold.data.NiftiVolumeDataset` is built (disjoint subjects from the
+    organizer ship split — no train/val leakage) and ``warm_fn`` warms it alongside
+    train; ``has_val`` is set so :func:`run_training` enables validation. The val
+    cache stores UNSCALED latents and reuses the train-estimated ``scale_factor``
+    (scale-on-read; one factor over both splits, never re-estimated on val).
     """
+    from ..config import autoencoder_divisor
+    from ..data.latent_dataset import LatentDataset
     from ..data.latent_pipeline import (
         build_encode_pipeline,
         build_volume_dataset,
@@ -451,12 +465,30 @@ def _warm_data(cfg, device) -> tuple[_DataBundle, int]:
         resolve_warm_device,
         warm_latent_pipeline,
     )
+    from ..data.volume_dataset import NiftiVolumeDataset
 
     inf_cfg = cfg.diffusion_unet_inference
     target_dim = tuple(int(d) for d in inf_cfg.dim)
-    vol_ds, _ = build_volume_dataset(
+    vol_ds, provider = build_volume_dataset(
         cfg, target_dim=target_dim, include_modality=True, default_modality=int(inf_cfg.modality)
     )
+    divisor = autoencoder_divisor(cfg)
+
+    # Held-out val volumes (the FID real set + the val/x0_mae loader). Only a BraTS
+    # *directory* is usable (mirrors paired_reward_cli._train_val_manifests); the
+    # organizer ship split is disjoint by subject, so there is no train/val leakage.
+    val_dir = opt(cfg, "val_data_base_dir", None)
+    has_val = bool(val_dir and os.path.isdir(str(val_dir)))
+    val_vol_ds = None
+    if has_val:
+        val_vol_ds = NiftiVolumeDataset(
+            str(val_dir), provider, target_dim, divisor, data_base_dir=str(val_dir)
+        )
+        if not len(val_vol_ds):
+            raise FileNotFoundError(
+                f"No validation NIfTI found under val_data_base_dir={val_dir}."
+            )
+
     # Build the VAE on CPU pre-PG (the launch-time ``device`` is the default cuda:0,
     # which under DDP would load on GPU 0 before LOCAL_RANK is known). The warm
     # re-stages it onto the per-rank local GPU inside setup() (P1/ADR-0017); FID's
@@ -473,16 +505,34 @@ def _warm_data(cfg, device) -> tuple[_DataBundle, int]:
         warm_device = resolve_warm_device(device)
         autoencoder.to(warm_device)
         encode_fn = make_encode_fn(autoencoder, warm_device, cfg)
+        # Warm the held-out val cache FIRST (while the VAE is still on the warm
+        # device): warm_latent_pipeline below frees the train encoder and moves the
+        # VAE to CPU. The val cache stores UNSCALED latents; the train-estimated
+        # scale_factor is applied as scale-on-read once the train warm completes
+        # (scale-consistency: one factor over both splits, never re-estimated on val).
+        val_latent_ds = None
+        if val_vol_ds is not None:
+            import torch.distributed as dist
+
+            rank0 = not (dist.is_available() and dist.is_initialized()) or dist.get_rank() == 0
+            val_latent_ds = LatentDataset(
+                val_vol_ds, encode_fn=encode_fn, cache_dir=cache_dir, cache_tag="val"
+            )
+            val_latent_ds.warm_cache(warm_device, show_progress=rank0)
+            val_latent_ds.free_encoder()
         # F3: rank/world derived from dist inside warm_latent_pipeline (post-PG).
-        return warm_latent_pipeline(
+        train_pipeline = warm_latent_pipeline(
             vol_ds, encode_fn, autoencoder,
             cache_dir=cache_dir, cache_tag="train",
             device=warm_device,
             scale_factor_sample_size=scale_sample,
         )
+        if val_latent_ds is not None:
+            val_latent_ds.scaling_factor = float(train_pipeline.scale_factor)
+        return train_pipeline.latent_ds, train_pipeline.autoencoder, val_latent_ds
 
     return (
-        _DataBundle(vae=autoencoder, warm_fn=warm_fn),
+        _DataBundle(vae=autoencoder, warm_fn=warm_fn, has_val=has_val),
         len(vol_ds),
     )
 
