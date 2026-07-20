@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import copy
+import os
 from dataclasses import dataclass
 from typing import Any, Sequence
 
@@ -302,6 +303,14 @@ def main(argv: list[str] | None = None, *, data_provider=None) -> int:
 
     seed = int(opt(cfg, "random_seed", 0))
     pl.seed_everything(seed, workers=True)
+    # Pin each DDP rank to its own GPU before _real_inputs runs the policy rollout
+    # on `device` (GPU inference happens here, before trainer.fit sets up DDP).
+    # Without this every rank lands on cuda:0 and serializes on one GPU, blowing
+    # past the DDP init timeout (sugon 8-DCU).
+    if torch.cuda.is_available():
+        _lr = int(os.environ.get("LOCAL_RANK", 0))
+        if _lr < torch.cuda.device_count():
+            torch.cuda.set_device(_lr)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     if data_provider is not None:
