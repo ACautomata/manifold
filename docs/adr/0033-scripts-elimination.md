@@ -95,9 +95,16 @@ callbacks". This is phase D of the four-point architecture refactor (issue #157)
   `diag_raw_rollout.py` and `eval_paired_step_sweep.py` were never tracked (local
   `.git/info/exclude` entries; hardcoded gauss paths) and are left to local
   cleanup — they are not a repo concern.
-- **`scripts/` directory is removed** entirely, including `_archive/` and the
-  tracked-adjacent `__pycache__`. (The `validate_against_hope.py` precedent is
-  recorded above as a category mismatch, not a pattern to extend.)
+- **`scripts/` directory is removed** entirely, including the tracked-adjacent
+  `__pycache__` — **except** `validate_against_hope.py`, which is *relocated, not
+  deleted*. It is the retained sampler-parity proof that `src/manifold/modules/sampler.py:9`
+  and ADR-0005 reference; deleting `_archive/` wholesale would leave both pointing
+  at a nonexistent file and discard exactly the artifact this ADR distinguishes
+  from the dead diagnostics. It moves out of `scripts/` to a non-executable home
+  (e.g. `tests/parity/validate_against_hope.py` — it is a verification script, not
+  a runtime tool), and the two references are updated to the new path. (The
+  category-error argument above applies to the *dead EMA diagnostics* — genuinely
+  dead, never migrated — not to this still-referenced parity proof.)
 - **Tests are updated**, not rewritten. The `sys.path.insert(0, …/scripts)` +
   `import export_checkpoint as cli` sites (in `tests/test_training_cli.py`) become
   `from manifold.training.export_cli import main as cli`. In

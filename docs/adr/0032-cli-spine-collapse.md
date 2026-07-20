@@ -109,6 +109,16 @@ has to change (not five) when a new callback lands.
   then `registry.resolve(names, cfg)` (fail-fast on unknown name/knob),
   populates `CallbackContext`, and `registry.build(specs, ctx)`. The default name
   set is derived in each shell (e.g. add `"fid"` only when `enable_fid`).
+- **Mode-2 FID is rejected post-merge, not only at default-derivation.** GRPO
+  Mode-2 deliberately suppresses FID (`grpo_cli.py:153-165`): `GRPOModule.sample()`
+  ignores the trainable ControlNet, so a Mode-2 FID is a **constant frozen-base
+  metric** that would select meaningless checkpoints. Suppressing it only while
+  deriving defaults is insufficient — a YAML `callbacks:` or `--callbacks`
+  override re-adding `"fid"` (or a checkpoint monitor on `val/fid`) would silently
+  re-enable it. So after the merge, the spine (or `FIDSpec.build` against the
+  Mode-2 context) **force-removes `"fid"` and rejects a `val/fid` monitor** for
+  Mode-2, with a loud log. The override is honored for every other callback; FID
+  is the one Mode-2-forbidden name.
 - **`CallbackContext` gains an optional `real_latents` field.** GRPO's FID
   reference lives in `GRPOInputs.real_latents` (`grpo_cli.py:72`), not in its
   conditioning-only datamodule; the shell sets `ctx.real_latents =

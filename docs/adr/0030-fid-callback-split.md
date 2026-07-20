@@ -139,14 +139,22 @@ the helpers are composable objects its `build(ctx)` constructs.
 - **`val/fid` behavior is preserved.** Same unbiased-Frechet math, same all-reduce,
   same fixed samples, same per-plane breakdown. The split is a refactor, not a
   metric change (verified by the existing integration + DDP tests passing unchanged).
-- **Tests.** Existing CLI integration tests and the low-level FID DDP tests are
-  unchanged (they construct `FIDCallback` directly / assert `trainer.callbacks`
-  membership; the injectable `feature_net` fake is still the test seam). **New**
-  unit tests cover each helper (rollout seeding, decode dtype, reducer symmetry,
-  `VramStage` restore-on-exception) and a **new** test asserts the collective-count
-  invariant under a forced rank-local exception (the hardening). The "no new seams"
-  phrasing in the original spec is amended: helpers are stateful objects and get
-  their own unit tests; the single **integration** seam (`run_training`) is
+- **Tests.** The CLI integration tests and the `trainer.callbacks`-membership
+  assertions are unchanged, but the **low-level FID tests that bind
+  `FIDCallback` internals are migrated to the helper APIs**, not left untouched:
+  `tests/test_fid.py` and `tests/test_ddp_warm.py` call `_stage_eval_on_device`,
+  `_synth_moments`, `_real_moments`, and `tests/test_ddp_val_honesty.py` /
+  `test_ddp_warm.py` / `test_fid.py` `inspect.getsource(...)` those methods to
+  assert invariants (lazy `real_latents` pull, the factory fail-safe, the
+  all-reduce). Those responsibilities move into `VramStage` /
+  `FixedSampleRollout` / `LatentDecoder` / `SufficientStatsReducer`, so the tests
+  are rewritten to exercise the helpers directly (and `inspect.getsource` the
+  helper methods). `FIDCallback` keeps **no** thin delegating methods for them —
+  that would undermine the extraction. **New** unit tests cover each helper
+  (rollout seeding, decode dtype, reducer symmetry, `VramStage`
+  restore-on-exception including the `__enter__` cleanup-on-error path) and a
+  **new** test asserts the collective-count invariant under a forced rank-local
+  exception (the hardening). The single **integration** seam (`run_training`) is
   unchanged.
 
 ## Out of scope (deferred)
