@@ -109,13 +109,18 @@ one-place changes instead of five-CLI sweeps.
   `filename` (the existing JiT/ControlNet recipes already use `save_last`, and
   ADR-0032 injects `filename` metadata, so every existing and injected field is
   declared — strict unknown-knob validation does not reject the live configs).
-  Its one special behavior is a **post-resolve monitor validation**: the
-  `monitor_metric` must be in the resolved set's logged-metrics **union the
-  training module's declared metrics**. The union is required because reward /
+  Its one special behavior is a **post-resolve monitor validation**: when a
+  `monitor_metric` is set, it must be in the resolved set's logged-metrics **union
+  the training module's declared metrics**. The union is required because reward /
   paired-reward / GRPO-without-FID monitors (`val/gen_pair_acc`,
   `val/mean_reward`) are logged by the `RewardModule` / `GRPOModule` directly, not
   by any resolved callback — a callbacks-only validation would reject these valid
-  default monitors. Absence in both sets fails fast. The runtime
+  default monitors. Absence in both sets fails fast. An explicit
+  **`monitor_metric=None`** path **bypasses** the validation and yields an
+  unmonitored periodic / last checkpoint — the normal JiT production path when
+  there is no held-out validation source (`cli.py` disables FID and
+  `_build_checkpoint(monitor_fid=False)` builds an unmonitored checkpoint),
+  distinct from a missing-but-expected monitored callback. The runtime
   graceful-degradation path is preserved — when `FIDCallback`'s backbone fails it
   logs `val/fid = +inf` and `mode='min'` falls through to `save_last` (the
   absent-vs-disabled distinction: a missing monitored callback is an error; a

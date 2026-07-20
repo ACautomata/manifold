@@ -116,8 +116,10 @@ the helpers are composable objects its `build(ctx)` constructs.
   `num_synth` / `every_n_epochs` / `center_slices_ratio` / `cov_ridge` / `seed`)
   is an **additional** build path whose `build(ctx)` extracts the runtime objects
   from `CallbackContext` and calls the same constructor. The lazy `real_latents`
-  pull (ADR-0017 / F5) is preserved — `build` passes `real_latents=None`,
-  `real_latents_source=ctx.datamodule`.
+  pull (ADR-0017 / F5) is preserved — `build` uses `ctx.real_latents` when GRPO
+  supplies it (its conditioning-only datamodule has no `val_latents`, so the
+  reference comes via `GRPOInputs.real_latents`; ADR-0029 / ADR-0032) and falls
+  back to `real_latents=None`, `real_latents_source=ctx.datamodule` for JiT.
 - **Collective-count invariant (the hardening).** The error-flag `all_reduce` is a
   **rendezvous before each reduction-bearing phase**, not an exception-path
   afterthought. Naively wrapping the staged phase in `try/except` and
