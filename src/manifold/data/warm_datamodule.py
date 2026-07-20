@@ -41,7 +41,7 @@ from torch.utils.data import DataLoader, Dataset
 from torch.utils.data.distributed import DistributedSampler
 
 
-from .latent_pipeline import LatentPipeline, warm_latent_pipeline
+from .latent_pipeline import warm_latent_pipeline
 
 
 class _ValidationDataset(Dataset):
@@ -133,10 +133,14 @@ class LatentWarmDataModule(LightningDataModule):
         batch_size / num_workers: the train/val DataLoader batch size + workers.
         val_latents: the FIXED real-reference latents (the test path passes them
             pre-computed; the cold path leaves this ``None`` and ``setup()`` fills it).
-        warm_fn: a callable ``() -> LatentPipeline`` run inside ``setup()`` (the
-            cold path - wraps :func:`warm_latent_pipeline` with closed-over args).
-            When ``None``, the bundle is assumed warmed (``latent_ds`` + ``val_latents``
-            already set) and ``setup()`` is a no-op.
+        val_latent_ds: the ALREADY-warmed held-out validation :class:`LatentDataset`
+            (the test path); the cold path leaves this ``None`` and ``setup()`` fills
+            it from the ``warm_fn`` triple.
+        warm_fn: a callable ``() -> (latent_ds, autoencoder, val_latent_ds)`` run
+            inside ``setup()`` (the cold path — wraps :func:`warm_latent_pipeline`
+            plus an optional held-out val warm). When ``None``, the bundle is assumed
+            warmed (``latent_ds`` + ``val_latents`` already set) and ``setup()`` is a
+            no-op.
         val_subset_size: the FID real-reference subset size (the cold path's seeded
             ``randperm`` prefix). Unused on the warmed path.
         allow_train_as_val: smoke-only opt-in to reuse the train latent set as the
@@ -154,6 +158,7 @@ class LatentWarmDataModule(LightningDataModule):
         batch_size: int,
         num_workers: int = 0,
         val_latents: torch.Tensor | None = None,
+        val_latent_ds=None,
         warm_fn=None,
         val_subset_size: int = 32,
         allow_train_as_val: bool = False,
@@ -164,6 +169,7 @@ class LatentWarmDataModule(LightningDataModule):
         self._batch_size = batch_size
         self._num_workers = num_workers
         self._val_latents = val_latents
+        self._val_latent_ds = val_latent_ds
         self._warm_fn = warm_fn
         self._val_subset_size = val_subset_size
         self._allow_train_as_val = allow_train_as_val
@@ -183,29 +189,39 @@ class LatentWarmDataModule(LightningDataModule):
         """The fixed real-reference latents; ``None`` until ``setup()`` runs (F5)."""
         return self._val_latents
 
+    @property
+    def val_latent_ds(self):
+        """The held-out validation latent dataset; ``None`` until ``setup()`` runs."""
+        return self._val_latent_ds
+
     def setup(self, stage: str | None = None) -> None:
         """Run the atomic warm post-PG (cold path) or no-op (warmed path).
 
         On the cold path ``warm_fn`` (a closure over :func:`warm_latent_pipeline`)
         runs here - after Lightning has initialized the process group inside
         ``trainer.fit`` - so the ``i % world == rank`` sharded branch activates.
-        ``val_latents`` (the FID real reference) is computed ONLY when
-        ``allow_train_as_val=True`` - it is a prefix of the TRAIN cache, so in
-        production (no held-out val) it is left ``None`` and FID is disabled.
+        It returns ``(latent_ds, autoencoder, val_latent_ds)`` where ``val_latent_ds``
+        is the held-out validation latent dataset (warmed from ``val_data_base_dir``)
+        or ``None`` when no held-out val is configured.
+
+        ``val_latents`` (the FID real reference) is a seeded prefix of the held-out
+        ``val_latent_ds`` when present; otherwise it is left ``None`` except under
+        the ``allow_train_as_val`` smoke opt-in (a prefix of the TRAIN cache, which
+        tests wiring — not held-out generalization).
         """
         if self._warm_fn is None:
             return  # warmed path (test smoke): the cache is already materialized.
-        pipeline: LatentPipeline = self._warm_fn()
-        self._latent_ds = pipeline.latent_ds
-        self._vae = pipeline.autoencoder
-        # Compute the fixed real-reference subset ONLY under the smoke opt-in.
-        # The reference is a prefix of the TRAIN cache - deriving it unconditionally
-        # would make the FID real reference training data (val/train leakage). In
-        # production (allow_train_as_val=False) the regular flow has no held-out val
-        # source, so run_training disables FID and this stays None.
-        if self._allow_train_as_val:
+        self._latent_ds, self._vae, self._val_latent_ds = self._warm_fn()
+        # The FID real reference: the held-out val prefix when present; else the
+        # smoke-only train prefix under allow_train_as_val; else None (validation
+        # disabled at the Trainer). Never derived unconditionally from the TRAIN
+        # cache in production — that would leak train metrics into validation.
+        ref_ds = self._val_latent_ds if self._val_latent_ds is not None else (
+            self._latent_ds if self._allow_train_as_val else None
+        )
+        if ref_ds is not None:
             self._val_latents = _val_reference_subset(
-                pipeline.latent_ds, pipeline.autoencoder, self._val_subset_size
+                ref_ds, self._vae, self._val_subset_size
             )
 
     def train_dataloader(self) -> DataLoader:
@@ -214,9 +230,13 @@ class LatentWarmDataModule(LightningDataModule):
         )
 
     def val_dataloader(self) -> DataLoader:
-        # Never silently reuse the train set as validation. The smoke opt-in
+        # Held-out val (from val_data_base_dir) when present; else the smoke opt-in
         # (allow_train_as_val) reuses train with a loud warning; otherwise an empty
         # loader yields 0 batches (validation is also disabled at the Trainer).
+        if self._val_latent_ds is not None:
+            return _validation_loader(
+                self._val_latent_ds, batch_size=self._batch_size, num_workers=self._num_workers
+            )
         if self._allow_train_as_val:
             rank_zero_info(
                 "LatentWarmDataModule: no held-out val; reusing TRAIN as val "
