@@ -159,6 +159,81 @@ estimator; RadImageNet ResNet50 backbone, 2.5D (three orthogonal planes).
 Distinct from the legacy biased plug-in FID.
 _Avoid_: biased FID, plain FID.
 
+### Training callbacks & device ownership (ADR-0029–0033, pending)
+
+> The four-point architecture refactor (issue #157): make callbacks config-driven
+> + CLI-addable, single-responsibility, let Lightning own device, collapse the CLI
+> spines, eliminate `scripts/`. ADRs written; implementation pending. The
+> four-component layout (Model / Scheduler / Module / Pipeline) above is unchanged —
+> these terms name the *training-side* glue around it.
+
+**Callback registry**:
+The single `CallbackRegistry` mapping a callback **name** to a `CallbackSpec` (a
+`@dataclass` implementing `build(ctx) -> pl.Callback`), so the five training CLIs
+stop hand-assembling callback lists — a `callbacks:` config list and a `--callbacks`
+CLI flag both build the list through the registry. Construction is **two-phase**:
+`resolve` (config-time: validate names + knobs, fail-fast) then `build` (fit-prep:
+inject runtime objects via a typed `CallbackContext`), because generative callbacks
+(FID) need runtime objects (`module`, `vae`, `datamodule`) absent at config
+resolution. `ModelCheckpoint` is itself a registered spec (`name="checkpoint"`,
+with monitor validation). ADR-0029.
+_Avoid_: callback factory, callback config.
+
+**Frozen arm** (registered + dual-excluded):
+A submodule held frozen during training — the reward Module's JiT denoiser; the
+GRPO Module's reward model + reference policy; the ControlNet Module's frozen base
+UNet. Stays **off the optimizer** (built over only the trainable arm's params,
+`requires_grad=False`) and **off the checkpoint** (`state_dict()` /
+`load_state_dict()` overridden to strip its keys). Registered as a normal
+`nn.Module` child so Lightning's automatic `.to(device)` moves it (ADR-0031) —
+replacing the prior `object.__setattr__` unregistered-storage bypass that forced
+manual `on_fit_start` moves. Stays in `eval()` across `module.train()` (a `train()`
+override re-applies it — the registered-arm cost), so its BatchNorm buffers do not
+drift; its gradients stay off the DDP sync via `requires_grad=False` (DDP keeps the
+default `broadcast_buffers=True` — a global `False` would harm the *trainable*
+reward model's BN; frozen buffers are identical across ranks, so broadcasting them
+is harmless). Bare-tensor probes (`val_probe`) stay manually moved
+(tensors cannot register).
+_Avoid_: frozen module (say frozen arm — it names the off-optimizer /
+off-checkpoint role, not merely `requires_grad=False`).
+
+**DevicePolicy**:
+The object that resolves `cuda:{LOCAL_RANK}` from the launcher environment for
+**pre-PG** model staging (`_real_inputs` rollouts, fake-cache builders) — the
+models that run before the process group exists, when Lightning cannot manage
+them. Owns the PR #156 cuda:0-under-DDP contention fix in one place. Distinct
+from Lightning's automatic `.to(device)`, which owns the in-Trainer **frozen
+arms**; and from the VAE cache-warm, which runs *inside* `DataModule.setup()`
+(post-PG, sharded `i % world == rank`) — not an A2 concern (ADR-0031).
+_Avoid_: device manager, device resolver.
+
+**TrainingSpine**:
+The composed object (a `@dataclass`, not a base class) owning the shared training
+sequence — callback-name merging → registry `resolve/build` → checkpoint
+injection → `build_trainer` → `fit`. (Seeding stays in each `run_*` shell, *before*
+module construction and `_real_inputs` — the spine receives an already-assembled
+module, so seeding there would vary initial weights / precomputed probes across
+nominally-identical seeded runs.) The five `run_*` functions shrink to thin shells
+that seed, build their own `module` + `datamodule`, and delegate; the per-CLI
+`_real_inputs` data-assembly paths stay put (genuinely different). The single
+caller of the callback registry, and the one place that changes when a new callback
+lands. ADR-0032.
+_Avoid_: training runner, base trainer.
+
+**Collective-count invariance** (FID, DDP):
+The DDP correctness property that every rank enters the same collectives in the
+same order in every code path of the FID staged phase. Enforced by an **error-flag
+`all_reduce` (MAX) rendezvous before each reduction-bearing phase** — run the
+fallible rank-local work (staging, feature extraction) under `try`, set a local
+error flag on exception, then `all_reduce` the flag *before* entering any moment
+reduction so every rank agrees whether to abort (`val/fid=+inf` / skip) or proceed
+together. (A plain `try/except`-then-`all_reduce` on the exception path alone is
+insufficient: the failing rank would enter the error collective while healthy
+ranks proceed into the per-plane reductions — collectives in different orders,
+still a deadlock.) Generalizes the FID disable-flag collective; narrows
+ADR-0025's symmetric-all-reduce rule to a per-path count guarantee. ADR-0030.
+_Avoid_: DDP guard, collective symmetry (that is ADR-0025's broader rule).
+
 ### Reward model (GRPO)
 
 **Reward Model**:
