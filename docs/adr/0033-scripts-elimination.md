@@ -100,8 +100,14 @@ callbacks". This is phase D of the four-point architecture refactor (issue #157)
   recorded above as a category mismatch, not a pattern to extend.)
 - **Tests are updated**, not rewritten. The `sys.path.insert(0, …/scripts)` +
   `import export_checkpoint as cli` sites (in `tests/test_training_cli.py`) become
-  `from manifold.training.export_cli import main as cli`. The pair-gen test sites
-  (`tests/test_reward_pairs.py`) are deleted with the script. The injection seam
+  `from manifold.training.export_cli import main as cli`. In
+  `tests/test_reward_pairs.py` **only the script-entry test** is deleted
+  (`test_generate_reward_pairs_script_end_to_end`, which `sys.path`-imports the
+  retired script); the rest of that file tests still-live production behavior in
+  `src/manifold/data/reward_pairs.py` (`generate_reward_pairs`,
+  `generate_generated_end_probe`, save/load round-trip, frozen-denoiser load,
+  accelerator placement — consumed by `reward_cli` / `grpo_cli`) and stays. The
+  injection seam
   (`argv` + `tmp_path`) is unchanged.
 - **Deploy cutover (the load-bearing operational risk).** `export_checkpoint.py`
   is a live deploy path — the reward→GRPO task chain and the sugon/gauss/euler

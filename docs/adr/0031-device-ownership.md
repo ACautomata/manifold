@@ -111,11 +111,17 @@ keys. This is phase A of the four-point architecture refactor (issue #157).
 - **Off-checkpoint via `state_dict()`/`load_state_dict()` override.** The frozen
   names are declared once per module (a frozen-at-init set such as
   `{"reward_model", "reference_unet", "reference_controlnet"}` plus `"unet"` in
-  Mode-2) and stripped from the emitted `state_dict`. Resume uses
-  `load_state_dict(strict=False)`: the absent frozen keys are skipped and the
-  frozen arms are rebuilt fresh each launch (the reference policy is a
-  `deepcopy` at Mode-2 launch per ADR-0028; the reward model is reloaded from
-  its `.ckpt`), matching ADR-0006's native-export semantics. Existing `state_dict()`
+  Mode-2) and stripped from the emitted `state_dict`. Resume uses **strict loading
+  with a frozen-arm allowlist**, NOT `load_state_dict(strict=False)`: a blanket
+  `strict=False` would also hide a missing *trainable* key (an incomplete or
+  mode-mismatched `.ckpt` short of policy/ControlNet/reward-head weights) and
+  silently resume on random or stale weights, corrupting the experiment. Strict
+  load therefore raises on any missing/unexpected key **except** the declared
+  frozen-arm prefixes; only those are tolerated as absent (the frozen arms are
+  rebuilt fresh each launch — the reference policy is a `deepcopy` at Mode-2
+  launch per ADR-0028; the reward model is reloaded from its `.ckpt`), matching
+  ADR-0006's native-export semantics. The allowlist is the same
+  `_frozen_arm_names` set the `state_dict()` filter uses. Existing `state_dict()`
   assertions pass unchanged (the override strips frozen keys). The `parameters()`
   disjointness assertions (`test_mode2_freezes_base_and_optimizes_controlnet_only`,
   `test_base_is_frozen_and_unregistered`) are **updated, not preserved**:
@@ -138,9 +144,15 @@ keys. This is phase A of the four-point architecture refactor (issue #157).
   implementing per-rank `cuda:{LOCAL_RANK}` resolution exists locally (written for
   the PR #156 fix) but was **never committed** — it is absent from `HEAD` and from
   this PR, so it is *created/landed* as part of A (not "wired into" as if already
-  present), becoming the single place that resolves `cuda:{LOCAL_RANK}` for all
-  pre-Trainer staging; route `_real_inputs`, the fake-cache builders, and the VAE
-  warm through it.
+  present), becoming the single place that resolves `cuda:{LOCAL_RANK}` for the
+  genuinely pre-PG staging — `_real_inputs` and the fake-cache builders. (The
+  **VAE cache-warm is NOT** an A2 concern: it runs inside
+  `LatentWarmDataModule.setup()` *after* Lightning initializes the process group,
+  which is what enables the `i % world == rank` sharding — moving it pre-PG would
+  make every rank see `world=1` and redundantly encode the full cache, regressing
+  the multi-hour cold-start ADR-0017 removed. `DevicePolicy` may be used inside
+  `setup()` for device selection only, but the warm stays in the DataModule
+  lifecycle.)
   **Close the `paired_reward_cli` cuda:0 gap.** Remove the module-level bare
   functions `get_device_policy` / `reset_device_policy` (project OOP rule: only
   console `main` may be a module-level function) in favor of a constructed

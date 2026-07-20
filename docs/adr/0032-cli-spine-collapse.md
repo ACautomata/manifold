@@ -3,10 +3,15 @@
 The five training CLIs each hand-roll the same spine — assemble a callback list,
 build a `ModelCheckpoint`, call `build_trainer`, `trainer.fit`. E collapses that
 repetition into **one composed `TrainingSpine` object** (`src/manifold/training/core.py`)
-that owns seeding → callback-name merging → `registry.resolve/build` → checkpoint
-injection → `build_trainer` → `fit`. The five `run_*` functions shrink to **thin
-shells** that build their own `module` + `datamodule` (the genuinely different
-`_real_inputs` paths stay put) and delegate to `TrainingSpine.run`.
+that owns callback-name merging → `registry.resolve/build` → checkpoint
+injection → `build_trainer` → `fit`. (Seeding stays in each **shell** — it must
+run *before* module construction, which sets the initial weights, and before
+`_real_inputs` generates the validation pairs / probe; moving it into the spine,
+which receives an already-assembled module, would make initial weights and
+precomputed stochastic inputs vary across nominally-identical seeded runs.) The
+five `run_*` functions shrink to **thin shells** that seed, build their own
+`module` + `datamodule` (the genuinely different `_real_inputs` paths stay put)
+and delegate to `TrainingSpine.run`.
 
 This is phase E of the four-point architecture refactor (issue #157). It is the
 last structural piece, and it consumes the prior three: it is the single caller

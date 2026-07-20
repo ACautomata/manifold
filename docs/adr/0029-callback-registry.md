@@ -125,7 +125,14 @@ one-place changes instead of five-CLI sweeps.
   `fid._real_latents_source = datamodule` mutation in `run_training` is removed.
 - **Config namespace alignment:** the `fid_eval` YAML block is renamed to `fid` so
   the callback name and its config namespace are identical everywhere (no
-  `config_prefix` indirection).
+  `config_prefix` indirection). The rename carries a **legacy-override
+  translation**: the JiT CLI today reads `fid_eval.save_top_k` as a
+  higher-precedence `checkpoint.save_top_k` override (`cli.py:414`). After the
+  rename, a user's `fid.save_top_k` would fail `FIDSpec`'s strict unknown-knob
+  validation (`save_top_k` is a checkpoint knob, not an FID one). So the shell
+  translates `fid.save_top_k` → `checkpoint.save_top_k` **before** registry
+  resolution (or keeps a documented alias); existing experiment overrides must not
+  stop launching.
 - **`build_trainer` boundary unchanged.** The invariant framework callbacks
   (`spt.ModuleRegistryCallback`, `MetricsPlotCallback`) stay auto-appended by
   `build_trainer`; the registry owns only the project metric/lifecycle callbacks.

@@ -199,11 +199,12 @@ off-checkpoint role, not merely `requires_grad=False`).
 
 **DevicePolicy**:
 The object that resolves `cuda:{LOCAL_RANK}` from the launcher environment for
-**pre-Trainer** model staging (`_real_inputs` rollouts, fake-cache builders, VAE
-cache-warm) — the models that run before `Trainer.fit`, when no process group
-exists and Lightning cannot manage them. Owns the PR #156 cuda:0-under-DDP
-contention fix in one place. Distinct from Lightning's automatic `.to(device)`,
-which owns the in-Trainer **frozen arms**. ADR-0031.
+**pre-PG** model staging (`_real_inputs` rollouts, fake-cache builders) — the
+models that run before the process group exists, when Lightning cannot manage
+them. Owns the PR #156 cuda:0-under-DDP contention fix in one place. Distinct
+from Lightning's automatic `.to(device)`, which owns the in-Trainer **frozen
+arms**; and from the VAE cache-warm, which runs *inside* `DataModule.setup()`
+(post-PG, sharded `i % world == rank`) — not an A2 concern (ADR-0031).
 _Avoid_: device manager, device resolver.
 
 **TrainingSpine**:
