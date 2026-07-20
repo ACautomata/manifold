@@ -97,7 +97,13 @@ the helpers are composable objects its `build(ctx)` constructs.
   the collective cannot deadlock), and `VramStage` (a context manager: `__enter__`
   snapshots the VAE CPU state **before** moving VAE+`feature_net` to GPU and
   lazily builds the backbone fail-safe; `__exit__` unconditionally restores both to
-  CPU — the `_eval_staged`-flag + `finally` pattern, encapsulated).
+  CPU — the `_eval_staged`-flag + `finally` pattern, encapsulated). `__enter__`
+  carries its own cleanup-on-error path: Python does **not** call `__exit__` when
+  `__enter__` raises, so a failure after the VAE has moved to GPU (an OOM, a
+  backbone build or feature-dim probe error) must restore from within `__enter__`
+  before re-raising — otherwise the VAE occupies training VRAM for the rest of the
+  run. The `with VramStage(...)` site is the single entry point, so this is local
+  to the helper.
 - **Helpers are objects, not module-level bare functions** (project OOP rule).
   `FixedSampleRollout`/`LatentDecoder`/`FeatureExtractor`/`SufficientStatsReducer`
   are stateless callable objects; `VramStage` is necessarily stateful across
@@ -112,16 +118,24 @@ the helpers are composable objects its `build(ctx)` constructs.
   from `CallbackContext` and calls the same constructor. The lazy `real_latents`
   pull (ADR-0017 / F5) is preserved — `build` passes `real_latents=None`,
   `real_latents_source=ctx.datamodule`.
-- **Collective-count invariant (the hardening).** `on_validation_epoch_end` wraps
-  the entire staged phase — staging, `_real_moments`, `_synth_moments`,
-  `_compute_and_log` — in a `try/except` that `all_reduce`s an error flag (MAX)
-  on any rank-local exception, so every rank takes the same abort branch (log
-  `val/fid=+inf` / skip) together. This generalizes the existing disable-flag
+- **Collective-count invariant (the hardening).** The error-flag `all_reduce` is a
+  **rendezvous before each reduction-bearing phase**, not an exception-path
+  afterthought. Naively wrapping the staged phase in `try/except` and
+  `all_reduce`-ing an error flag on a rank-local exception is **insufficient**: the
+  failing rank would enter the error-flag collective while healthy ranks continue
+  into `SufficientStatsReducer`'s per-plane moment reductions — collectives in a
+  different order, still a hang. So the staged phase is structured as: (1) run the
+  fallible rank-local work (staging, real/synth feature extraction) under `try`; on
+  any exception set a local error flag; (2) **before** entering any
+  `all_reduce`-bearing reduction, `all_reduce(MAX)` the error flag so **every rank
+  agrees** whether to take the abort branch (`val/fid=+inf` / skip) or proceed into
+  the reductions together. This makes the count and order of collectives identical
+  on every rank in every path. It generalizes the existing disable-flag
   `all_reduce` (backbone-factory failure) to **any** exception. The
   `SufficientStatsReducer` stays symmetric (every rank enters one `all_reduce` per
   plane, zero stats for an empty shard). Collective-count invariance — every rank
-  enters the same number of `all_reduce`s in every code path — becomes a testable
-  property.
+  enters the same collectives in the same order in every code path — becomes a
+  testable property.
 - **`val/fid` behavior is preserved.** Same unbiased-Frechet math, same all-reduce,
   same fixed samples, same per-plane breakdown. The split is a refactor, not a
   metric change (verified by the existing integration + DDP tests passing unchanged).

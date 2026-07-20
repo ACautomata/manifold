@@ -43,18 +43,23 @@ keys. This is phase A of the four-point architecture refactor (issue #157).
   existing tests green.** The repo's frozen-arm tests assert absence directly on
   the module: `assert "reward_model" not in mod.state_dict()` (test_grpo.py:351),
   `"reference_unet" not in mod.state_dict()` (:458), `not any(k.startswith("unet.")
-  ...)` (test_grpo.py:1006, test_controlnet_module_training.py:92), plus the
-  `parameters()` disjointness checks. Filtering only in
-  `on_save_checkpoint`/`on_load_checkpoint` would not affect these direct calls
+  ...)` (test_grpo.py:1006, test_controlnet_module_training.py:92). Filtering only
+  in `on_save_checkpoint`/`on_load_checkpoint` would not affect these direct calls
   and would force a test rewrite; overriding `state_dict()`/`load_state_dict()`
   themselves makes the registered-but-excluded invariant hold at the source, so
-  the assertions pass unchanged.
-- **`broadcast_buffers=False` stays closest to the current off-DDP invariant.**
-  Registering frozen arms would, under the DDP default, broadcast their buffers
-  (e.g. BatchNorm running stats) from rank 0 every step — a silent change from
-  today's "DDP never touches them". Frozen buffers are identical across ranks by
-  construction (fresh `deepcopy` / reload from the same source at launch), so the
-  broadcast is unnecessary; disabling it preserves the existing invariant.
+  the `state_dict()` assertions pass unchanged. (The `parameters()` disjointness
+  checks **cannot** pass unchanged — registration includes the frozen arm in
+  `parameters()` regardless of `requires_grad`; those assertions are updated, see
+  Consequences.)
+- **DDP keeps the default `broadcast_buffers=True`.** Registering frozen arms does
+  not require disabling buffer broadcast: `requires_grad=False` keeps their
+  gradients off the DDP sync, and they stay in `eval()` (see *frozen-arm
+  mode-management*) so their buffers never update — broadcasting identical buffers
+  is harmless. A global `broadcast_buffers=False` would instead harm the
+  **trainable** `RewardModel` (MONAI PatchGAN, BATCH norm), letting its running
+  stats diverge per rank under data-parallel batches. The off-DDP invariant the
+  `object.__setattr__` bypass bought is preserved by `requires_grad=False` +
+  `eval()`, not by a global DDP flag.
 - **The A2 fix is a real, pre-existing bug, not speculative.** `device_policy.py`
   already exists (it was the PR #156 fix) but has **zero importers** — an orphan.
   `paired_reward_cli.main()` never calls `set_device(LOCAL_RANK)`, so its
@@ -110,14 +115,32 @@ keys. This is phase A of the four-point architecture refactor (issue #157).
   `load_state_dict(strict=False)`: the absent frozen keys are skipped and the
   frozen arms are rebuilt fresh each launch (the reference policy is a
   `deepcopy` at Mode-2 launch per ADR-0028; the reward model is reloaded from
-  its `.ckpt`), matching ADR-0006's native-export semantics. Existing direct
-  `state_dict()` / `parameters()` test assertions pass unchanged.
-- **DDP:** build the strategy with `broadcast_buffers=False`; frozen arms have
-  `requires_grad=False` so DDP does not traverse their gradients, and their
-  buffers are not broadcast.
-- **A2 — wire the existing `DevicePolicy`.** `training/device_policy.py` becomes
-  the single place that resolves `cuda:{LOCAL_RANK}` for all pre-Trainer staging;
-  route `_real_inputs`, the fake-cache builders, and the VAE warm through it.
+  its `.ckpt`), matching ADR-0006's native-export semantics. Existing `state_dict()`
+  assertions pass unchanged (the override strips frozen keys). The `parameters()`
+  disjointness assertions (`test_mode2_freezes_base_and_optimizes_controlnet_only`,
+  `test_base_is_frozen_and_unregistered`) are **updated, not preserved**:
+  registration makes `module.parameters()` recursively include the frozen arm
+  regardless of `requires_grad`, so the assertion moves from *"frozen params absent
+  from `module.parameters()`"* to *"frozen params present in `module.parameters()`
+  but `requires_grad=False`, absent from the optimizer param groups, and absent
+  from `state_dict()`"*. The off-optimizer guarantee is the optimizer-level filter
+  + `requires_grad=False`, not `parameters()` membership.
+- **DDP:** keep the default `broadcast_buffers=True` (NOT `False`). A global
+  `broadcast_buffers=False` would also stop broadcasting the **trainable**
+  `RewardModel`'s BatchNorm running stats (MONAI PatchGAN defaults to BATCH norm),
+  letting them diverge per rank under data-parallel batches and leaving the saved
+  checkpoint with rank-local statistics. The frozen arms need no special DDP flag:
+  `requires_grad=False` keeps their gradients off the sync, and they stay in
+  `eval()` (see *frozen-arm mode-management* below) so their buffers do not update
+  — broadcasting identical buffers is harmless. `find_unused_parameters=True` is
+  unchanged.
+- **A2 — land and wire `DevicePolicy`.** A `training/device_policy.py`
+  implementing per-rank `cuda:{LOCAL_RANK}` resolution exists locally (written for
+  the PR #156 fix) but was **never committed** — it is absent from `HEAD` and from
+  this PR, so it is *created/landed* as part of A (not "wired into" as if already
+  present), becoming the single place that resolves `cuda:{LOCAL_RANK}` for all
+  pre-Trainer staging; route `_real_inputs`, the fake-cache builders, and the VAE
+  warm through it.
   **Close the `paired_reward_cli` cuda:0 gap.** Remove the module-level bare
   functions `get_device_policy` / `reset_device_policy` (project OOP rule: only
   console `main` may be a module-level function) in favor of a constructed
@@ -131,17 +154,29 @@ keys. This is phase A of the four-point architecture refactor (issue #157).
 - **FID eval VRAM staging is not touched here.** `fid_callback.py`'s
   `_stage_eval_on_device` / `_restore_eval_to_cpu` are absorbed by the
   `VramStage` helper in ADR-0030 (phase C); A does not duplicate it (AC7).
+- **Frozen-arm mode-management (the registered-arm cost).** Registering the arms
+  makes them part of the module tree, so Lightning's `module.train()` recurses
+  into them and flips them back to training mode — an `eval()` set at construction
+  does **not** persist. A frozen arm in training mode would let its BatchNorm
+  running stats drift during rollout/reward evaluation, corrupting the
+  supposedly-fixed function (in `RewardModule`/`ControlNetLatentFlowModule` the
+  frozen denoiser/base; in GRPO the first rollout would update the frozen
+  reward/reference buffers). The Module overrides `train(mode)` to re-apply
+  `eval()` to the frozen arms after `super().train(mode)` (or applies eval in
+  `on_train_epoch_start`). This is exactly the cost the `object.__setattr__` bypass
+  avoided by keeping them out of the tree.
 - **AMP/precision watch-item.** Registering the frozen reward model means its
   forward may be autocast under mixed precision; the existing `.float()` rescues
-  in `grpo.py` must be verified to still hold, and the frozen denoiser's
-  BatchNorm running stats must not drift (they are `eval()` and buffer broadcast
-  is off). Verified during implementation, not assumed.
-- **Tests.** Existing frozen-arm tests (off `parameters()` / `state_dict()` /
-  optimizer, backward only touches the trainable arm) are unchanged. New tests
-  assert the registered-but-excluded invariant (frozen arms ARE registered
-  children yet absent from `state_dict` and optimizer param groups) and add DDP
-  device assertions via `LOCAL_RANK` env-var simulation plus a real `torchrun`
-  smoke for the `_real_inputs` placement (the PR #156 regression class).
+  in `grpo.py` must be verified to still hold. Verified during implementation, not
+  assumed.
+- **Tests.** Existing frozen-arm `state_dict()` / optimizer / backward-only tests
+  are unchanged; the `parameters()` disjointness tests are **updated** as described
+  above (registered ⇒ present in `parameters()`, but `requires_grad=False` +
+  off-optimizer + off-`state_dict()`). New tests assert the registered-but-excluded
+  invariant, the frozen-arm `eval()` persistence across `module.train()` (the
+  mode-management), and add DDP device assertions via `LOCAL_RANK` env-var
+  simulation plus a real `torchrun` smoke for the `_real_inputs` placement (the PR
+  #156 regression class).
 
 ## Out of scope (deferred)
 

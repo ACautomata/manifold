@@ -103,13 +103,22 @@ one-place changes instead of five-CLI sweeps.
   `registry.resolve(names, cfg)` (fail-fast on unknown name / unknown knob) →
   assemble `CallbackContext` → `registry.build(specs, ctx)` → monitor validation →
   `build_trainer(callbacks=…)` → `Trainer.fit`.
-- **`ModelCheckpoint` is a registered callback** (`name="checkpoint"`, knobs
-  `monitor_metric` / `save_top_k` / `every_n_epochs` / `mode`), not a special case.
+- **`ModelCheckpoint` is a registered callback** (`name="checkpoint"`), not a
+  special case. Its knobs declare the **full existing checkpoint config surface**
+  — `monitor_metric` / `save_top_k` / `save_last` / `every_n_epochs` / `mode` /
+  `filename` (the existing JiT/ControlNet recipes already use `save_last`, and
+  ADR-0032 injects `filename` metadata, so every existing and injected field is
+  declared — strict unknown-knob validation does not reject the live configs).
   Its one special behavior is a **post-resolve monitor validation**: the
-  `monitor_metric` must be in the resolved set's logged-metrics; absence fails fast.
-  The runtime graceful-degradation path is preserved — when `FIDCallback`'s backbone
-  fails it logs `val/fid = +inf` and `mode='min'` falls through to `save_last`
-  (the absent-vs-disabled distinction: a missing monitored callback is an error; a
+  `monitor_metric` must be in the resolved set's logged-metrics **union the
+  training module's declared metrics**. The union is required because reward /
+  paired-reward / GRPO-without-FID monitors (`val/gen_pair_acc`,
+  `val/mean_reward`) are logged by the `RewardModule` / `GRPOModule` directly, not
+  by any resolved callback — a callbacks-only validation would reject these valid
+  default monitors. Absence in both sets fails fast. The runtime
+  graceful-degradation path is preserved — when `FIDCallback`'s backbone fails it
+  logs `val/fid = +inf` and `mode='min'` falls through to `save_last` (the
+  absent-vs-disabled distinction: a missing monitored callback is an error; a
   present-but-disabled one is the intended fallback).
 - **Lazy `real_latents` preserved (ADR-0017 / F5).** `FIDSpec.build` passes
   `real_latents=None`, `real_latents_source=ctx.datamodule`; the post-build

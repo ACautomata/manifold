@@ -110,8 +110,15 @@ callbacks". This is phase D of the four-point architecture refactor (issue #157)
   each target re-runs `pip install -e . --no-deps` (new `[project.scripts]`
   entries only appear after reinstall — per the "python -m vs entry-point"
   discipline, a missing entry on a DCU can exit 0 with only two-three log lines).
-  The cutover is: land the migration, reinstall on each cluster, update the
-  runbooks — in that order.
+  The cutover order matters: deleting `scripts/export_checkpoint.py` while the
+  runbooks still call that path leaves every export job failing in the gap
+  (reinstall adds `manifold-export` but does not revive the old `python` path), so
+  the order is **(1) update every runbook / chain invocation to `manifold-export`
+  + reinstall on each cluster, (2) verify the new path works end-to-end on a
+  cluster, (3) only then delete `scripts/export_checkpoint.py`**. Until step 3,
+  the old script and the new entry coexist (the script is a thin shell over the
+  same `export_to_native`, so both produce identical output) — a compatibility
+  overlap, not a shim to maintain long-term.
 - **ADR-0016 is revised.** Its `:80-82` frames the diag scripts as the *active*
   multi-GPU offline FID-selection deployment path; that statement is stale —
   `val/fid` now runs a per-plane symmetric `all_reduce` (ADR-0025) inside the fit,

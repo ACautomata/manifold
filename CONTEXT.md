@@ -187,8 +187,12 @@ UNet. Stays **off the optimizer** (built over only the trainable arm's params,
 `load_state_dict()` overridden to strip its keys). Registered as a normal
 `nn.Module` child so Lightning's automatic `.to(device)` moves it (ADR-0031) —
 replacing the prior `object.__setattr__` unregistered-storage bypass that forced
-manual `on_fit_start` moves. Under DDP, `broadcast_buffers=False` keeps it off the
-per-step buffer broadcast. Bare-tensor probes (`val_probe`) stay manually moved
+manual `on_fit_start` moves. Stays in `eval()` across `module.train()` (a `train()`
+override re-applies it — the registered-arm cost), so its BatchNorm buffers do not
+drift; its gradients stay off the DDP sync via `requires_grad=False` (DDP keeps the
+default `broadcast_buffers=True` — a global `False` would harm the *trainable*
+reward model's BN; frozen buffers are identical across ranks, so broadcasting them
+is harmless). Bare-tensor probes (`val_probe`) stay manually moved
 (tensors cannot register).
 _Avoid_: frozen module (say frozen arm — it names the off-optimizer /
 off-checkpoint role, not merely `requires_grad=False`).

@@ -10,9 +10,10 @@ shells** that build their own `module` + `datamodule` (the genuinely different
 
 This is phase E of the four-point architecture refactor (issue #157). It is the
 last structural piece, and it consumes the prior three: it is the single caller
-of the ADR-0029 registry, it threads ADR-0031's `broadcast_buffers=False` through
-`build_trainer`, and it is the one place that has to change (not five) when a new
-callback lands.
+of the ADR-0029 registry, it threads ADR-0031's DDP-strategy decision (keep
+default `broadcast_buffers=True`; the frozen-arm isolation is `requires_grad=False`
++ `eval()`, not a global flag) into `build_trainer`, and it is the one place that
+has to change (not five) when a new callback lands.
 
 ## Why
 
@@ -39,11 +40,11 @@ callback lands.
   are updated to assert on `CheckpointSpec` / `trainer.callbacks` membership
   instead. This is the trade-off that makes the collapse a real net reduction
   rather than a wash.
-- **`broadcast_buffers=False` (ADR-0031) needs one DDP-construction site.**
-  ADR-0031 decided frozen-arm registration implies `broadcast_buffers=False`.
-  The spine threads it through `build_trainer` once, preserving the
-  `find_unused_parameters=True` source string that `test_ddp_warm.py` asserts, and
-  leaving the single-GPU `"auto"` path untouched.
+- **The DDP strategy has one construction site.** ADR-0031 keeps the default
+  `broadcast_buffers=True` (the frozen-arm isolation is `requires_grad=False` +
+  `eval()`, not a global flag), so the spine's only DDP concern is preserving
+  `find_unused_parameters=True` (the `test_ddp_warm.py` source-string assertion) in
+  `build_trainer`, with the single-GPU `"auto"` path untouched.
 
 ## Considered options (rejected)
 
@@ -73,8 +74,8 @@ callback lands.
 - **Two status-quo "no-collapse" angles (a spine object with no spine; a
   checkpoint-in-registry design with no caller):** both surfaced as effectively
   null designs during adversarial design — they fail EC4 (no registry caller),
-  EC6 (no `broadcast_buffers`), EC7 (five seams, not one), and EC10 (no reduction)
-  outright and were not adopted.
+  EC6 (no single DDP-strategy site), EC7 (five seams, not one), and EC10 (no
+  reduction) outright and were not adopted.
 
 ## Consequences
 
@@ -109,11 +110,12 @@ callback lands.
   ADR-0029). The four tests that imported `_build_checkpoint` are rewritten to
   assert on `CheckpointSpec` or `trainer.callbacks` membership, and the
   `reward-*.ckpt` glob dependency is updated to the registry-specified name.
-- **`build_trainer` gains `ddp_broadcast_buffers: bool = False`** and constructs
-  `DDPStrategy(find_unused_parameters=True, broadcast_buffers=…)` under
-  `is_multi_gpu`; the single-GPU `"auto"` path is untouched. The
-  `find_unused_parameters=True` source string is preserved (`test_ddp_warm.py:169`
-  still passes); a new assertion covers `broadcast_buffers=False`.
+- **`build_trainer`** keeps constructing
+  `DDPStrategy(find_unused_parameters=True)` under `is_multi_gpu` with the default
+  `broadcast_buffers=True` (ADR-0031 — the frozen-arm isolation is
+  `requires_grad=False` + `eval()`, not a global buffer flag); the single-GPU
+  `"auto"` path is untouched. The `find_unused_parameters=True` source string is
+  preserved (`test_ddp_warm.py:169` still passes).
 - **`fid_eval` → `fid` rename** (ADR-0029 namespace alignment) lands with E:
   `tests/test_training_cli.py:465` and `configs/train/config_rflow_jit.yaml:40`
   are updated.
