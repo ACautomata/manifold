@@ -8,7 +8,7 @@ never diverge. Construction is **two-phase** — `resolve` (config-time: validat
 + knobs, fail-fast) and `build` (fit-prep: inject runtime objects via a typed
 `CallbackContext`) — because generative callbacks (`FIDCallback`, future PSNR/SSIM)
 need runtime objects (`module`, `vae`, `datamodule`, `inference_recipe`,
-`feature_net_factory`) that do not exist at config resolution time.
+`feature_net`, `feature_net_factory`) that do not exist at config resolution time.
 
 This is phase B of the four-point architecture refactor (issue #157) — the
 structural prerequisite that makes the FID split (C) and the CLI-spine collapse (E)
@@ -91,11 +91,15 @@ one-place changes instead of five-CLI sweeps.
   each spec a `@dataclass` carrying its typed config fields + defaults. Composition,
   not inheritance (`pl.Callback` remains the sanctioned framework base class).
 - **`CallbackContext`** — typed dataclass carrying `module`, `vae`, `datamodule`,
-  `inference_recipe`, `feature_net_factory`, `model_dir`, `seed` (and CLI-specific
-  runtime objects). Populated by `run_training` as the runtime objects materialize.
-  This is the seam's payload — the honest scope of "what the CLI contributes beyond
-  a Module factory and a default callback-name list" (the brief's per-CLI default
-  list is **dynamic**, derived from bundle flags, not a static YAML list).
+  `inference_recipe`, `feature_net`, `feature_net_factory`, `real_latents`,
+  `model_dir`, `seed` (and CLI-specific runtime objects). Populated by `run_training` as the runtime objects materialize.
+  `feature_net` is the directly-injected network the CPU / integration test seam
+  passes (`run_training(feature_net=...)` / `GRPOInputs.feature_net`); it defaults
+  to `None`, in which case `feature_net_factory`'s lazy fail-safe build is used.
+  `real_latents` is GRPO's FID reference (ADR-0032). This is the seam's payload —
+  the honest scope of "what the CLI contributes beyond a Module factory and a
+  default callback-name list" (the brief's per-CLI default list is **dynamic**,
+  derived from bundle flags, not a static YAML list).
 - **Runtime build order** (inside `run_training`): derive the default callback
   **name** set from bundle flags (`has_val`, `enable_fid`) → apply `callbacks:`
   YAML → apply `--callbacks` CLI (**CLI replaces the YAML list**, mirroring

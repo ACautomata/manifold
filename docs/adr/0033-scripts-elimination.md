@@ -107,7 +107,10 @@ callbacks". This is phase D of the four-point architecture refactor (issue #157)
   dead, never migrated — not to this still-referenced parity proof.)
 - **Tests are updated**, not rewritten. The `sys.path.insert(0, …/scripts)` +
   `import export_checkpoint as cli` sites (in `tests/test_training_cli.py`) become
-  `from manifold.training.export_cli import main as cli`. In
+  `import manifold.training.export_cli as cli` — importing the **module**, not the
+  function, so the existing `cli.main(...)` call seam is preserved unchanged
+  (importing `main as cli` would make `cli` a function and break those calls with
+  `AttributeError`). In
   `tests/test_reward_pairs.py` **only the script-entry test** is deleted
   (`test_generate_reward_pairs_script_end_to_end`, which `sys.path`-imports the
   retired script); the rest of that file tests still-live production behavior in

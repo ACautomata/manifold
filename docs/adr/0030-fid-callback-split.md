@@ -115,7 +115,13 @@ the helpers are composable objects its `build(ctx)` constructs.
   runtime objects). `FIDSpec` (an `@dataclass` `CallbackSpec` per ADR-0029, knobs
   `num_synth` / `every_n_epochs` / `center_slices_ratio` / `cov_ridge` / `seed`)
   is an **additional** build path whose `build(ctx)` extracts the runtime objects
-  from `CallbackContext` and calls the same constructor. The lazy `real_latents`
+  from `CallbackContext` and calls the same constructor. `build` forwards both
+  `feature_net=ctx.feature_net` (the direct network the CPU / integration test
+  seam injects — `run_training(feature_net=...)` / `GRPOInputs.feature_net`) and
+  `feature_net_factory=ctx.feature_net_factory`, matching the existing
+  constructor's two optional knobs; when the direct network is `None` the
+  factory's lazy fail-safe build is used (the `feature_net stays None -> FID is
+  skipped gracefully` path). The lazy `real_latents`
   pull (ADR-0017 / F5) is preserved — `build` uses `ctx.real_latents` when GRPO
   supplies it (its conditioning-only datamodule has no `val_latents`, so the
   reference comes via `GRPOInputs.real_latents`; ADR-0029 / ADR-0032) and falls

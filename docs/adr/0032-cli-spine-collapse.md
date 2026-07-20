@@ -41,10 +41,10 @@ has to change (not five) when a new callback lands.
   per CLI and imported by tests; the registry (ADR-0029) already registered
   `ModelCheckpoint` as `name="checkpoint"` with monitor validation. E resolves the
   duplication by making `CheckpointSpec` the **sole** owner — the per-CLI
-  `_build_checkpoint` helpers are deleted, and the few tests that imported them
-  are updated to assert on `CheckpointSpec` / `trainer.callbacks` membership
-  instead. This is the trade-off that makes the collapse a real net reduction
-  rather than a wash.
+  `_build_checkpoint` helpers are deleted, and the seven test sites that imported
+  them (see the rejected shim option) are updated to assert on `CheckpointSpec` /
+  `trainer.callbacks` membership instead. This is the trade-off that makes the
+  collapse a real net reduction rather than a wash.
 - **The DDP strategy has one construction site.** ADR-0031 keeps the default
   `broadcast_buffers=True` (the frozen-arm isolation is `requires_grad=False` +
   `eval()`, not a global flag), so the spine's only DDP concern is preserving
@@ -69,9 +69,12 @@ has to change (not five) when a new callback lands.
   unchanged, but it leaves `ModelCheckpoint` with two owners (the registry spec
   and the shim) and erases the net-line reduction that is the point of the
   collapse. The shim is the "wash" outcome EC10 warns against; deleting it and
-  updating the four tests is the cleaner break. (The tests are: `tests/ddp.py`
-  three `_build_checkpoint` call sites, `tests/test_paired_reward.py:623`,
-  `tests/test_reward.py:588`.)
+  updating the tests is the cleaner break. The full set of test sites importing
+  `_build_checkpoint` (a repo-wide `rg "_build_checkpoint" tests`) is seven:
+  `tests/ddp.py` three call sites (`:161`, `:295`, `:520`),
+  `tests/test_paired_reward.py:623`, `tests/test_reward.py:588`,
+  `tests/test_ddp_detection.py:167`, and `tests/test_training_cli.py:349` — all
+  seven are migrated, not only the DDP/reward sites.
 - **Fold `run_grpo_measurement` into the spine:** rejected (EC8). It is not a
   training spine — it is the #59 launch-gate measurement harness that *calls*
   `run_grpo_training`. It stays as-is and continues to call the `run_grpo_training`
@@ -89,8 +92,8 @@ has to change (not five) when a new callback lands.
   The object holds a `CallbackRegistry`; `run` takes the assembled `module`,
   `datamodule`, a `CallbackContext`, the `cfg`, a `default_callback_names` list,
   the CLI `callback_names_override` (separate from the YAML `callbacks:` list),
-  and the monitor / filename metadata. No module-level bare functions except the
-  existing console `main`s (OOP rule).
+  the monitor / filename metadata, and the multi-GPU flag. No module-level bare
+  functions except the existing console `main`s (OOP rule).
 - **The five `run_*` are thin shells** — their existing positional / test-seam
   signature is preserved (`run_training(module, bundle=_DataBundle(...))`,
   `run_grpo_training(module, inputs=GRPOInputs(...))`, plus the
@@ -119,19 +122,42 @@ has to change (not five) when a new callback lands.
   Mode-2 context) **force-removes `"fid"` and rejects a `val/fid` monitor** for
   Mode-2, with a loud log. The override is honored for every other callback; FID
   is the one Mode-2-forbidden name.
-- **`CallbackContext` gains an optional `real_latents` field.** GRPO's FID
-  reference lives in `GRPOInputs.real_latents` (`grpo_cli.py:72`), not in its
-  conditioning-only datamodule; the shell sets `ctx.real_latents =
+- **`CallbackContext` gains optional `real_latents` and `feature_net` fields.**
+  GRPO's FID reference lives in `GRPOInputs.real_latents` (`grpo_cli.py:72`), not
+  in its conditioning-only datamodule; the shell sets `ctx.real_latents =
   inputs.real_latents`. JiT/cli leaves it `None` so `FIDSpec.build` falls back to
   `real_latents_source=ctx.datamodule` (ADR-0017 / F5 laziness preserved).
+  Separately, the CPU / integration test seam injects a tiny **direct** feature
+  network (`run_training(feature_net=...)`, `GRPOInputs.feature_net`) rather than
+  invoking the production backbone factory; `ctx.feature_net` carries that
+  already-built network so `FIDSpec.build` forwards it verbatim alongside the
+  optional `feature_net_factory` (ADR-0030). Both default to `None`.
 - **`CheckpointSpec` is the sole `ModelCheckpoint` owner.** Monitor / mode /
   `save_top_k` / filename metadata are passed by the shell and injected into
   `cfg.checkpoint` before `registry.resolve`; the spec validates the monitor metric
   is in the resolved callbacks' logged metrics **union the module's declared
   metrics** (ADR-0029 — reward / paired-reward / GRPO-without-FID monitors
-  `val/gen_pair_acc` / `val/mean_reward` are module-logged, not callback-logged). The four tests that imported `_build_checkpoint` are rewritten to
-  assert on `CheckpointSpec` or `trainer.callbacks` membership, and the
-  `reward-*.ckpt` glob dependency is updated to the registry-specified name.
+  `val/gen_pair_acc` / `val/mean_reward` are module-logged, not callback-logged).
+  **The reward / paired-reward DDP fallback is preserved** (mirrors the JiT
+  fallback): those monitors are rank-0-local (`val/gen_pair_acc` is computed on
+  rank 0's generated-end probe shard), so under `is_multi_gpu` the shell passes
+  `monitor_metric=None` — yielding an unmonitored `save_last` + `save_top_k=1`
+  checkpoint instead of monitoring a rank-local metric. The two existing tests
+  (`tests/test_reward.py:586`, `tests/test_paired_reward.py:619`) assert exactly
+  `multi.monitor is None` and stay authoritative; single-GPU keeps
+  `monitor=val/gen_pair_acc`. The seven test sites that imported
+  `_build_checkpoint` (see the rejected shim option) are rewritten to assert on
+  `CheckpointSpec` or `trainer.callbacks` membership, and the `reward-*.ckpt`
+  glob dependency is updated to the registry-specified name.
+- **Seeding stays in each shell's `main`, before module construction.** The
+  preserved `run_training(module, ...)` / `run_grpo_training(module, ...)`
+  signatures receive an **already-constructed** module, so `run_*` / the spine
+  cannot own the initial seed — `pl.seed_everything` must run in `main`
+  (`cli.py:356`, `grpo_cli.py:147/305`, …) **before** the module factory sets
+  initial weights and before `_real_inputs` generates the validation pairs /
+  probe, or initial weights and precomputed stochastic inputs would vary across
+  nominally-identical seeded runs. `run_*` may reseed for direct callers, but the
+  authoritative seed is in `main`.
 - **`build_trainer`** keeps constructing
   `DDPStrategy(find_unused_parameters=True)` under `is_multi_gpu` with the default
   `broadcast_buffers=True` (ADR-0031 — the frozen-arm isolation is
