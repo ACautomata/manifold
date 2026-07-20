@@ -209,22 +209,29 @@ _Avoid_: device manager, device resolver.
 
 **TrainingSpine**:
 The composed object (a `@dataclass`, not a base class) owning the shared training
-sequence — seed → callback-name merging → registry `resolve/build` → checkpoint
-injection → `build_trainer` → `fit`. The five `run_*` functions shrink to thin
-shells that build their own `module` + `datamodule` and delegate; the per-CLI
+sequence — callback-name merging → registry `resolve/build` → checkpoint
+injection → `build_trainer` → `fit`. (Seeding stays in each `run_*` shell, *before*
+module construction and `_real_inputs` — the spine receives an already-assembled
+module, so seeding there would vary initial weights / precomputed probes across
+nominally-identical seeded runs.) The five `run_*` functions shrink to thin shells
+that seed, build their own `module` + `datamodule`, and delegate; the per-CLI
 `_real_inputs` data-assembly paths stay put (genuinely different). The single
 caller of the callback registry, and the one place that changes when a new callback
 lands. ADR-0032.
 _Avoid_: training runner, base trainer.
 
 **Collective-count invariance** (FID, DDP):
-The DDP correctness property that every rank enters the same number of `all_reduce`
-collectives in every code path of the FID staged phase. Enforced by wrapping the
-staged phase in a `try/except` that `all_reduce`s an error flag (MAX) on any
-rank-local exception, so all ranks take the same abort branch together — instead
-of the failing rank exiting while others block in the next collective (a deadlock).
-Generalizes the FID disable-flag collective; narrows ADR-0025's symmetric-all-reduce
-rule to a per-path count guarantee. ADR-0030.
+The DDP correctness property that every rank enters the same collectives in the
+same order in every code path of the FID staged phase. Enforced by an **error-flag
+`all_reduce` (MAX) rendezvous before each reduction-bearing phase** — run the
+fallible rank-local work (staging, feature extraction) under `try`, set a local
+error flag on exception, then `all_reduce` the flag *before* entering any moment
+reduction so every rank agrees whether to abort (`val/fid=+inf` / skip) or proceed
+together. (A plain `try/except`-then-`all_reduce` on the exception path alone is
+insufficient: the failing rank would enter the error collective while healthy
+ranks proceed into the per-plane reductions — collectives in different orders,
+still a deadlock.) Generalizes the FID disable-flag collective; narrows
+ADR-0025's symmetric-all-reduce rule to a per-path count guarantee. ADR-0030.
 _Avoid_: DDP guard, collective symmetry (that is ADR-0025's broader rule).
 
 ### Reward model (GRPO)

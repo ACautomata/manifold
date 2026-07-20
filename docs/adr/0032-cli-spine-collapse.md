@@ -91,13 +91,19 @@ has to change (not five) when a new callback lands.
   the CLI `callback_names_override` (separate from the YAML `callbacks:` list),
   and the monitor / filename metadata. No module-level bare functions except the
   existing console `main`s (OOP rule).
-- **The five `run_*` are thin shells** (signatures unchanged — `run_training(module,
-  bundle=_DataBundle(...))`, `run_grpo_training(module, inputs=GRPOInputs(...))`,
-  etc., plus the `main(argv, data_provider=...)` injection seam). Each builds its
-  module + datamodule via its own `_real_inputs`, derives its dynamic default
-  callback **name** set and monitor metric, and delegates to `TrainingSpine.run`.
-  They stay module-level functions (grandfathered public API; the OOP rule does
-  not force rewriting existing seams into classes).
+- **The five `run_*` are thin shells** — their existing positional / test-seam
+  signature is preserved (`run_training(module, bundle=_DataBundle(...))`,
+  `run_grpo_training(module, inputs=GRPOInputs(...))`, plus the
+  `main(argv, data_provider=...)` injection seam), and each gains
+  **backward-compatible keyword args** (`callback_names=None`, `cfg=None`) that
+  forward the YAML `callbacks:` block and the `--callbacks` CLI override through
+  to `TrainingSpine.run` (defaulting to `None` ⇒ the legacy hand-assembled set, so
+  existing tests that call `run_*` without them are unchanged — `main` is the one
+  caller that populates them). Each builds its module + datamodule via its own
+  `_real_inputs`, derives its dynamic default callback **name** set and monitor
+  metric, and delegates to `TrainingSpine.run`. They stay module-level functions
+  (grandfathered public API; the OOP rule does not force rewriting existing seams
+  into classes).
 - **`TrainingSpine.run` is the single registry caller.** It applies the ADR-0029
   merge order — defaults → YAML `callbacks:` → CLI `--callbacks` **replace** —
   then `registry.resolve(names, cfg)` (fail-fast on unknown name/knob),
@@ -111,8 +117,9 @@ has to change (not five) when a new callback lands.
 - **`CheckpointSpec` is the sole `ModelCheckpoint` owner.** Monitor / mode /
   `save_top_k` / filename metadata are passed by the shell and injected into
   `cfg.checkpoint` before `registry.resolve`; the spec validates the monitor metric
-  is in the resolved set's logged metrics (the absent-vs-disabled distinction of
-  ADR-0029). The four tests that imported `_build_checkpoint` are rewritten to
+  is in the resolved callbacks' logged metrics **union the module's declared
+  metrics** (ADR-0029 — reward / paired-reward / GRPO-without-FID monitors
+  `val/gen_pair_acc` / `val/mean_reward` are module-logged, not callback-logged). The four tests that imported `_build_checkpoint` are rewritten to
   assert on `CheckpointSpec` or `trainer.callbacks` membership, and the
   `reward-*.ckpt` glob dependency is updated to the registry-specified name.
 - **`build_trainer`** keeps constructing

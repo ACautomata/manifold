@@ -135,11 +135,27 @@ keys. This is phase A of the four-point architecture refactor (issue #157).
   `broadcast_buffers=False` would also stop broadcasting the **trainable**
   `RewardModel`'s BatchNorm running stats (MONAI PatchGAN defaults to BATCH norm),
   letting them diverge per rank under data-parallel batches and leaving the saved
-  checkpoint with rank-local statistics. The frozen arms need no special DDP flag:
-  `requires_grad=False` keeps their gradients off the sync, and they stay in
-  `eval()` (see *frozen-arm mode-management* below) so their buffers do not update
-  — broadcasting identical buffers is harmless. `find_unused_parameters=True` is
-  unchanged.
+  checkpoint with rank-local statistics. The frozen arms need no special
+  buffer-broadcast flag: `requires_grad=False` keeps their gradients off the sync,
+  and they stay in `eval()` (see *frozen-arm mode-management* below) so their
+  buffers do not update — broadcasting identical buffers is harmless.
+  `find_unused_parameters=True` is unchanged.
+- **DDP init broadcasts the registered frozen-arm parameters (a documented cost).**
+  Registration has a second DDP consequence beyond buffer broadcast: at
+  `DistributedDataParallel` **construction**, every registered parameter —
+  including the `requires_grad=False` frozen arms — is synchronized from rank 0
+  (the `params_to_ignore` / `static_graph` knobs address gradient sync, not this
+  init-time broadcast). This is the off-DDP invariant the `object.__setattr__`
+  bypass bought, and registering the arms gives it up: the multi-gigabyte
+  denoiser / reward / reference arms are broadcast once at startup. It is
+  acceptable (the arms are rank-identical by construction, so the broadcast is
+  redundant-but-correct, and it is a one-time startup cost — not per-step), but
+  **GRPO pays it several times** (base + reward + reference unet + reference
+  controlnet), adding multi-gigabyte startup communication that can compound the
+  DDP-init timeout pressure. If that bites, the mitigation is to construct the
+  frozen arms on each rank from the same source (so they are byte-identical and
+  the broadcast is a no-op semantically) rather than adding a DDP exclusion hack;
+  the cost is documented here, not silently incurred.
 - **A2 — land and wire `DevicePolicy`.** A `training/device_policy.py`
   implementing per-rank `cuda:{LOCAL_RANK}` resolution exists locally (written for
   the PR #156 fix) but was **never committed** — it is absent from `HEAD` and from
@@ -196,8 +212,8 @@ keys. This is phase A of the four-point architecture refactor (issue #157).
   a plain JiT checkpoint or a supervised ControlNet stage-1 checkpoint; a Mode-2
   GRPO `.ckpt` contains only `controlnet.*` and its frozen base must come from
   the native dir. This ADR deliberately leaves `export_to_native` untouched
-  (resume is handled by `load_state_dict(strict=False)` + fresh rebuild); the
-  Mode-2 export branch is future work.
+  (resume is handled by strict load + the frozen-arm allowlist (see Consequences)
+  + fresh rebuild); the Mode-2 export branch is future work.
 - **Restructuring the CLIs to defer staging into `DataModule.setup()`.** The
   A2 models are staged pre-Trainer by design; moving them into the DataModule
   lifecycle would be a structural rewrite and is not required once `DevicePolicy`

@@ -120,19 +120,23 @@ one-place changes instead of five-CLI sweeps.
   logs `val/fid = +inf` and `mode='min'` falls through to `save_last` (the
   absent-vs-disabled distinction: a missing monitored callback is an error; a
   present-but-disabled one is the intended fallback).
-- **Lazy `real_latents` preserved (ADR-0017 / F5).** `FIDSpec.build` passes
-  `real_latents=None`, `real_latents_source=ctx.datamodule`; the post-build
+- **Lazy `real_latents` preserved (ADR-0017 / F5).** `FIDSpec.build` uses
+  `ctx.real_latents` when GRPO supplies it (its conditioning-only datamodule has
+  no `val_latents`, so the reference comes via `GRPOInputs.real_latents` — the
+  `real_latents` field ADR-0032 adds to `CallbackContext`); for JiT it passes
+  `real_latents=None`, `real_latents_source=ctx.datamodule`. The post-build
   `fid._real_latents_source = datamodule` mutation in `run_training` is removed.
 - **Config namespace alignment:** the `fid_eval` YAML block is renamed to `fid` so
   the callback name and its config namespace are identical everywhere (no
-  `config_prefix` indirection). The rename carries a **legacy-override
-  translation**: the JiT CLI today reads `fid_eval.save_top_k` as a
-  higher-precedence `checkpoint.save_top_k` override (`cli.py:414`). After the
-  rename, a user's `fid.save_top_k` would fail `FIDSpec`'s strict unknown-knob
-  validation (`save_top_k` is a checkpoint knob, not an FID one). So the shell
-  translates `fid.save_top_k` → `checkpoint.save_top_k` **before** registry
-  resolution (or keeps a documented alias); existing experiment overrides must not
-  stop launching.
+  `config_prefix` indirection). The rename carries a **legacy-namespace
+  translation**: existing dotlist/YAML overrides arrive as `fid_eval.*`
+  (`fid_eval.num_synth=32`, `fid_eval.save_top_k=1`). After the rename, OmegaConf
+  would otherwise leave a stale orphan `fid_eval` block that `FIDSpec` never reads
+  — silently dropping the override. So the shell **first** moves the whole
+  `fid_eval.*` block → `fid.*`, **then** lifts `fid.save_top_k` →
+  `checkpoint.save_top_k` before registry resolution (`save_top_k` is a checkpoint
+  knob, not an FID one; today `cli.py:414` reads `fid_eval.save_top_k` as the
+  checkpoint override). Existing experiment overrides must not stop launching.
 - **`build_trainer` boundary unchanged.** The invariant framework callbacks
   (`spt.ModuleRegistryCallback`, `MetricsPlotCallback`) stay auto-appended by
   `build_trainer`; the registry owns only the project metric/lifecycle callbacks.
