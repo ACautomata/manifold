@@ -1,5 +1,12 @@
 # ControlNet two-stage: supervised pre-training then GRPO Mode-2
 
+> **Amended by [ADR-0034](0034-one-realism-reward-both-grpo-policies-delete-condition-aware.md).**
+> The GRPO second stage scores `z_K` with the **shared unconditional realism reward**
+> (ADR-0009/0010), not a condition-aware reward — `x_src` is the ControlNet control
+> signal, not a reward input. The "Mode-2" vocabulary is dropped (ADR-0028); the launch
+> gate's reward-separability check (`train_acc`) refers to the shared reward. The
+> supervised stage 1 (x0-MSE on `x_tgt`, ControlNet on `x_src`) stands unchanged.
+
 The ControlNet is first **supervised-pre-trained**, then **GRPO post-trained** —
 mirroring the JiT two-stage (`LatentFlowModule` → `GRPOModule`).
 
