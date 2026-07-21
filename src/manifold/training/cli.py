@@ -114,6 +114,29 @@ def _resolve_fid_overrides(cfg, raw_overrides):
     return merged
 
 
+def _resolve_save_top_k(ckpt_cfg, fid_cfg, raw_overrides):
+    """Resolve ``save_top_k`` with dotlist precedence (checkpoint > fid_eval > recipe).
+
+    When the recipe's ``checkpoint`` block carries a default ``save_top_k``
+    (e.g. 3 in ``config_rflow_jit.yaml``), ``ckpt_cfg.get("save_top_k")``
+    returns that default even when the user explicitly set a legacy override
+    via ``fid_eval.save_top_k=2``. This helper checks the raw dotlist first
+    so the explicit override wins.
+    """
+    _ckpt = None
+    for token in raw_overrides or []:
+        if "=" not in token:
+            continue
+        k, v = token.split("=", 1)
+        if k == "checkpoint.save_top_k":
+            _ckpt = int(v)
+        elif k in ("fid_eval.save_top_k", "fid.save_top_k") and _ckpt is None:
+            _ckpt = int(v)
+    if _ckpt is not None:
+        return _ckpt
+    return ckpt_cfg.get("save_top_k", fid_cfg.get("save_top_k", 3))
+
+
 def run_training(
     *,
     module: LatentFlowModule,
@@ -229,8 +252,13 @@ def run_training(
         "every_n_epochs": every_n_epochs,
     }
     if checkpoint_cfg:
-        allowed = {"monitor_metric", "save_top_k", "save_last", "every_n_epochs", "mode", "filename"}
-        callback_cfg["checkpoint"].update({k: v for k, v in checkpoint_cfg.items() if k in allowed})
+        # Pass the full checkpoint block through so the registry's fail-fast
+        # unknown-knob validation catches typos (e.g. ``save_topk``) at config
+        # time instead of silently accepting the default. The resolved save_top_k
+        # (from the fid_eval translation) must override the recipe value here,
+        # see Bug 2 / test_main_preserves_dotlist_precedence.
+        callback_cfg["checkpoint"].update(checkpoint_cfg)
+        callback_cfg["checkpoint"]["save_top_k"] = save_top_k
 
     ctx = CallbackContext(
         module=module,
@@ -244,11 +272,14 @@ def run_training(
     )
     specs = registry.resolve(names, callback_cfg)
     callbacks: list = registry.build(specs, ctx)
-    registry.validate_monitor(specs, module)
-    ckpt = next(c for c in callbacks if isinstance(c, ModelCheckpoint))
 
     if val_enabled:
         callbacks.append(LatentX0MAE())
+        # Augment the module's logged_metrics with the hand-appended
+        # LatentX0MAE metric so validate_monitor accepts monitor_metric=val/x0_mae.
+        # The module's existing logged_metrics is preserved.
+        x0_mae = getattr(module, "logged_metrics", frozenset()) | {"val/x0_mae"}
+        module.logged_metrics = frozenset(x0_mae)
     else:
         rank_zero_info(
             "manifold-train: no held-out validation set is configured "
@@ -257,6 +288,8 @@ def run_training(
             "leak train metrics into validation, which is refused; set "
             "val_data_base_dir to a held-out BraTS directory to enable."
         )
+    registry.validate_monitor(specs, module)
+    ckpt = next(c for c in callbacks if isinstance(c, ModelCheckpoint))
 
     # When validation is disabled, ``limit_val_batches=0`` makes every validation
     # epoch a 0-batch no-op (the empty val_dataloader yields nothing) and
@@ -441,9 +474,10 @@ def main(argv: list[str] | None = None, *, data_provider=None) -> int:
         fid_cfg, ("num_synth", "every_n_epochs", "center_slices_ratio", "cov_ridge")
     )
     # ``save_top_k`` may be supplied either in the legacy ``fid_eval`` block or in
-    # the modern ``checkpoint`` block; prefer the explicit checkpoint value, then
-    # the legacy FID-side value, then the default.
-    ckpt_save_top_k = ckpt_cfg.get("save_top_k", fid_cfg.get("save_top_k", 3))
+    # the modern ``checkpoint`` block; ``_resolve_save_top_k`` checks the raw
+    # dotlist first so an explicit ``fid_eval.save_top_k=2`` wins over the
+    # recipe's ``checkpoint.save_top_k: 3`` (the standard recipe default).
+    ckpt_save_top_k = _resolve_save_top_k(ckpt_cfg, fid_cfg, args.overrides)
 
     run_training(
         module=module,
