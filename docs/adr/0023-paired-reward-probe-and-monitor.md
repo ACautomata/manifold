@@ -1,5 +1,9 @@
 # Paired reward generated-end probe — partial-paired rollout; monitor val/gen_pair_acc
 
+> **Status: Superseded by [ADR-0034](0034-one-realism-reward-both-grpo-policies-delete-condition-aware.md).**
+> The paired-reward probe and its monitor are deleted with the pipeline. Kept as
+> decision history.
+
 > **Paired analogue of the [ADR-0009](0009-reward-partial-reconstruction-labels-and-generated-end-probe.md)
 > generated-end probe.** The probe is the only metric that tests graded within-fake
 > ranking — what GRPO consumes (it ranks among all-fake policy siblings). Under

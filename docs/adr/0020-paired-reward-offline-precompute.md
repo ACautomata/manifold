@@ -1,5 +1,9 @@
 # Paired reward pairs are precomputed offline (inverts ADR-0010)
 
+> **Status: Superseded by [ADR-0034](0034-one-realism-reward-both-grpo-policies-delete-condition-aware.md).**
+> The paired-reward offline fake cache is deleted with the pipeline. Kept as decision
+> history.
+
 > **Inverts [ADR-0010](0010-online-rollout-in-the-loop-preference-pairs.md)** for the
 > paired reward. ADR-0010's online rollout-in-the-loop (fresh `t` + fresh noise each
 > fit step, for unbounded pair diversity) transfers **no** value to paired, because

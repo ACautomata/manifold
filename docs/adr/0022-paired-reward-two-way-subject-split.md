@@ -1,5 +1,9 @@
 # Paired reward subject split — 2-way, reusing the paired train/val partition
 
+> **Status: Superseded by [ADR-0034](0034-one-realism-reward-both-grpo-policies-delete-condition-aware.md).**
+> The paired-reward pipeline is deleted; `_train_val_manifests` survives, relocated to
+> `data/paired_manifests.py` (still used by the ControlNet CLIs). Kept as decision history.
+
 The paired reward trains on **paired-train subjects** and validates on **paired-val
 subjects** — the SAME partition paired training holds out, resolved via the **paired**
 split mechanism (`_train_val_manifests` / native `val_data_base_dir` /

@@ -1,5 +1,11 @@
 # Condition-aware paired reward — score concat([x_src, tgt]), in_channels = 2·C_latent
 
+> **Status: Superseded by [ADR-0034](0034-one-realism-reward-both-grpo-policies-delete-condition-aware.md).**
+> The condition-aware `2·C` reward is deleted; both GRPO policies share the
+> unconditional realism reward (ADR-0009/0010). ADR-0019's copy-src premise died with
+> the Paired-JiT transport (ADR-0028) — `x_src` is a ControlNet control signal, not a
+> transport endpoint. Kept as decision history.
+
 The paired reward discriminator scores the **concatenation** `concat([x_src, tgt])`
 along channels — i.e. it is constructed `RewardModel(in_channels = 2·C_latent)` and
 the **caller** concats before scoring; `RewardModel.forward` is unchanged (it is
