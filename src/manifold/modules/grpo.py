@@ -623,7 +623,7 @@ class GRPOModule(spt.Module):
         """
         return key.split(".", 1)[0] in self._frozen_arm_names
 
-    def state_dict(self, *args, **kwargs):
+    def state_dict(self, destination=None, prefix="", keep_vars=False, **kwargs):
         """Strip the registered frozen arms — they are rebuilt fresh each launch.
 
         The frozen reward / reference / Mode-2 base stay off the checkpoint: the reward
@@ -632,9 +632,20 @@ class GRPOModule(spt.Module):
         arms (so Lightning owns their device placement) would otherwise leak their
         weights into the checkpoint; this override restores the off-checkpoint invariant
         at the source, so direct ``mod.state_dict()`` calls see them stripped (ADR-0031).
+
+        The filter mutates the shared ``destination`` IN PLACE (and matches the arms
+        under the caller-supplied ``prefix``): ``super().state_dict()`` writes every
+        frozen-arm tensor into ``destination``, and a parent/wrapper that drives the
+        recursion reads ``destination`` (the return value is the same object), so
+        building a fresh dict would leave the multi-GB arms behind. Prefix-awareness
+        makes a GRPOModule nested under another ``nn.Module`` —
+        ``state_dict(prefix="grpo.")`` — strip them too.
         """
-        full = super().state_dict(*args, **kwargs)
-        return {k: v for k, v in full.items() if not self._is_frozen_key(k)}
+        destination = super().state_dict(destination=destination, prefix=prefix, keep_vars=keep_vars, **kwargs)
+        frozen_prefixes = tuple(f"{prefix}{name}." for name in self._frozen_arm_names)
+        for key in [k for k in destination if k.startswith(frozen_prefixes)]:
+            del destination[key]
+        return destination
 
     def load_state_dict(self, state_dict, strict: bool = True, **kwargs):
         """Strict load over the TRAINABLE keys; frozen arms are an explicit allow-list.

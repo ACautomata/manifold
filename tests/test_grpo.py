@@ -404,6 +404,34 @@ def test_frozen_arms_registered_but_dual_excluded():
     assert any(k.startswith("unet.") for k in keys)
 
 
+def test_state_dict_strips_frozen_arms_through_wrapper_prefix():
+    """Regression (codex #172 P2): state_dict() must strip frozen arms when collected
+    through a wrapper (DDP / an outer nn.Module), not only on a direct call.
+
+    PyTorch recurses via ``module.state_dict(destination=..., prefix='module.')`` and
+    DISCARDS the child's return value — so the override must (a) recognize prefixed
+    keys (``module.reward_model.*``) and (b) mutate the shared destination in place.
+    Otherwise the multi-gigabyte frozen reward / reference / base arms leak into the
+    checkpoint (the ADR-0031 off-checkpoint invariant breaks under wrapping).
+    """
+    mod = _module()  # Mode-1: frozen reward_model, trainable unet
+    assert "reward_model" in mod._frozen_arm_names
+
+    # A minimal outer module mirrors how DDP / a wrapper nests the learner (the real
+    # DDP wrapper uses the ``module.`` attribute name, which is the load-bearing prefix).
+    class _Wrapper(nn.Module):
+        def __init__(self, inner):
+            super().__init__()
+            self.module = inner
+
+    keys = set(_Wrapper(mod).state_dict())
+
+    # No frozen-arm key survives under the wrapper prefix; the trainable arm IS saved.
+    leaked = [k for k in keys if k.startswith("module.") and k.split(".", 2)[1] in mod._frozen_arm_names]
+    assert not leaked, f"frozen arms leaked through wrapper state_dict: {leaked[:3]}"
+    assert any(k.startswith("module.unet.") for k in keys), "trainable arm must remain on the checkpoint"
+
+
 def test_load_state_dict_strict_except_frozen_allowlist():
     """load_state_dict is strict on trainable keys, lenient only on the frozen arms (AC2).
 
@@ -447,6 +475,45 @@ def test_train_keeps_frozen_arms_in_eval():
     mod.train(False)
     assert not mod.reward_model.training
     assert not mod.unet.training
+
+
+def test_state_dict_filters_destination_in_place():
+    """state_dict() strips frozen arms IN PLACE on the shared destination (ADR-0031).
+
+    ``super().state_dict()`` writes the frozen arms into the caller-supplied
+    ``destination``; a parent/wrapper drives the recursion and reads ``destination``
+    (the return value is the same object), so the filter must mutate it, not build a
+    fresh dict. The return IS the destination (the nn.Module contract), with the frozen
+    arms gone and the trainable arm kept.
+    """
+    from collections import OrderedDict
+
+    mod = _module()
+    dest = OrderedDict()
+    ret = mod.state_dict(destination=dest)
+    assert ret is dest  # contract: return == destination
+    assert not any(k.split(".", 1)[0] == "reward_model" for k in dest)
+    assert any(k.startswith("unet.") for k in dest)
+
+
+def test_state_dict_strips_frozen_arms_when_wrapped():
+    """A GRPOModule nested under another nn.Module still strips its frozen arms.
+
+    The recursion drives ``grpo.state_dict(prefix="grpo.")``; a prefix-naive filter
+    would leave the multi-GB reward/reference/base arms in the wrapper's checkpoint
+    (the off-checkpoint invariant). The override matches the arms under the caller's
+    ``prefix`` so the wrapped save is also clean (codex review).
+    """
+    mod = _module()
+
+    class _Wrapper(nn.Module):
+        def __init__(self, grpo):
+            super().__init__()
+            self.grpo = grpo
+
+    sd = _Wrapper(mod).state_dict()
+    assert not any(k.startswith("grpo.reward_model.") for k in sd)
+    assert any(k.startswith("grpo.unet.") for k in sd)  # the trainable arm is kept
 
 
 def test_module_advantage_group_normalized_in_buffer():
