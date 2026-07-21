@@ -164,8 +164,11 @@ def test_jit_checkpoint_monitor_kept_under_ddp(tmp_path):
 
 def test_jit_checkpoint_monitor_set_on_single_gpu(tmp_path):
     """Single-GPU (devices=1) keeps the FID monitor (M1a positive case)."""
-    from manifold.training.cli import _build_checkpoint
+    from manifold.training.callbacks import CallbackContext, CheckpointSpec
 
-    # monitor_fid=True mirrors run_training's single-GPU enable_fid branch.
-    ckpt = _build_checkpoint(str(tmp_path), monitor_fid=True, monitor_metric="val/fid")
+    # monitor_metric="val/fid" mirrors run_training's single-GPU enable_fid branch.
+    ckpt = CheckpointSpec(monitor_metric="val/fid").build(CallbackContext(
+        module=None, vae=None, datamodule=None, inference_recipe=None,
+        model_dir=str(tmp_path), seed=0,
+    ))
     assert ckpt.monitor == "val/fid"

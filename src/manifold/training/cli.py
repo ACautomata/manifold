@@ -31,9 +31,14 @@ from lightning.pytorch.callbacks import ModelCheckpoint
 
 from ..config import opt
 from ..data.datamodule import build_datamodule
-from ..metrics import FIDCallback
 from ..modules.latent_flow import LatentFlowModule
-from manifold.training.callbacks import CallbackContext, CallbackRegistry, TrainLossSpec
+from manifold.training.callbacks import (
+    CallbackContext,
+    CallbackRegistry,
+    CheckpointSpec,
+    FIDSpec,
+    TrainLossSpec,
+)
 from .metrics import LatentX0MAE
 from .trainer import build_trainer
 
@@ -78,42 +83,58 @@ def _dict_subset(d: dict | None, keys: tuple[str, ...]) -> dict:
     return {k: d[k] for k in keys if d.get(k) is not None}
 
 
-def _build_checkpoint(
-    model_dir: str,
-    *,
-    monitor_fid: bool,
-    monitor_metric: str = "val/fid",
-    every_n_epochs: int = 1,
-    save_top_k: int = 3,
-) -> ModelCheckpoint:
-    """Stock Lightning ``ModelCheckpoint`` (ADR-0006).
+def _resolve_fid_overrides(cfg, raw_overrides):
+    """Resolve ``fid`` / legacy ``fid_eval`` overrides honoring dotlist precedence.
 
-    Single-GPU + FID: monitor ``monitor_metric`` (top-k, last, full state). The
-    default ``val/fid`` (the raw optimizer arm) tracks whether the model is
-    actually learning. ``val/fid`` is GLOBAL under DDP (sufficient-stats all_reduce, ADR-0025), so the monitor stays on under multi-GPU. ``auto_insert_metric_name = False`` because the metric key contains a ``/``.
+    ``merge_overrides`` already merged YAML + dotlist into ``cfg``. OmegaConf
+    keeps the two namespaces distinct, so the last dotlist token among
+    ``fid.*`` / ``fid_eval.*`` for each key must be picked explicitly by looking
+    at ``raw_overrides`` order.
     """
-    if monitor_fid:
-        return ModelCheckpoint(
-            dirpath=model_dir,
-            filename=f"unet3d-{{epoch:03d}}-{{step}}-{{{monitor_metric}:.3f}}",
-            monitor=monitor_metric,
-            mode="min",
-            save_top_k=save_top_k,
-            save_last=True,
-            save_on_train_epoch_end=True,
-            auto_insert_metric_name=False,
-            save_weights_only=False,
-        )
-    return ModelCheckpoint(
-        dirpath=model_dir,
-        filename="unet3d-{epoch:03d}-{step}",
-        save_last=True,
-        save_top_k=1,
-        save_on_train_epoch_end=True,
-        every_n_epochs=max(1, every_n_epochs),
-        auto_insert_metric_name=False,
-        save_weights_only=False,
-    )
+    fid = dict(opt(cfg, "fid", {}))
+    legacy = dict(opt(cfg, "fid_eval", {}))
+    last_ns: dict[str, str] = {}
+    for token in raw_overrides or []:
+        if "=" not in token:
+            continue
+        key_path, _ = token.split("=", 1)
+        if key_path.startswith("fid_eval."):
+            last_ns[key_path.split(".", 1)[1]] = "fid_eval"
+        elif key_path.startswith("fid."):
+            last_ns[key_path.split(".", 1)[1]] = "fid"
+    merged: dict[str, Any] = {}
+    for k in set(fid) | set(legacy):
+        ns = last_ns.get(k)
+        if ns == "fid_eval":
+            merged[k] = legacy[k]
+        elif ns == "fid":
+            merged[k] = fid[k]
+        else:
+            merged[k] = fid.get(k, legacy.get(k))
+    return merged
+
+
+def _resolve_save_top_k(ckpt_cfg, fid_cfg, raw_overrides):
+    """Resolve ``save_top_k`` with dotlist precedence (checkpoint > fid_eval > recipe).
+
+    When the recipe's ``checkpoint`` block carries a default ``save_top_k``
+    (e.g. 3 in ``config_rflow_jit.yaml``), ``ckpt_cfg.get("save_top_k")``
+    returns that default even when the user explicitly set a legacy override
+    via ``fid_eval.save_top_k=2``. This helper checks the raw dotlist first
+    so the explicit override wins.
+    """
+    _ckpt = None
+    for token in raw_overrides or []:
+        if "=" not in token:
+            continue
+        k, v = token.split("=", 1)
+        if k == "checkpoint.save_top_k":
+            _ckpt = int(v)
+        elif k in ("fid_eval.save_top_k", "fid.save_top_k") and _ckpt is None:
+            _ckpt = int(v)
+    if _ckpt is not None:
+        return _ckpt
+    return ckpt_cfg.get("save_top_k", fid_cfg.get("save_top_k", 3))
 
 
 def run_training(
@@ -134,12 +155,15 @@ def run_training(
     seed: int = 0,
     ckpt_path: str | None = None,
     inference_recipe: dict | None = None,
-    # fid_eval knobs (from the config block / dotlist overrides):
+    # fid knobs (from the ``fid`` config block / dotlist overrides):
     num_synth: int = 16,
     every_n_epochs: int = 1,
     center_slices_ratio: float = 0.5,
     cov_ridge: float = 1e-6,
     val_subset_size: int = 32,
+    # checkpoint knobs (ADR-0029): pass the full ``checkpoint`` block through so
+    # monitor_metric / mode / filename / save_last are not silently ignored.
+    checkpoint_cfg: dict | None = None,
 ) -> tuple[pl.Trainer, ModelCheckpoint]:
     """Assemble callbacks + ``Trainer`` and ``fit`` the module (the core seam).
 
@@ -178,66 +202,85 @@ def run_training(
         allow_train_as_val=bundle.allow_train_as_val,
     )
 
-    # ADR-0029 (issue #159): TrainLossLogger is built through the callback
-    # registry (two-phase resolve/build) instead of a hand-assembled list. The
-    # other callbacks (LatentX0MAE / FID / ModelCheckpoint) migrate behind the
-    # registry in follow-on issues; here only the no-knob train-loss logger is
-    # wired. The typed CallbackContext carries the runtime objects the later
-    # generative specs (FID, ...) will inject.
+    fid_attached = enable_fid and val_enabled
+    # F5: latent_shape derives from val_latents when present (warmed path);
+    # the cold path passes it via inference_recipe["latent_shape"] (it is known
+    # from the VAE stride + vol_ds target_dim, not from the not-yet-warmed
+    # val_latents). ``_inference_recipe`` honors an explicit latent_shape kwarg.
+    # On the cold path (val_latents=None) the caller MUST pass inference_recipe
+    # with latent_shape set (main() derives it via _derive_latent_shape); a
+    # bare None here is a wiring bug - fail with a clear message, not an
+    # AttributeError on ``None.shape`` deep in _inference_recipe.
+    if fid_attached and inference_recipe is None and bundle.val_latents is None:
+        raise ValueError(
+            "enable_fid=True with a cold bundle (val_latents=None) requires an "
+            "inference_recipe carrying 'latent_shape' (derive it from the VAE "
+            "stride + target_dim). main() does this via _derive_latent_shape."
+        )
+    inf = (
+        inference_recipe or _inference_recipe(module, cfg=None, val_latents=bundle.val_latents)
+        if fid_attached
+        else inference_recipe
+    )
+
+    # ADR-0029 (issues #159/#160): the train-loss / FID / ModelCheckpoint
+    # callbacks are all built through the registry (two-phase resolve/build). The
+    # default name set derives from the bundle flags (FID only when a held-out
+    # val source exists); LatentX0MAE stays hand-appended and migrates in a
+    # follow-on issue. ``resolve`` fails fast on an unknown name/knob;
+    # ``validate_monitor`` then checks the checkpoint's ``monitor_metric``
+    # against the resolved callbacks' logged-metrics union the module's.
     registry = CallbackRegistry()
     registry.register("train_loss", TrainLossSpec)
-    callbacks: list = registry.build(
-        registry.resolve(["train_loss"]),
-        CallbackContext(
-            module=module,
-            vae=bundle.vae,
-            datamodule=datamodule,
-            inference_recipe=inference_recipe,
-            model_dir=model_dir,
-            seed=seed,
-        ),
+    registry.register("fid", FIDSpec)
+    registry.register("checkpoint", CheckpointSpec)
+
+    names = ["train_loss"]
+    callback_cfg: dict[str, dict] = {}
+    if fid_attached:
+        names.append("fid")
+        callback_cfg["fid"] = {
+            "num_synth": num_synth,
+            "every_n_epochs": every_n_epochs,
+            "center_slices_ratio": center_slices_ratio,
+            "cov_ridge": cov_ridge,
+        }
+    names.append("checkpoint")
+    callback_cfg["checkpoint"] = {
+        "monitor_metric": "val/fid" if fid_attached else None,
+        "save_top_k": save_top_k,
+        "every_n_epochs": every_n_epochs,
+    }
+    if checkpoint_cfg:
+        # Pass the full checkpoint block through so the registry's fail-fast
+        # unknown-knob validation catches typos (e.g. ``save_topk``) at config
+        # time instead of silently accepting the default. The resolved save_top_k
+        # (from the fid_eval translation) must override the recipe value here,
+        # see Bug 2 / test_main_preserves_dotlist_precedence.
+        callback_cfg["checkpoint"].update(checkpoint_cfg)
+        callback_cfg["checkpoint"]["save_top_k"] = save_top_k
+
+    ctx = CallbackContext(
+        module=module,
+        vae=bundle.vae,
+        datamodule=datamodule,
+        inference_recipe=inf,
+        model_dir=model_dir,
+        seed=seed,
+        feature_net=feature_net,
+        feature_net_factory=feature_net_factory,
     )
+    specs = registry.resolve(names, callback_cfg)
+    callbacks: list = registry.build(specs, ctx)
+
     if val_enabled:
         callbacks.append(LatentX0MAE())
-
-    fid_attached = enable_fid and val_enabled
-    if fid_attached:
-        # F5: latent_shape derives from val_latents when present (warmed path);
-        # the cold path passes it via inference_recipe["latent_shape"] (it is known
-        # from the VAE stride + vol_ds target_dim, not from the not-yet-warmed
-        # val_latents). ``_inference_recipe`` honors an explicit latent_shape kwarg.
-        # On the cold path (val_latents=None) the caller MUST pass inference_recipe
-        # with latent_shape set (main() derives it via _derive_latent_shape); a
-        # bare None here is a wiring bug - fail with a clear message, not an
-        # AttributeError on ``None.shape`` deep in _inference_recipe.
-        if inference_recipe is None and bundle.val_latents is None:
-            raise ValueError(
-                "enable_fid=True with a cold bundle (val_latents=None) requires an "
-                "inference_recipe carrying 'latent_shape' (derive it from the VAE "
-                "stride + target_dim). main() does this via _derive_latent_shape."
-            )
-        inf = inference_recipe or _inference_recipe(module, cfg=None, val_latents=bundle.val_latents)
-        fid = FIDCallback(
-            module=module,
-            vae=bundle.vae,
-            real_latents=bundle.val_latents,  # F5: None on the cold path -> lazy
-            real_latents_source=None,  # set below once the datamodule exists
-            feature_net=feature_net,
-            feature_net_factory=feature_net_factory,
-            latent_shape=inf["latent_shape"],
-            spacing=inf["spacing"],
-            modality=inf["modality"],
-            num_inference_steps=inf["num_inference_steps"],
-            guidance_scale=inf["guidance_scale"],
-            cfg_interval=inf["cfg_interval"],
-            num_synth=num_synth,
-            every_n_epochs=every_n_epochs,
-            center_slices_ratio=center_slices_ratio,
-            cov_ridge=cov_ridge,
-            seed=seed,
-        )
-        callbacks.append(fid)
-    elif not val_enabled:
+        # Augment the module's logged_metrics with the hand-appended
+        # LatentX0MAE metric so validate_monitor accepts monitor_metric=val/x0_mae.
+        # The module's existing logged_metrics is preserved.
+        x0_mae = getattr(module, "logged_metrics", frozenset()) | {"val/x0_mae"}
+        module.logged_metrics = frozenset(x0_mae)
+    else:
         rank_zero_info(
             "manifold-train: no held-out validation set is configured "
             "(val_data_base_dir is unset or not a directory). Validation is DISABLED "
@@ -245,18 +288,9 @@ def run_training(
             "leak train metrics into validation, which is refused; set "
             "val_data_base_dir to a held-out BraTS directory to enable."
         )
+    registry.validate_monitor(specs, module)
+    ckpt = next(c for c in callbacks if isinstance(c, ModelCheckpoint))
 
-    ckpt = _build_checkpoint(
-        model_dir,
-        monitor_fid=fid_attached,
-        monitor_metric="val/fid",
-        every_n_epochs=every_n_epochs,
-        save_top_k=save_top_k,
-    )
-    callbacks.append(ckpt)
-
-    if fid_attached and fid.real_latents is None:
-        fid._real_latents_source = datamodule  # F5: lazy pull at first _real_moments
     # When validation is disabled, ``limit_val_batches=0`` makes every validation
     # epoch a 0-batch no-op (the empty val_dataloader yields nothing) and
     # ``num_sanity_val_steps=0`` skips the fit-start sanity probes; no val
@@ -426,13 +460,24 @@ def main(argv: list[str] | None = None, *, data_provider=None) -> int:
     max_epochs = int(args.max_epochs or train_cfg.n_epochs)
 
     # Thread the optional config blocks (from the train recipe) as overrides so
-    # fid_eval.* / checkpoint.* knobs are actually reachable via dotlist/YAML.
-    fid_cfg = opt(cfg, "fid_eval", {})
-    ckpt_cfg = opt(cfg, "checkpoint", {})
+    # fid.* / checkpoint.* knobs are actually reachable via dotlist/YAML.
+    # ADR-0029: the ``fid_eval`` block is renamed to ``fid`` (callback name ==
+    # config namespace). Existing dotlist overrides may still arrive as
+    # ``fid_eval.*`` — ``_resolve_fid_overrides`` translates them to ``fid.*``
+    # while preserving dotlist precedence, and ``checkpoint_cfg`` is passed
+    # through to ``run_training`` so ``monitor_metric``, ``mode``, ``filename``,
+    # and ``save_last`` are not silently ignored.
+    fid_cfg = _resolve_fid_overrides(cfg, args.overrides)
+    ckpt_cfg = dict(opt(cfg, "checkpoint", {}))
+
     fid_kwargs = _dict_subset(
         fid_cfg, ("num_synth", "every_n_epochs", "center_slices_ratio", "cov_ridge")
     )
-    ckpt_save_top_k = fid_cfg.get("save_top_k", ckpt_cfg.get("save_top_k", 3)) if fid_cfg or ckpt_cfg else 3
+    # ``save_top_k`` may be supplied either in the legacy ``fid_eval`` block or in
+    # the modern ``checkpoint`` block; ``_resolve_save_top_k`` checks the raw
+    # dotlist first so an explicit ``fid_eval.save_top_k=2`` wins over the
+    # recipe's ``checkpoint.save_top_k: 3`` (the standard recipe default).
+    ckpt_save_top_k = _resolve_save_top_k(ckpt_cfg, fid_cfg, args.overrides)
 
     run_training(
         module=module,
@@ -452,6 +497,7 @@ def main(argv: list[str] | None = None, *, data_provider=None) -> int:
         save_top_k=ckpt_save_top_k,
         limit_val_batches=int(opt(cfg, "val_subset_size", 4)),
         val_subset_size=int(opt(cfg, "val_subset_size", 32)),
+        checkpoint_cfg=ckpt_cfg,
         **fid_kwargs,
     )
     print(f"[manifold-train] done; checkpoints under {cfg.model_dir}")

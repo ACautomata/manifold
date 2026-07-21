@@ -150,6 +150,19 @@ def _tiny_jit_module():
     )
 
 
+def _ckpt(model_dir, *, monitor_metric=None, every_n_epochs=1, save_top_k=3):
+    """A ModelCheckpoint via ``CheckpointSpec`` (mirrors run_training's registry
+    path, ADR-0029). Replaces the removed ``cli._build_checkpoint`` helper."""
+    from manifold.training.callbacks import CallbackContext, CheckpointSpec
+
+    return CheckpointSpec(
+        monitor_metric=monitor_metric, save_top_k=save_top_k, every_n_epochs=every_n_epochs,
+    ).build(CallbackContext(
+        module=None, vae=None, datamodule=None, inference_recipe=None,
+        model_dir=model_dir, seed=0,
+    ))
+
+
 def _jit_callbacks(module, *, enable_fid: bool, devices, seed: int = 0):
     """Build the JiT callback stack (train metrics + optional FID + ckpt).
 
@@ -158,7 +171,7 @@ def _jit_callbacks(module, *, enable_fid: bool, devices, seed: int = 0):
     """
     from manifold import AutoencoderKL
     from manifold.metrics import FIDCallback
-    from manifold.training.cli import _build_checkpoint, _inference_recipe
+    from manifold.training.cli import _inference_recipe
     from manifold.training.metrics import LatentX0MAE, TrainLossLogger
 
     callbacks: list = [TrainLossLogger(), LatentX0MAE()]
@@ -183,9 +196,9 @@ def _jit_callbacks(module, *, enable_fid: bool, devices, seed: int = 0):
             seed=seed,
         )
         callbacks.append(fid)
-    ckpt = _build_checkpoint(
-        model_dir="/tmp/_unused_ckpt_dir",
-        monitor_fid=enable_fid,
+    ckpt = _ckpt(
+        "/tmp/_unused_ckpt_dir",
+        monitor_metric="val/fid" if enable_fid else None,
         every_n_epochs=1,
     )
     callbacks.append(ckpt)
@@ -292,8 +305,7 @@ def _unbalanced_val_worker(rank: int, world: int, results_dir: str, port: str, _
         # 5-sample val set -> equal padded rank forwards (3 each), with the tagged
         # padding mask preserving real counts (rank0=3, rank1=2). Disable FID.
         callbacks: list = [TrainLossLogger(), LatentX0MAE()]
-        from manifold.training.cli import _build_checkpoint
-        ckpt = _build_checkpoint(model_dir="/tmp/_unused_ckpt_dir", monitor_fid=False, every_n_epochs=1)
+        ckpt = _ckpt("/tmp/_unused_ckpt_dir", every_n_epochs=1)
         callbacks.append(ckpt)
         datamodule = build_datamodule(_LatentDS(n=6), batch_size=2, num_workers=0,
                                      val_dataset=_LatentDS(n=5, seed=99))
@@ -517,7 +529,6 @@ def cold_cache_ddp_worker(rank: int, world: int, results_dir: str, port: str, n_
     from manifold import AutoencoderKL
     from manifold.data.latent_dataset import LatentDataset
     from manifold.data.warm_datamodule import LatentWarmDataModule
-    from manifold.training.cli import _build_checkpoint
     from manifold.training.metrics import LatentX0MAE, TrainLossLogger
     from manifold.training.trainer import build_trainer
 
@@ -552,7 +563,7 @@ def cold_cache_ddp_worker(rank: int, world: int, results_dir: str, port: str, n_
     torch.manual_seed(0)
     module = _tiny_jit_module()
     callbacks: list = [TrainLossLogger(), LatentX0MAE()]
-    ckpt = _build_checkpoint(model_dir=results_dir, monitor_fid=False, every_n_epochs=1)
+    ckpt = _ckpt(results_dir, every_n_epochs=1)
     callbacks.append(ckpt)
     datamodule = LatentWarmDataModule(
         latent_ds=None, vae=vae, batch_size=2, num_workers=0,

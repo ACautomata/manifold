@@ -36,8 +36,10 @@ formulation:
 
 # Generative validation (issue #27): per-epoch unbiased 2.5D FID on a fixed
 # sample set. All optional — manifold-train falls back to sensible defaults;
-# each knob is overridable via dotlist (e.g. `fid_eval.num_synth=32`).
-fid_eval:
+# each knob is overridable via dotlist (e.g. `fid.num_synth=32`). (ADR-0029:
+# renamed from the legacy `fid_eval` block so the callback name and its config
+# namespace are identical; legacy `fid_eval.*` overrides are translated.)
+fid:
   num_synth: 16            # unconditional volumes generated per epoch (re-seeded)
   every_n_epochs: 1        # cadence (1 = every validation epoch)
   center_slices_ratio: 0.5 # 2.5D: fraction of each axis's center slices sampled
