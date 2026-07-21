@@ -342,13 +342,21 @@ def test_warm_data_no_val_when_val_data_base_dir_unset(tmp_path, monkeypatch):
     assert bundle.has_val is False
 
 
-def test_build_checkpoint_monitor_matches_logged_arm(tmp_path):
+def test_checkpoint_spec_monitor_tracks_logged_arm(tmp_path):
     """The checkpoint monitor tracks the single arm that is logged: ``val/fid``
     (the raw optimizer arm). A mismatch would make Lightning error on a
-    never-logged monitored metric."""
-    from manifold.training.cli import _build_checkpoint
+    never-logged monitored metric. Built via :class:`CheckpointSpec` (the
+    registry path ``run_training`` now uses), not the removed ``_build_checkpoint``.
+    """
+    from manifold.training.callbacks import CallbackContext, CheckpointSpec
 
-    assert _build_checkpoint(str(tmp_path / "a"), monitor_fid=True).monitor == "val/fid"
+    ctx = CallbackContext(
+        module=None, vae=None, datamodule=None, inference_recipe=None,
+        model_dir=str(tmp_path / "a"), seed=0,
+    )
+    assert CheckpointSpec(monitor_metric="val/fid").build(ctx).monitor == "val/fid"
+    # monitor_metric=None yields an unmonitored periodic / last checkpoint (no error).
+    assert CheckpointSpec(monitor_metric=None).build(ctx).monitor is None
 
 
 def test_export_bakes_raw_and_round_trips(tmp_path):
@@ -484,6 +492,35 @@ def test_main_runs_end_to_end_with_fake_data(tmp_path):
     assert rc == 0
     ckpts = list(Path(str(tmp_path / "model")).glob("*.ckpt"))
     assert any(p.name == "last.ckpt" for p in ckpts)
+
+
+def test_main_translates_legacy_fid_eval_block_and_lifts_save_top_k(tmp_path, monkeypatch):
+    """ADR-0029: a legacy ``fid_eval`` dotlist override still lands: ``fid_eval.*``
+    is translated to ``fid.*`` (so the fid knobs thread through), and
+    ``fid_eval.save_top_k`` is lifted to the checkpoint override. Existing
+    experiment overrides must not stop launching."""
+    env, train, net = _write_tiny_configs(tmp_path)
+
+    captured = {}
+    import manifold.training.cli as cli_mod
+
+    def fake_run_training(**kwargs):
+        captured.update(kwargs)
+
+    monkeypatch.setattr(cli_mod, "run_training", fake_run_training)
+    rc = train_main(
+        ["-e", env, "-c", train, "-t", net, "-g", "1", "--max-epochs", "1", "--no-fid",
+         "fid_eval.num_synth=7", "fid_eval.save_top_k=2"],
+        data_provider=lambda cfg, device: _DataBundle(
+            latent_ds=_LatentDS(), vae=AutoencoderKL(scaling_factor=0.5),
+            val_latents=torch.randn(4, 4, 4, 4, 4)),
+    )
+    assert rc == 0
+    # fid_eval.* was translated to fid.*: the num_synth knob threaded through to
+    # run_training, and save_top_k was lifted out of the fid block to the
+    # checkpoint override.
+    assert captured["num_synth"] == 7
+    assert captured["save_top_k"] == 2
 
 
 def test_export_cli_matches_function(tmp_path):

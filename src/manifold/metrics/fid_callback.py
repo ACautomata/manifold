@@ -20,7 +20,7 @@ Fixed-sample mechanism:
 
 Single-GPU / rank-0 only: a multi-minute generation loop would deadlock the
 other ranks at an NCCL collective, so under DDP the callback warns loudly and
-skips. Configurable via an optional ``fid_eval`` block.
+skips. Configurable via an optional ``fid`` block.
 """
 
 from __future__ import annotations
@@ -60,7 +60,7 @@ class FIDCallback(pl.Callback):
             / cfg_interval: the generation recipe (defaults mirror inference).
         num_synth: synthetic volumes generated per run (re-seeded every epoch).
         every_n_epochs: run cadence (1 = every validation epoch).
-        center_slices_ratio / cov_ridge: the ``fid_eval`` knobs forwarded to
+        center_slices_ratio / cov_ridge: the ``fid`` knobs forwarded to
             :func:`~manifold.metrics.fid.get_features_2p5d` /
             :func:`~manifold.metrics.fid.frechet_distance_unbiased`.
         seed: the re-seeded generation noise seed (fixed across epochs).

@@ -20,7 +20,7 @@ migrate behind the registry in follow-on issues.
 from __future__ import annotations
 
 from dataclasses import fields, is_dataclass
-from typing import Protocol
+from typing import Any, Protocol
 
 import lightning.pytorch as pl
 
@@ -36,6 +36,12 @@ class CallbackSpec(Protocol):
     match this Protocol structurally (composition, not subclassing — the OOP
     rule): a concrete spec declares its knobs as dataclass fields and a
     ``build`` method, without inheriting anything.
+
+    A spec whose callback logs a monitored metric MAY declare a
+    ``logged_metrics: frozenset[str]`` (e.g. ``FIDSpec`` logs ``val/fid``); the
+    checkpoint spec declares a ``monitor_metric`` knob instead. Neither is part
+    of the required Protocol — :meth:`CallbackRegistry.validate_monitor` reads
+    them defensively via ``getattr``.
     """
 
     def build(self, ctx: CallbackContext) -> pl.Callback:
@@ -104,3 +110,36 @@ class CallbackRegistry:
     def build(self, specs: list[CallbackSpec], ctx: CallbackContext) -> list[pl.Callback]:
         """Construct ``pl.Callback`` instances from *specs*, injecting *ctx*."""
         return [spec.build(ctx) for spec in specs]
+
+    def validate_monitor(self, specs: list[CallbackSpec], module: Any) -> None:
+        """Post-resolve monitor validation (ADR-0029): the checkpoint spec's
+        ``monitor_metric`` must be logged by some resolved callback **or**
+        declared by the training *module*.
+
+        The module side of the union covers reward / paired-reward / GRPO
+        monitors (``val/gen_pair_acc``, ``val/mean_reward``) that the Module
+        logs directly rather than through any resolved callback. A module
+        declares them via a ``logged_metrics`` attribute (absent -> empty, the
+        JiT case where every val/* metric comes from a callback). An explicit
+        ``monitor_metric=None`` (the checkpoint's unmonitored periodic / last
+        path) bypasses validation — absence is the intended fallback, not a
+        missing-but-expected monitor.
+
+        Raises:
+            ValueError: if ``monitor_metric`` is set but is neither
+                callback-logged nor module-declared (Lightning would otherwise
+                error mid-fit on a never-logged monitor).
+        """
+        ckpt = next((s for s in specs if hasattr(s, "monitor_metric")), None)
+        if ckpt is None or ckpt.monitor_metric is None:
+            return  # no checkpoint spec, or the unmonitored path — nothing to check.
+        logged: set[str] = set()
+        for spec in specs:
+            logged |= set(getattr(spec, "logged_metrics", frozenset()))
+        logged |= set(getattr(module, "logged_metrics", frozenset()))
+        if ckpt.monitor_metric not in logged:
+            raise ValueError(
+                f"checkpoint monitor_metric {ckpt.monitor_metric!r} is logged by no "
+                f"resolved callback and is not declared by the module "
+                f"({type(module).__name__}). Available: {sorted(logged) or '(none)'}."
+            )

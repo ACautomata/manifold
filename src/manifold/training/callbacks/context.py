@@ -29,6 +29,12 @@ class CallbackContext:
         inference_recipe: the FID sampling-knob dict, or ``None`` when FID is off.
         model_dir: the run output directory (checkpoints, logs).
         seed: the run seed (deterministic sampling).
+        feature_net: the FID feature network (RadImageNet, or a test fake) injected
+            directly by the CLI/test seam; ``None`` -> the spec uses
+            ``feature_net_factory``'s lazy build.
+        feature_net_factory: the lazy fail-safe feature-net builder (rank-0-gated).
+        real_latents: GRPO's FID reference (ADR-0032); ``None`` for JiT, which
+            pulls lazily from ``datamodule`` instead.
     """
 
     module: Any
@@ -37,3 +43,6 @@ class CallbackContext:
     inference_recipe: dict | None
     model_dir: str
     seed: int
+    feature_net: Any = None
+    feature_net_factory: Any = None
+    real_latents: Any = None
