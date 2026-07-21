@@ -50,7 +50,7 @@ class CheckpointSpec:
         if self.monitor_metric is None:
             return ModelCheckpoint(
                 **common,
-                filename="unet3d-{epoch:03d}-{step}",
+                filename=self.filename or "unet3d-{epoch:03d}-{step}",
                 save_top_k=1,
                 every_n_epochs=max(1, self.every_n_epochs),
             )

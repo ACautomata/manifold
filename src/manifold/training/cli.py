@@ -30,17 +30,15 @@ except ImportError:  # pragma: no cover
 from lightning.pytorch.callbacks import ModelCheckpoint
 
 from ..config import opt
-from ..data.datamodule import build_datamodule
 from ..modules.latent_flow import LatentFlowModule
 from manifold.training.callbacks import (
     CallbackContext,
-    CallbackRegistry,
     CheckpointSpec,
     FIDSpec,
     TrainLossSpec,
 )
+from manifold.training.core import TrainingSpine
 from .metrics import LatentX0MAE
-from .trainer import build_trainer
 
 
 @dataclass
@@ -171,17 +169,16 @@ def run_training(
     ``ModelCheckpoint`` and runs ``Trainer.fit``. Returns ``(trainer, ckpt)`` so
     callers (and the Export) can find the written ``.ckpt``.
 
+    The shell (ADR-0032): seed, build module + datamodule, derive default
+    callback-name set, and delegate to :class:`TrainingSpine.run`. The
+    ``_real_inputs`` data-assembly path stays here — it is JiT-specific and
+    the five data paths are genuinely different.
+
     Args:
         bundle: the warmed latent dataset + held VAE + fixed real-subset latents.
         feature_net: the FID feature network (RadImageNet, or a test fake).
         ckpt_path: optional warm-start / resume checkpoint passed to ``fit``.
     """
-    # Validation requires a held-out set. Two ways in: (1) the production held-out
-    # val split (bundle.has_val — warmed from ``val_data_base_dir`` in setup()), or
-    # (2) the CPU smoke opt-in (allow_train_as_val=True, reuses the train fixture to
-    # exercise the FID + x0-MAE plumbing — it tests wiring, not held-out
-    # generalization). With neither, validation is DISABLED rather than silently
-    # reuse the train set (val/* metrics would otherwise be train metrics — leakage).
     val_enabled = bundle.allow_train_as_val or bundle.has_val
     # F4/F1 (ADR-0017): the warm runs in DataModule.setup() (post-PG, per-rank
     # sharded) when bundle.warm_fn is set (the production cold path); the warmed
@@ -203,14 +200,6 @@ def run_training(
     )
 
     fid_attached = enable_fid and val_enabled
-    # F5: latent_shape derives from val_latents when present (warmed path);
-    # the cold path passes it via inference_recipe["latent_shape"] (it is known
-    # from the VAE stride + vol_ds target_dim, not from the not-yet-warmed
-    # val_latents). ``_inference_recipe`` honors an explicit latent_shape kwarg.
-    # On the cold path (val_latents=None) the caller MUST pass inference_recipe
-    # with latent_shape set (main() derives it via _derive_latent_shape); a
-    # bare None here is a wiring bug - fail with a clear message, not an
-    # AttributeError on ``None.shape`` deep in _inference_recipe.
     if fid_attached and inference_recipe is None and bundle.val_latents is None:
         raise ValueError(
             "enable_fid=True with a cold bundle (val_latents=None) requires an "
@@ -223,42 +212,31 @@ def run_training(
         else inference_recipe
     )
 
-    # ADR-0029 (issues #159/#160): the train-loss / FID / ModelCheckpoint
-    # callbacks are all built through the registry (two-phase resolve/build). The
-    # default name set derives from the bundle flags (FID only when a held-out
-    # val source exists); LatentX0MAE stays hand-appended and migrates in a
-    # follow-on issue. ``resolve`` fails fast on an unknown name/knob;
-    # ``validate_monitor`` then checks the checkpoint's ``monitor_metric``
-    # against the resolved callbacks' logged-metrics union the module's.
-    registry = CallbackRegistry()
-    registry.register("train_loss", TrainLossSpec)
-    registry.register("fid", FIDSpec)
-    registry.register("checkpoint", CheckpointSpec)
+    # ADR-0032: default names → callback_cfg knobs → TrainingSpine.run.
+    spine = TrainingSpine()
+    spine.registry.register("train_loss", TrainLossSpec)
+    spine.registry.register("fid", FIDSpec)
+    spine.registry.register("checkpoint", CheckpointSpec)
 
     names = ["train_loss"]
-    callback_cfg: dict[str, dict] = {}
+    callback_cfg_built: dict[str, dict] = {}
     if fid_attached:
         names.append("fid")
-        callback_cfg["fid"] = {
+        callback_cfg_built["fid"] = {
             "num_synth": num_synth,
             "every_n_epochs": every_n_epochs,
             "center_slices_ratio": center_slices_ratio,
             "cov_ridge": cov_ridge,
         }
     names.append("checkpoint")
-    callback_cfg["checkpoint"] = {
+    callback_cfg_built["checkpoint"] = {
         "monitor_metric": "val/fid" if fid_attached else None,
         "save_top_k": save_top_k,
         "every_n_epochs": every_n_epochs,
     }
     if checkpoint_cfg:
-        # Pass the full checkpoint block through so the registry's fail-fast
-        # unknown-knob validation catches typos (e.g. ``save_topk``) at config
-        # time instead of silently accepting the default. The resolved save_top_k
-        # (from the fid_eval translation) must override the recipe value here,
-        # see Bug 2 / test_main_preserves_dotlist_precedence.
-        callback_cfg["checkpoint"].update(checkpoint_cfg)
-        callback_cfg["checkpoint"]["save_top_k"] = save_top_k
+        callback_cfg_built["checkpoint"].update(checkpoint_cfg)
+        callback_cfg_built["checkpoint"]["save_top_k"] = save_top_k
 
     ctx = CallbackContext(
         module=module,
@@ -270,14 +248,13 @@ def run_training(
         feature_net=feature_net,
         feature_net_factory=feature_net_factory,
     )
-    specs = registry.resolve(names, callback_cfg)
-    callbacks: list = registry.build(specs, ctx)
 
+    extra_callbacks: list = []
+    extra_trainer_kwargs: dict | None = None
     if val_enabled:
-        callbacks.append(LatentX0MAE())
+        extra_callbacks.append(LatentX0MAE())
         # Augment the module's logged_metrics with the hand-appended
         # LatentX0MAE metric so validate_monitor accepts monitor_metric=val/x0_mae.
-        # The module's existing logged_metrics is preserved.
         x0_mae = getattr(module, "logged_metrics", frozenset()) | {"val/x0_mae"}
         module.logged_metrics = frozenset(x0_mae)
     else:
@@ -288,26 +265,23 @@ def run_training(
             "leak train metrics into validation, which is refused; set "
             "val_data_base_dir to a held-out BraTS directory to enable."
         )
-    registry.validate_monitor(specs, module)
-    ckpt = next(c for c in callbacks if isinstance(c, ModelCheckpoint))
+        extra_trainer_kwargs = {"num_sanity_val_steps": 0}
 
-    # When validation is disabled, ``limit_val_batches=0`` makes every validation
-    # epoch a 0-batch no-op (the empty val_dataloader yields nothing) and
-    # ``num_sanity_val_steps=0`` skips the fit-start sanity probes; no val
-    # callback is attached, so no ``val/*`` metric is logged. (Do NOT also pass
-    # ``check_val_every_n_epoch=None`` - Lightning's contract then requires an
-    # integer ``val_check_interval``, which the float default violates.)
-    trainer = build_trainer(
+    return spine.run(
+        module=module,
+        datamodule=datamodule,
+        ctx=ctx,
+        default_names=names,
         max_epochs=max_epochs,
-        callbacks=callbacks,
         model_dir=model_dir,
         devices=devices,
         accelerator=accelerator,
         limit_val_batches=limit_val_batches if val_enabled else 0,
-        extra_kwargs=None if val_enabled else {"num_sanity_val_steps": 0},
+        extra_trainer_kwargs=extra_trainer_kwargs,
+        ckpt_path=ckpt_path,
+        callback_cfg=callback_cfg_built,
+        extra_callbacks=extra_callbacks,
     )
-    trainer.fit(module, datamodule=datamodule, ckpt_path=ckpt_path)
-    return trainer, ckpt
 
 
 def _derive_latent_shape(cfg) -> tuple:

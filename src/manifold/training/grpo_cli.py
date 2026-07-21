@@ -39,6 +39,7 @@ from ..data.datamodule import build_datamodule
 from ..metrics import FIDCallback
 from ..modules.grpo import GRPOModule
 from ..schedulers.scheduling_flow_match_grpo import FlowMatchGRPOScheduler
+from manifold.training.callbacks import CallbackContext, CheckpointSpec
 from .trainer import build_trainer
 
 
@@ -76,34 +77,23 @@ class GRPOInputs:
     fid_spacing: Sequence[float] = (1.0, 1.0, 1.0)
 
 
-def _build_checkpoint(
+def _ckpt(
     model_dir: str,
     *,
     monitor_metric: str = "val/mean_reward",
     mode: str = "max",
     save_top_k: int = 1,
 ) -> ModelCheckpoint:
-    """Stock Lightning ``ModelCheckpoint`` monitoring the GRPO progress signal.
-
-    #58 selects on ``val/fid`` (mode ``min``) - the anti-reward-hacking screen (a
-    reward-hacked checkpoint scores high reward but high FID, so it is not selected)
-    - when the FID callback is attached; #56 monitored ``val/mean_reward`` (mode
-    ``max``) for the reward-only tracer. ``auto_insert_metric_name = False`` because
-    the metric key contains a ``/``. ``save_last=True`` for resume. ``val/fid`` /
-    ``val/mean_reward`` are GLOBAL under DDP now (FID sufficient-stats + mean_reward
-    ``sync_dist``; ADR-0025), so the monitor stays on under multi-GPU.
-    """
-    return ModelCheckpoint(
-        dirpath=model_dir,
-        filename=f"grpo-{{epoch:03d}}-{{{monitor_metric}:.3f}}",
-        monitor=monitor_metric,
-        mode=mode,
+    """A ``ModelCheckpoint`` via :class:`CheckpointSpec` (ADR-0029)."""
+    return CheckpointSpec(
+        monitor_metric=monitor_metric,
         save_top_k=save_top_k,
-        save_last=True,
-        save_on_train_epoch_end=True,
-        auto_insert_metric_name=False,
-        save_weights_only=False,
-    )
+        mode=mode,
+        filename=f"grpo-{{epoch:03d}}-{{{monitor_metric}:.3f}}",
+    ).build(CallbackContext(
+        module=None, vae=None, datamodule=None, inference_recipe=None,
+        model_dir=model_dir, seed=0,
+    ))
 
 
 def run_grpo_training(
@@ -169,7 +159,7 @@ def run_grpo_training(
         # Derive from the FINAL metric (not fid_active): a caller who overrides
         # monitor_metric back to val/mean_reward must get mode=max, not the FID min.
         mode = "min" if monitor_metric == "val/fid" else "max"
-    ckpt = _build_checkpoint(
+    ckpt = _ckpt(
         model_dir, monitor_metric=monitor_metric, mode=mode, save_top_k=save_top_k
     )
     callbacks: list[pl.Callback] = [ckpt]
