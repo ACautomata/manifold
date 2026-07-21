@@ -33,7 +33,8 @@ from ..config import opt
 from ..data.datamodule import build_datamodule
 from ..metrics import FIDCallback
 from ..modules.latent_flow import LatentFlowModule
-from .metrics import LatentX0MAE, TrainLossLogger
+from manifold.training.callbacks import CallbackContext, CallbackRegistry, TrainLossSpec
+from .metrics import LatentX0MAE
 from .trainer import build_trainer
 
 
@@ -158,7 +159,44 @@ def run_training(
     # generalization). With neither, validation is DISABLED rather than silently
     # reuse the train set (val/* metrics would otherwise be train metrics — leakage).
     val_enabled = bundle.allow_train_as_val or bundle.has_val
-    callbacks: list = [TrainLossLogger()]
+    # F4/F1 (ADR-0017): the warm runs in DataModule.setup() (post-PG, per-rank
+    # sharded) when bundle.warm_fn is set (the production cold path); the warmed
+    # test path (warm_fn=None) makes setup() a no-op. The FID callback pulls
+    # real_latents LAZILY from the datamodule (F5) so the first validation epoch
+    # (post-setup) finds them populated. Built before the callbacks so the
+    # CallbackContext (ADR-0029) carries the real datamodule, not a placeholder.
+    from ..data.warm_datamodule import LatentWarmDataModule
+
+    datamodule = LatentWarmDataModule(
+        latent_ds=bundle.latent_ds,
+        vae=bundle.vae,
+        batch_size=batch_size,
+        num_workers=num_workers,
+        val_latents=bundle.val_latents,
+        warm_fn=bundle.warm_fn,
+        val_subset_size=val_subset_size,
+        allow_train_as_val=bundle.allow_train_as_val,
+    )
+
+    # ADR-0029 (issue #159): TrainLossLogger is built through the callback
+    # registry (two-phase resolve/build) instead of a hand-assembled list. The
+    # other callbacks (LatentX0MAE / FID / ModelCheckpoint) migrate behind the
+    # registry in follow-on issues; here only the no-knob train-loss logger is
+    # wired. The typed CallbackContext carries the runtime objects the later
+    # generative specs (FID, ...) will inject.
+    registry = CallbackRegistry()
+    registry.register("train_loss", TrainLossSpec)
+    callbacks: list = registry.build(
+        registry.resolve(["train_loss"]),
+        CallbackContext(
+            module=module,
+            vae=bundle.vae,
+            datamodule=datamodule,
+            inference_recipe=inference_recipe,
+            model_dir=model_dir,
+            seed=seed,
+        ),
+    )
     if val_enabled:
         callbacks.append(LatentX0MAE())
 
@@ -217,23 +255,6 @@ def run_training(
     )
     callbacks.append(ckpt)
 
-    # F4/F1 (ADR-0017): the warm runs in DataModule.setup() (post-PG, per-rank
-    # sharded) when bundle.warm_fn is set (the production cold path); the warmed
-    # test path (warm_fn=None) makes setup() a no-op. The FID callback pulls
-    # real_latents LAZILY from the datamodule (F5) so the first validation epoch
-    # (post-setup) finds them populated.
-    from ..data.warm_datamodule import LatentWarmDataModule
-
-    datamodule = LatentWarmDataModule(
-        latent_ds=bundle.latent_ds,
-        vae=bundle.vae,
-        batch_size=batch_size,
-        num_workers=num_workers,
-        val_latents=bundle.val_latents,
-        warm_fn=bundle.warm_fn,
-        val_subset_size=val_subset_size,
-        allow_train_as_val=bundle.allow_train_as_val,
-    )
     if fid_attached and fid.real_latents is None:
         fid._real_latents_source = datamodule  # F5: lazy pull at first _real_moments
     # When validation is disabled, ``limit_val_batches=0`` makes every validation
