@@ -18,7 +18,7 @@ from manifold.metrics import (
     frechet_distance_unbiased,
     get_features_2p5d,
 )
-from manifold.metrics.fid import (
+from manifold.metrics.fid.math import (
     _cov_unbiased,
     _tr,
     features_to_sufficient_stats,
@@ -33,7 +33,7 @@ def _plug_in_fid(gen: torch.Tensor, real: torch.Tensor, ridge: float = 1e-6) -> 
     Reproduces the legacy ``FIDMetric`` shape so the test pins EXACTLY the
     ``Tr(Σ)/n`` subtraction the unbiased estimator applies.
     """
-    from manifold.metrics.fid import _principal_sqrtm
+    from manifold.metrics.fid.math import _principal_sqrtm
 
     mu_g, mu_r = gen.mean(0), real.mean(0)
     sg, sr = _cov_unbiased(gen), _cov_unbiased(real)
@@ -183,14 +183,50 @@ def test_fid_callback_same_seed_reproduces(latent_module):
     Single-process (world=1) so every strided index is generated on this rank.
     """
     from manifold import AutoencoderKL
+    from manifold.metrics.fid import (
+        FeatureExtractor,
+        FixedSampleRollout,
+        LatentDecoder,
+        SufficientStatsReducer,
+        VramStage,
+    )
 
     vae = AutoencoderKL(scaling_factor=0.5)
     real_latents = torch.randn(6, 4, 4, 4, 4)
     cb = _make_fid_callback(latent_module, vae, real_latents, seed=42, ridge=1e-2)
-    cb._stage_eval_on_device()
-    try:
-        first = cb._synth_moments()
-        second = cb._synth_moments()
+
+    device = cb._device()
+    with VramStage(
+        vae,
+        feature_net=cb.feature_net,
+        feature_net_factory=cb.feature_net_factory,
+        device_fn=cb._device,
+        feat_dim=cb._feat_dim,
+    ) as stage:
+        cb.feature_net = stage.feature_net
+        if cb._feat_dim is None:
+            cb._feat_dim = stage.feat_dim
+
+        rollout = FixedSampleRollout(
+            module=cb.module,
+            latent_shape=cb.latent_shape,
+            spacing=cb.spacing,
+            modality=cb.modality,
+            num_inference_steps=cb.num_inference_steps,
+            guidance_scale=cb.guidance_scale,
+            cfg_interval=cb.cfg_interval,
+            num_synth=cb.num_synth,
+            seed=cb.seed,
+        )
+        decoder = LatentDecoder(vae)
+        extractor = FeatureExtractor(cb.feature_net, center_slices_ratio=cb.center_slices_ratio)
+        reducer = SufficientStatsReducer(cb._feat_dim)
+
+        # Two passes through synth_planes should be identical.
+        first_planes = cb._synth_planes(rollout, decoder, extractor, device)
+        second_planes = cb._synth_planes(rollout, decoder, extractor, device)
+        first = reducer(first_planes, device)
+        second = reducer(second_planes, device)
         assert len(first) == len(second) == 3
         for a, b in zip(first, second):
             assert (a is None) == (b is None)
@@ -198,14 +234,15 @@ def test_fid_callback_same_seed_reproduces(latent_module):
                 assert torch.equal(a[0], b[0]), "synth mu differs across passes"
                 assert torch.equal(a[1], b[1]), "synth sigma differs across passes"
                 assert a[2] == b[2]
+
         # The real arm moments are reproducible across calls too.
-        r1, r2 = cb._real_moments(), cb._real_moments()
+        r1, r2 = cb._real_moments(decoder, extractor, reducer, device), cb._real_moments(
+            decoder, extractor, reducer, device,
+        )
         for a, b in zip(r1, r2):
             assert (a is None) == (b is None)
             if a is not None:
                 assert torch.equal(a[0], b[0]), "real mu differs across passes"
-    finally:
-        cb._restore_eval_to_cpu()
 
 
 def test_fid_callback_no_ema_logs_val_fid(latent_module):
@@ -243,13 +280,20 @@ def test_fid_callback_feature_net_set_to_eval(latent_module):
     running stats — otherwise the raw arm (the checkpoint monitor) inherits BN
     stats drifted by the real/slow arms' forwards. Matches hope's net.eval()."""
     from manifold import AutoencoderKL
+    from manifold.metrics.fid import VramStage
 
     vae = AutoencoderKL(scaling_factor=0.5)
     real_latents = torch.randn(6, 4, 4, 4, 4)
     cb = _make_fid_callback(latent_module, vae, real_latents, ridge=1e-2)
     assert cb.feature_net.training  # constructed in train mode by default
-    cb._stage_eval_on_device()
-    assert cb.feature_net.training is False, "staging must set the feature net to eval"
+    with VramStage(
+        vae,
+        feature_net=cb.feature_net,
+        feature_net_factory=cb.feature_net_factory,
+        device_fn=cb._device,
+        feat_dim=cb._feat_dim,
+    ) as stage:
+        assert stage.feature_net.training is False, "staging must set the feature net to eval"
 
 
 # --- Offline RadImageNet loader (issue #32) -------------------------------------
@@ -262,7 +306,7 @@ def test_fid_callback_feature_net_set_to_eval(latent_module):
 
 def test_radimagenet_checkpoint_path_honours_torch_home(monkeypatch, tmp_path):
     """Checkpoint path resolves under ``$TORCH_HOME/checkpoints/``."""
-    from manifold.metrics.fid import _radimagenet_checkpoint_path
+    from manifold.metrics.fid.math import _radimagenet_checkpoint_path
 
     monkeypatch.setenv("TORCH_HOME", str(tmp_path))
     assert _radimagenet_checkpoint_path() == str(
@@ -280,7 +324,7 @@ def test_load_radimagenet_resnet50_keeps_conv_bias_and_strips_head(tmp_path):
     """
     from torchvision.models import resnet50
 
-    from manifold.metrics.fid import _load_radimagenet_resnet50, _match_radimagenet_arch
+    from manifold.metrics.fid.math import _load_radimagenet_resnet50, _match_radimagenet_arch
 
     # Synthesise a state_dict in the exact RadImageNet `_notop` format: bias on
     # every conv, no fc head, BN eps=1.001e-5.
@@ -314,7 +358,7 @@ def test_match_radimagenet_arch_moves_stride_and_eps():
     from torchvision.models import resnet50
     from torchvision.models.resnet import Bottleneck
 
-    from manifold.metrics.fid import _match_radimagenet_arch
+    from manifold.metrics.fid.math import _match_radimagenet_arch
 
     model = resnet50(weights=None)
     # torchvision default: stride on conv2, no conv bias, eps=1e-5.
@@ -345,7 +389,7 @@ def test_match_radimagenet_arch_moves_stride_and_eps():
 def test_load_radimagenet_resnet50_rejects_mismatched_state(tmp_path):
     """A state_dict missing keys the bias-True model expects must raise (strict),
     not silently load a partial backbone."""
-    from manifold.metrics.fid import _load_radimagenet_resnet50
+    from manifold.metrics.fid.math import _load_radimagenet_resnet50
 
     # An empty dict is missing every param → strict load must fail loudly.
     torch.save({}, tmp_path / "RadImageNet-ResNet50_notop.pth")
@@ -363,12 +407,12 @@ def test_load_radimagenet_resnet50_rejects_mismatched_state(tmp_path):
 
 def test_radimagenet_features_global_pool_to_2048():
     """The feature wrapper global-average-pools the spatial map to 2048-dim."""
-    from manifold.metrics.fid import _RadImageNetFeatures
+    from manifold.metrics.fid.math import _RadImageNetFeatures
 
     # A bare bias-True resnet50 with avgpool/fc=Identity returns [B,2048,h,w].
     from torchvision.models import resnet50
 
-    from manifold.metrics.fid import _match_radimagenet_arch
+    from manifold.metrics.fid.math import _match_radimagenet_arch
 
     model = resnet50(weights=None)
     _match_radimagenet_arch(model)
@@ -418,7 +462,7 @@ def test_radimagenet_features_preprocessing_minmax_then_mean_bgr():
     * The min-max makes the output scale-invariant — feeding ``c*x`` yields the
       same features (the load-bearing fix for the unclamped BraTS MR decode).
     """
-    from manifold.metrics.fid import _RadImageNetFeatures
+    from manifold.metrics.fid.math import _RadImageNetFeatures
 
     wrapped = _RadImageNetFeatures(_PassthroughBackbone())
 
@@ -507,10 +551,10 @@ def test_codex116_n1_shard_contributes_stats_not_zeroed(latent_module):
     """
     import inspect
 
-    from manifold.metrics.fid_callback import FIDCallback
-    from manifold.metrics.fid import features_to_sufficient_stats
+    from manifold.metrics.fid.reducer import SufficientStatsReducer
+    from manifold.metrics.fid.math import features_to_sufficient_stats
 
-    src = inspect.getsource(FIDCallback._planes_to_global_moments)
+    src = inspect.getsource(SufficientStatsReducer.__call__)
     assert "shape[0] < 2" not in src, "n==1 still zeroed before all_reduce (Comment 1)"
     assert "shape[0] == 0" in src, "empty-shard guard lost"
 
@@ -523,7 +567,7 @@ def test_codex116_n1_shard_contributes_stats_not_zeroed(latent_module):
 
 def test_codex116_empty_real_shard_skips_decode(latent_module, monkeypatch):
     """codex #116 P2 (Comment 3): when real_latents is shorter than world_size, a
-    rank with no assigned real latents must NOT call _eval_decode on an empty
+    rank with no assigned real latents must NOT call decode on an empty
     [0,...] batch (MONAI sliding_window_inference raises on a 0-batch). It skips
     decode and contributes zero stats so the collective stays symmetric.
 
@@ -531,47 +575,70 @@ def test_codex116_empty_real_shard_skips_decode(latent_module, monkeypatch):
     latents (the 8-rank probe with val_subset_size=4): rank 5 owns an empty shard.
     """
     from manifold import AutoencoderKL
+    from manifold.metrics.fid import (
+        LatentDecoder,
+        SufficientStatsReducer,
+        VramStage,
+    )
 
     vae = AutoencoderKL(scaling_factor=0.5)
     real = torch.randn(4, 4, 4, 4, 4)  # only 4 real latents -> rank 5 (world=8) is empty
     cb = _make_fid_callback(latent_module, vae, real, seed=0)
-    cb._stage_eval_on_device()
 
-    decoded = {"n": 0}
+    device = cb._device()
+    with VramStage(
+        vae,
+        feature_net=cb.feature_net,
+        feature_net_factory=cb.feature_net_factory,
+        device_fn=cb._device,
+        feat_dim=cb._feat_dim,
+    ) as stage:
+        cb.feature_net = stage.feature_net
+        if cb._feat_dim is None:
+            cb._feat_dim = stage.feat_dim
 
-    def _spy_decode(latents):
-        decoded["n"] += 1
-        assert latents.shape[0] > 0, "_eval_decode called on an EMPTY shard (crash path)"
-        return torch.zeros(latents.shape[0], 1, 8, 8, 8)
+        decoder = LatentDecoder(vae)
+        reducer = SufficientStatsReducer(cb._feat_dim)
 
-    monkeypatch.setattr(cb, "_eval_decode", _spy_decode)
-    monkeypatch.setattr(cb, "_rank_world", lambda: (5, 8))
-    # _planes_to_global_moments all-reduces when world>1; this is a single-process
-    # test (no PG), so stub the collectives to identity (the empty shard contributes
-    # zeros; the reduce is a no-op on them).
-    import torch.distributed as dist
+        decoded = {"n": 0}
 
-    monkeypatch.setattr(dist, "all_reduce", lambda *a, **k: None)
-    try:
-        out = cb._real_moments()
+        def _spy_decode(latents):
+            decoded["n"] += 1
+            assert latents.shape[0] > 0, "decode called on an EMPTY shard (crash path)"
+            return torch.zeros(latents.shape[0], 1, 8, 8, 8)
+
+        monkeypatch.setattr(decoder, "__call__", _spy_decode)
+        monkeypatch.setattr(cb, "_rank_world", lambda: (5, 8))
+        # SufficientStatsReducer all-reduces when world>1; this is a single-process
+        # test (no PG), so stub the collectives to identity (the empty shard contributes
+        # zeros; the reduce is a no-op on them).
+        import torch.distributed as dist
+
+        monkeypatch.setattr(dist, "all_reduce", lambda *a, **k: None)
+
+        from manifold.metrics.fid import FeatureExtractor
+
+        extractor = FeatureExtractor(cb.feature_net, center_slices_ratio=cb.center_slices_ratio)
+        out = cb._real_moments(decoder, extractor, reducer, device)
         # Empty shard -> contributes zero stats -> global n==0 (single-process) -> None.
         assert all(m is None for m in out), "empty shard should yield None moments"
-        assert decoded["n"] == 0, "_eval_decode was called on the empty shard (Comment 3)"
-    finally:
-        cb._restore_eval_to_cpu()
+        assert decoded["n"] == 0, "decode was called on the empty shard (Comment 3)"
 
 
 def test_codex116_fid_disabled_synchronized_across_ranks():
-    """codex #116 P2 (Comment 2): the rank-local ``_fid_disabled`` flag is all-reduce'd
+    """codex #116 P2 (Comment 2): the rank-local fid_disabled flag is all-reduce'd
     (MAX) before branching, so a single rank's backbone failure makes ALL ranks log
     +inf together (no rank skips the collective while others block in it). Verified by
-    source inspection of ``on_validation_epoch_end``."""
+    source inspection of ``on_validation_epoch_end`` and ``_all_reduce_flag``."""
     import inspect
 
-    from manifold.metrics.fid_callback import FIDCallback
+    from manifold.metrics.fid.callback import FIDCallback
 
+    # The orchestrator calls _all_reduce_flag on the disabled tensor.
     src = inspect.getsource(FIDCallback.on_validation_epoch_end)
-    assert "all_reduce" in src and "_fid_disabled" in src, (
-        "on_validation_epoch_end must all_reduce the _fid_disabled flag (Comment 2)"
+    assert "all_reduce" in src or "_all_reduce_flag" in src, (
+        "on_validation_epoch_end must all_reduce the fid_disabled flag (Comment 2)"
     )
-    assert "ReduceOp.MAX" in src, "disabled flag must reduce with MAX (any-disabled-wins)"
+    # _all_reduce_flag reduces with MAX (any-disabled-wins).
+    flag_src = inspect.getsource(FIDCallback._all_reduce_flag)
+    assert "ReduceOp.MAX" in flag_src, "disabled flag must reduce with MAX (any-disabled-wins)"
