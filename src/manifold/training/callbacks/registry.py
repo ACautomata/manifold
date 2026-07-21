@@ -111,7 +111,9 @@ class CallbackRegistry:
         """Construct ``pl.Callback`` instances from *specs*, injecting *ctx*."""
         return [spec.build(ctx) for spec in specs]
 
-    def validate_monitor(self, specs: list[CallbackSpec], module: Any) -> None:
+    def validate_monitor(
+        self, specs: list[CallbackSpec], module: Any, extra_callbacks: list | None = None
+    ) -> None:
         """Post-resolve monitor validation (ADR-0029): the checkpoint spec's
         ``monitor_metric`` must be logged by some resolved callback **or**
         declared by the training *module*.
@@ -125,6 +127,11 @@ class CallbackRegistry:
         path) bypasses validation — absence is the intended fallback, not a
         missing-but-expected monitor.
 
+        *extra_callbacks* (non-registry callbacks like the hand-appended
+        ``LatentX0MAE``) are scanned for a ``logged_metrics`` attribute too, so a
+        checkpoint monitoring a metric an extra callback emits validates without
+        the shell having to mutate ``module.logged_metrics``.
+
         Raises:
             ValueError: if ``monitor_metric`` is set but is neither
                 callback-logged nor module-declared (Lightning would otherwise
@@ -137,6 +144,8 @@ class CallbackRegistry:
         for spec in specs:
             logged |= set(getattr(spec, "logged_metrics", frozenset()))
         logged |= set(getattr(module, "logged_metrics", frozenset()))
+        for cb in extra_callbacks or []:
+            logged |= set(getattr(cb, "logged_metrics", frozenset()))
         if ckpt.monitor_metric not in logged:
             raise ValueError(
                 f"checkpoint monitor_metric {ckpt.monitor_metric!r} is logged by no "

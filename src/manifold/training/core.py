@@ -60,7 +60,8 @@ class TrainingSpine:
         After resolving and building the registry callbacks, any
         *extra_callbacks* (e.g. the hand-appended ``LatentX0MAE``) are
         added before :meth:`CallbackRegistry.validate_monitor` checks the
-        checkpoint's ``monitor_metric`` against the full set.
+        checkpoint's ``monitor_metric`` against the registry specs, the
+        module's declared metrics, and the extra callbacks' ``logged_metrics``.
 
         Args:
             module: The training module.
@@ -93,7 +94,11 @@ class TrainingSpine:
         callbacks: list = self.registry.build(specs, ctx)
         if extra_callbacks:
             callbacks.extend(extra_callbacks)
-        self.registry.validate_monitor(specs, module)
+        # validate_monitor scans the registry specs + module + extra_callbacks'
+        # logged_metrics, so a checkpoint monitoring a metric an extra callback
+        # emits (e.g. LatentX0MAE's val/x0_mae) validates without the shell
+        # mutating module.logged_metrics.
+        self.registry.validate_monitor(specs, module, extra_callbacks=extra_callbacks)
         ckpt = next(c for c in callbacks if isinstance(c, ModelCheckpoint))
         trainer = build_trainer(
             max_epochs=max_epochs,

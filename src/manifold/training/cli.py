@@ -162,6 +162,10 @@ def run_training(
     # checkpoint knobs (ADR-0029): pass the full ``checkpoint`` block through so
     # monitor_metric / mode / filename / save_last are not silently ignored.
     checkpoint_cfg: dict | None = None,
+    # ADR-0032: a CLI ``--callbacks`` override (full name-list replacement of
+    # the derived defaults). ``None`` keeps the derived default set (unchanged
+    # behaviour); the spine applies the ADR-0029 merge order either way.
+    callback_names: list[str] | None = None,
 ) -> tuple[pl.Trainer, ModelCheckpoint]:
     """Assemble callbacks + ``Trainer`` and ``fit`` the module (the core seam).
 
@@ -252,11 +256,9 @@ def run_training(
     extra_callbacks: list = []
     extra_trainer_kwargs: dict | None = None
     if val_enabled:
+        # LatentX0MAE declares logged_metrics={"val/x0_mae"} so the registry's
+        # validate_monitor accepts that monitor without mutating module.logged_metrics.
         extra_callbacks.append(LatentX0MAE())
-        # Augment the module's logged_metrics with the hand-appended
-        # LatentX0MAE metric so validate_monitor accepts monitor_metric=val/x0_mae.
-        x0_mae = getattr(module, "logged_metrics", frozenset()) | {"val/x0_mae"}
-        module.logged_metrics = frozenset(x0_mae)
     else:
         rank_zero_info(
             "manifold-train: no held-out validation set is configured "
@@ -280,6 +282,7 @@ def run_training(
         extra_trainer_kwargs=extra_trainer_kwargs,
         ckpt_path=ckpt_path,
         callback_cfg=callback_cfg_built,
+        callback_names_override=callback_names,
         extra_callbacks=extra_callbacks,
     )
 

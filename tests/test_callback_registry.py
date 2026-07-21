@@ -178,3 +178,25 @@ def test_validate_monitor_none_bypasses_validation():
     reg = _registry()
     specs = reg.resolve(["checkpoint"], cfg={"checkpoint": {"monitor_metric": None}})
     reg.validate_monitor(specs, module=None)  # must not raise.
+
+
+def test_validate_monitor_accepts_extra_callback_logged_metric():
+    """A monitored metric an extra (non-registry) callback logs is valid without
+    the shell mutating module.logged_metrics — the LatentX0MAE/val/x0_mae case
+    (ADR-0029). ``LatentX0MAE`` declares ``logged_metrics={"val/x0_mae"}``.
+    """
+    from manifold.training.metrics import LatentX0MAE
+
+    reg = _registry()
+    specs = reg.resolve(["checkpoint"], cfg={"checkpoint": {"monitor_metric": "val/x0_mae"}})
+    # No module.logged_metrics — the metric comes from the extra callback.
+    reg.validate_monitor(specs, module=None, extra_callbacks=[LatentX0MAE()])
+
+
+def test_validate_monitor_fails_when_extra_callback_omits_metric():
+    """Without the extra callback that logs the metric, validation fails — the
+    flip side of the test above (proves the extra-callback path is load-bearing)."""
+    reg = _registry()
+    specs = reg.resolve(["checkpoint"], cfg={"checkpoint": {"monitor_metric": "val/x0_mae"}})
+    with pytest.raises(ValueError, match="monitor_metric 'val/x0_mae'"):
+        reg.validate_monitor(specs, module=None, extra_callbacks=None)
