@@ -83,6 +83,37 @@ def _dict_subset(d: dict | None, keys: tuple[str, ...]) -> dict:
     return {k: d[k] for k in keys if d.get(k) is not None}
 
 
+def _resolve_fid_overrides(cfg, raw_overrides):
+    """Resolve ``fid`` / legacy ``fid_eval`` overrides honoring dotlist precedence.
+
+    ``merge_overrides`` already merged YAML + dotlist into ``cfg``. OmegaConf
+    keeps the two namespaces distinct, so the last dotlist token among
+    ``fid.*`` / ``fid_eval.*`` for each key must be picked explicitly by looking
+    at ``raw_overrides`` order.
+    """
+    fid = dict(opt(cfg, "fid", {}))
+    legacy = dict(opt(cfg, "fid_eval", {}))
+    last_ns: dict[str, str] = {}
+    for token in raw_overrides or []:
+        if "=" not in token:
+            continue
+        key_path, _ = token.split("=", 1)
+        if key_path.startswith("fid_eval."):
+            last_ns[key_path.split(".", 1)[1]] = "fid_eval"
+        elif key_path.startswith("fid."):
+            last_ns[key_path.split(".", 1)[1]] = "fid"
+    merged: dict[str, Any] = {}
+    for k in set(fid) | set(legacy):
+        ns = last_ns.get(k)
+        if ns == "fid_eval":
+            merged[k] = legacy[k]
+        elif ns == "fid":
+            merged[k] = fid[k]
+        else:
+            merged[k] = fid.get(k, legacy.get(k))
+    return merged
+
+
 def run_training(
     *,
     module: LatentFlowModule,
@@ -107,6 +138,9 @@ def run_training(
     center_slices_ratio: float = 0.5,
     cov_ridge: float = 1e-6,
     val_subset_size: int = 32,
+    # checkpoint knobs (ADR-0029): pass the full ``checkpoint`` block through so
+    # monitor_metric / mode / filename / save_last are not silently ignored.
+    checkpoint_cfg: dict | None = None,
 ) -> tuple[pl.Trainer, ModelCheckpoint]:
     """Assemble callbacks + ``Trainer`` and ``fit`` the module (the core seam).
 
@@ -194,6 +228,9 @@ def run_training(
         "save_top_k": save_top_k,
         "every_n_epochs": every_n_epochs,
     }
+    if checkpoint_cfg:
+        allowed = {"monitor_metric", "save_top_k", "save_last", "every_n_epochs", "mode", "filename"}
+        callback_cfg["checkpoint"].update({k: v for k, v in checkpoint_cfg.items() if k in allowed})
 
     ctx = CallbackContext(
         module=module,
@@ -392,20 +429,21 @@ def main(argv: list[str] | None = None, *, data_provider=None) -> int:
     # Thread the optional config blocks (from the train recipe) as overrides so
     # fid.* / checkpoint.* knobs are actually reachable via dotlist/YAML.
     # ADR-0029: the ``fid_eval`` block is renamed to ``fid`` (callback name ==
-    # config namespace). Existing dotlist/YAML overrides may still arrive as
-    # ``fid_eval.*`` — translate them to ``fid.*`` (the explicit legacy override
-    # wins over a stale ``fid`` block) before reading the knobs, then lift
-    # ``save_top_k`` to the checkpoint override (it is a checkpoint knob, not an
-    # FID one; today it is read as ``fid_eval.save_top_k``).
-    fid_cfg = dict(opt(cfg, "fid", {}))
-    legacy_fid = dict(opt(cfg, "fid_eval", {}))
-    if legacy_fid:
-        fid_cfg = {**fid_cfg, **legacy_fid}
+    # config namespace). Existing dotlist overrides may still arrive as
+    # ``fid_eval.*`` — ``_resolve_fid_overrides`` translates them to ``fid.*``
+    # while preserving dotlist precedence, and ``checkpoint_cfg`` is passed
+    # through to ``run_training`` so ``monitor_metric``, ``mode``, ``filename``,
+    # and ``save_last`` are not silently ignored.
+    fid_cfg = _resolve_fid_overrides(cfg, args.overrides)
     ckpt_cfg = dict(opt(cfg, "checkpoint", {}))
+
     fid_kwargs = _dict_subset(
         fid_cfg, ("num_synth", "every_n_epochs", "center_slices_ratio", "cov_ridge")
     )
-    ckpt_save_top_k = fid_cfg.get("save_top_k", ckpt_cfg.get("save_top_k", 3))
+    # ``save_top_k`` may be supplied either in the legacy ``fid_eval`` block or in
+    # the modern ``checkpoint`` block; prefer the explicit checkpoint value, then
+    # the legacy FID-side value, then the default.
+    ckpt_save_top_k = ckpt_cfg.get("save_top_k", fid_cfg.get("save_top_k", 3))
 
     run_training(
         module=module,
@@ -425,6 +463,7 @@ def main(argv: list[str] | None = None, *, data_provider=None) -> int:
         save_top_k=ckpt_save_top_k,
         limit_val_batches=int(opt(cfg, "val_subset_size", 4)),
         val_subset_size=int(opt(cfg, "val_subset_size", 32)),
+        checkpoint_cfg=ckpt_cfg,
         **fid_kwargs,
     )
     print(f"[manifold-train] done; checkpoints under {cfg.model_dir}")
