@@ -70,8 +70,7 @@ _Avoid_: context, encoder hidden states (those are diffusers text-conditioned te
 
 > **Superseded by ADR-0026 / ADR-0027** — paired MRI generation now uses a ControlNet on
 > the noise→data transport (see *ControlNet (paired MRI)*). Terms kept as vocabulary; the
-> src→tgt transport itself is gone, though `src`/`tgt` latents survive as ControlNet
-> control / reward-positive data.
+> src→tgt transport itself is gone, though `src`/`tgt` latents survive as ControlNet control.
 
 **Paired JiT** (superseded):
 The latent-flow formulation that connects *two data latents* — a source latent at
@@ -240,6 +239,8 @@ _Avoid_: DDP guard, collective symmetry (that is ADR-0025's broader rule).
 The scorer that maps a latent to a scalar reward — a MONAI `PatchGANDiscriminator`
 behind a thin pooling head, never a hand-rolled net. Its scoring `forward` is the
 inference path GRPO calls during policy learning; it owns **no** generation rollout.
+It scores the terminal latent `z_K` **unconditionally** — one shared reward for both the
+UNet and the ControlNet GRPO policies (ADR-0034); never a condition-aware `concat([x_src, ·])`.
 A **Model** in the four-component sense (a network wrapper), specialized to scoring.
 _Avoid_: discriminator (that denotes the wrapped MONAI class itself), critic.
 
@@ -277,42 +278,16 @@ disjoint `[0.5, 1) / [0, 0.5)` halves, which saturated `val/pair_acc` at 0.997.)
 _Avoid_: positive/negative sample (say winner/loser — those name the half-pair, not
 a label).
 
-### Paired reward model (GRPO) — survives, reworked
+### Paired reward model (GRPO) — superseded
 
-> **Survives ADR-0027.** The condition-aware `RewardModel` (scores `concat([x_src, tgt])`,
-> ADR-0019) and the offline real-vs-fake discipline are unchanged; only the **fake source**
-> changes — from the deleted src→tgt flow's rollout to the supervised ControlNet's
-> generation. The reward model code and the `PairedRewardModule` are generator-agnostic; the
-> fake-builder's rollout primitive + loader are reworked.
-
-**real tgt / generated tgt** (paired reward):
-The two halves of a paired reward preference pair — **real-vs-fake** supervision
-(ADR-0018). The **real tgt** is the ground-truth target latent `x_tgt` (the VAE
-encode of the target volume) — the **winner**; the **generated tgt** is the
-paired-JiT model's src→tgt Heun rollout output — the **loser** (the "fake").
-Distinct from the JiT reward's corruption-level preference (ADR-0009/0010), where
-both halves are *generated*. Both live in scaled latent space; the generated tgt is
-never VAE-decoded/re-encoded.
-_Avoid_: positive/negative sample, fake/real sample (say real tgt / generated tgt —
-those name the source: ground truth vs the model's rollout).
-
-**Condition-aware reward** (paired):
-The paired reward scores `concat([x_src, tgt])` (`in_channels = 2·C_latent`,
-ADR-0019) so it judges "is this tgt a faithful translation *of* this src" — able to
-catch **copy-src** (`tgt == src`), the dominant paired failure. Distinct from an
-**unconditional realism** reward (`tgt` alone, `in_channels = C_latent`), which
-*rewards* copy-src because `x_src` is itself a real latent. The same `RewardModel`
-class is reused (caller concats; `forward` is channel-agnostic).
-_Avoid_: conditional discriminator (say condition-aware reward).
-
-**Fake cache** (paired reward):
-The disk cache of precomputed generated-tgt fakes — one src→tgt rollout per pair,
-written **once before training** (`roll → cache → train`, the latent-cache analogue;
-ADR-0020). Forced by the deterministic paired rollout: re-rolling each fit step
-yields byte-identical fakes at epoch× compute, so ADR-0010's online rollout is
-inverted for paired. The Paired Reward Module holds **no** generator; `fit` consumes
-precomputed `{real tgt, generated tgt}` pairs (structurally the JiT `validate` path).
-_Avoid_: pair cache, online rollout (the paired reward has neither).
+> **Superseded by ADR-0034 — deleted.** The condition-aware paired reward
+> (`concat([x_src, tgt])`, `2·C_latent`, real-vs-fake; ADR-0018–0023) and its pipeline
+> (`PairedRewardModule`, `paired_reward_cli`, the offline fake cache, the probe) are
+> removed. Both GRPO policies now share the unconditional realism `RewardModel`
+> (ADR-0009/0010); ControlNet-policy fidelity is enforced by ControlNet×`x_src` + the
+> supervised init + the KL anchor, not the reward. The deleted terms — *real tgt /
+> generated tgt*, *condition-aware reward*, *fake cache* — are kept only as searchable
+> history.
 
 ### GRPO policy learning
 
@@ -357,9 +332,10 @@ _Avoid_: prompt (that is the text-to-image analog; manifold has no text), batch.
 **Policy Module** (GRPO-policy-training Module):
 The `spt.Module` owning GRPO-policy-learning concerns — the singular-branch rollout
 (ADR-0011), the multi-step PPO inner loop, the group-relative advantage, and the
-clipped-surrogate loss. In **Mode-1** it holds the **trainable JiT x0-denoiser** (the
-policy — the only params it optimizes); in **Mode-2** it instead holds the **frozen base
-UNet** + the **trainable ControlNet** (the policy — ADR-0028). Either mode holds the
+clipped-surrogate loss. The trainable policy is whichever the inputs supply: the
+**JiT x0-denoiser** (the UNet — the only params it optimizes), or, when a `controlnet` is
+present, the **frozen base UNet** + the **trainable ControlNet** (ADR-0028/0034) —
+inferred from the inputs, not a named mode. Either way it holds the
 **frozen Reward Model** (unregistered, like the reward Module
 holds its denoiser). It overrides `training_step` (not `forward` — GRPO is multi-term,
 multi-step, so the single-loss seam the Reward Module uses cannot hold), runs no EMA, and
@@ -381,20 +357,20 @@ unchanged. The source `x_src` is a **control signal** here, not a transport endp
 (the transport is noise→data). Replaces Paired JiT's src→tgt flow.
 _Avoid_: control branch, condition net, control adapter (say ControlNet).
 
-**Mode-1 / Mode-2 GRPO**:
-The two training modes of the unified `GRPOModule` (ADR-0028). **Mode-1** (no ControlNet)
-trains the UNet — the noise→data GRPO of ADR-0011/0012. **Mode-2** (ControlNet) freezes
-the base UNet and trains only the ControlNet (init from the supervised stage, ADR-0027)
-against the condition-aware reward; the transition σ stays θ-independent, so the
-`grpo.py` spine reuses verbatim and the KL anchor is `deepcopy(base + ControlNet)`. The
-paired-GRPO Brownian bridge (ADR-0024) is deleted.
-_Avoid_: paired GRPO, bridge GRPO (Mode-2 replaces both).
+**Mode-1 / Mode-2 GRPO** — *superseded vocabulary (ADR-0034)*:
+Dropped — `GRPOModule` trains whichever policy the inputs supply: the UNet (no ControlNet;
+the noise→data GRPO of ADR-0011/0012) or the ControlNet on a frozen base (init from the
+supervised stage, ADR-0027) — inferred from input presence, not a numbered mode. The
+transition σ stays θ-independent, so the `grpo.py` spine reuses verbatim and the KL anchor
+is `deepcopy(base + ControlNet)`. The reward is the shared unconditional realism reward
+scoring `z_K` (ADR-0034); the paired-GRPO Brownian bridge (ADR-0024) is deleted.
+_Avoid_: paired GRPO, bridge GRPO.
 
 **ControlNet two-stage**:
 The supervised→GRPO pipeline for the ControlNet (ADR-0027): a supervised
 `ControlNetLatentFlowModule` (base frozen, noise→data transport, `(1−t)⁻²`-MSE on
 `x_tgt`, ControlNet conditioned on `x_src`) produces the initial translation policy,
-then GRPO Mode-2 refines it against the condition-aware reward. Mirrors the JiT
+then GRPO refines it against the shared realism reward (ADR-0034). Mirrors the JiT
 `LatentFlowModule → GRPOModule` two-stage.
 _Avoid_: paired pre-training (say ControlNet two-stage).
 

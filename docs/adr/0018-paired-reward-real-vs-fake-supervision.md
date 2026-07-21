@@ -1,5 +1,9 @@
 # Paired-JiT reward supervision — real tgt vs generated tgt (real-vs-fake), not corruption-level
 
+> **Status: Superseded by [ADR-0034](0034-one-realism-reward-both-grpo-policies-delete-condition-aware.md).**
+> The real-vs-fake paired reward and its pipeline are deleted; both GRPO policies share
+> the unconditional realism reward (ADR-0009/0010). Kept as decision history.
+
 The paired-JiT reward model is trained on **real-vs-fake preference pairs**: the
 **winner** is the real target latent `x_tgt` (the VAE encode of the target volume),
 the **loser** is the paired-JiT model's full src→tgt generation

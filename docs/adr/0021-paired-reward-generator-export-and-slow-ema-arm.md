@@ -1,5 +1,9 @@
 # Paired reward generator — load via a paired native export bridge, bake the raw arm
 
+> **Status: Superseded by [ADR-0034](0034-one-realism-reward-both-grpo-policies-delete-condition-aware.md).**
+> The paired-reward pipeline is deleted; `load_frozen_controlnet_generator` survives,
+> relocated to `training/controlnet_inputs.py`. Kept as decision history.
+
 The frozen paired-JiT generator (whose src→tgt rollout produces the reward's fake
 losers) is loaded from a **paired native export** via a new
 `load_frozen_paired_generator` — a sibling of `load_frozen_denoiser`

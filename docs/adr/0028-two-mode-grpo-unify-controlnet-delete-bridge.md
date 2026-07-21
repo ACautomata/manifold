@@ -1,5 +1,13 @@
 # Two-mode GRPO — unify noise→data and ControlNet into one Module; delete the bridge
 
+> **Amended by [ADR-0034](0034-one-realism-reward-both-grpo-policies-delete-condition-aware.md).**
+> The "Mode-1/Mode-2" vocabulary is dropped — `GRPOModule` trains whichever policy it is
+> given (UNet, or ControlNet on a frozen UNet), inferred from whether `controlnet` is
+> present in the inputs (no `--grpo-mode` flag). The reward consequence is corrected:
+> **both policies score `z_K` with the shared unconditional realism reward**, not a
+> condition-aware `concat([x_src, z_K])` (ADR-0019 is superseded). The unification (one
+> module, spine reuses verbatim, bridge deleted) stands.
+
 `GRPOModule` becomes a **single** module supporting two modes:
 
 - **Mode-1 (no ControlNet):** train the UNet — the current behavior (ADR-0011/0012/0015).
