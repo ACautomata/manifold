@@ -43,7 +43,7 @@ from ..config import opt
 from ..data.datamodule import build_datamodule
 from ..models.reward_model import RewardModel
 from ..modules.paired_reward import PairedRewardModule
-from .reward_cli import _build_checkpoint
+from .reward_cli import _ckpt
 from .trainer import build_trainer, is_multi_gpu
 
 
@@ -108,12 +108,11 @@ def run_paired_reward_training(
             "(ADR-0023) - build it via build_paired_reward_probe and pass it in, or "
             "set monitor_metric to a logged metric."
         )
-    ckpt = _build_checkpoint(
+    ckpt = _ckpt(
         model_dir,
-        monitor_metric=monitor_metric,
+        monitor_metric=monitor_metric if not multi_gpu else None,
         mode=mode,
         save_top_k=save_top_k,
-        multi_gpu=multi_gpu,
     )
     # Score the fixed generated-end probe in training-batch-size chunks (bounds
     # epoch-end memory); attach the probe if the inputs carry one.

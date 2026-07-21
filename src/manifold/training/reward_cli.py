@@ -41,6 +41,7 @@ from ..config import opt
 from ..data.datamodule import build_datamodule
 from ..models.reward_model import RewardModel
 from ..modules.reward import RewardModule
+from manifold.training.callbacks import CallbackContext, CheckpointSpec
 from .trainer import build_trainer, is_multi_gpu
 
 
@@ -65,46 +66,27 @@ class RewardInputs:
     val_probe: Any = None  #: precomputed RewardPairDataset (generated-end probe).
 
 
-def _build_checkpoint(
-    model_dir: str,
-    *,
-    monitor_metric: str = "val/gen_pair_acc",
-    mode: str = "max",
-    save_top_k: int = 1,
-    multi_gpu: bool = False,
-) -> ModelCheckpoint:
-    """Stock Lightning ``ModelCheckpoint`` monitoring the generated-end probe.
+def _ckpt(model_dir: str, *, monitor_metric: str | None = None, mode: str = "max", save_top_k: int = 1) -> ModelCheckpoint:
+    """A ``ModelCheckpoint`` via :class:`CheckpointSpec` (ADR-0029).
 
-    The checkpoint monitors ``val/gen_pair_acc`` (the GRPO-regime metric — ranking
-    within the all-generated regime; ``mode="max"``). ``val/pair_acc`` and
-    ``val/roc_auc`` are logged for diagnosis but are not the selection signal.
-    ``auto_insert_metric_name = False`` because the metric key contains a ``/``.
-    ``save_last=True`` for resume. Under DDP (``multi_gpu``) the metric is
-    rank-local to rank 0, so monitoring is dropped (``save_last`` +
-    ``save_top_k=1`` keep the latest) — mirroring the JiT checkpoint's DDP fallback
-    (the probe is synced for reporting, but the selection signal stays single-GPU).
+    Under DDP the caller passes ``monitor_metric=None`` to get an unmonitored
+    ``save_last`` + ``save_top_k=1`` checkpoint — the metric is rank-local
+    (computed on rank 0's shard), so monitoring is unreliable. The filename keeps
+    the ``reward-`` prefix in both branches.
     """
-    if multi_gpu:
-        return ModelCheckpoint(
-            dirpath=model_dir,
-            filename="reward-{epoch:03d}",
-            save_last=True,
-            save_top_k=1,
-            save_on_train_epoch_end=True,
-            auto_insert_metric_name=False,
-            save_weights_only=False,
-        )
-    return ModelCheckpoint(
-        dirpath=model_dir,
-        filename=f"reward-{{epoch:03d}}-{{{monitor_metric}:.3f}}",
-        monitor=monitor_metric,
-        mode=mode,
+    if monitor_metric is None:
+        filename = "reward-{epoch:03d}"
+    else:
+        filename = f"reward-{{epoch:03d}}-{{{monitor_metric}:.3f}}"
+    return CheckpointSpec(
+        monitor_metric=monitor_metric,
         save_top_k=save_top_k,
-        save_last=True,
-        save_on_train_epoch_end=True,
-        auto_insert_metric_name=False,
-        save_weights_only=False,
-    )
+        mode=mode,
+        filename=filename,
+    ).build(CallbackContext(
+        module=None, vae=None, datamodule=None, inference_recipe=None,
+        model_dir=model_dir, seed=0,
+    ))
 
 
 def run_reward_training(
@@ -141,8 +123,11 @@ def run_reward_training(
     # per-step t/noise draws then reproduce across runs.
     pl.seed_everything(seed, workers=True)
     multi_gpu = is_multi_gpu(devices)
-    ckpt = _build_checkpoint(
-        model_dir, monitor_metric=monitor_metric, mode=mode, save_top_k=save_top_k, multi_gpu=multi_gpu
+    ckpt = _ckpt(
+        model_dir,
+        monitor_metric=monitor_metric if not multi_gpu else None,
+        mode=mode,
+        save_top_k=save_top_k,
     )
     # Score the fixed generated-end probe in training-batch-size chunks (bounds
     # epoch-end memory); attach the probe if the inputs carry one.

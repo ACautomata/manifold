@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import pytest
 
-from manifold.training.trainer import build_trainer, is_multi_gpu
+from manifold.training.trainer import is_multi_gpu
 
 
 # -- is_multi_gpu accessor (M1a/M1b unit tests, no Lightning) -----------------
@@ -85,6 +85,7 @@ def test_is_multi_gpu_matches_build_trainer_strategy(monkeypatch):
 def test_jit_main_passes_devices_1_for_single_gpu(monkeypatch, tmp_path):
     """JiT ``main(-g 1)`` passes ``devices=1`` to build_trainer (no surprise auto->DDP)."""
     from manifold.training import cli as cli_mod
+    from manifold.training import core as core_mod
 
     captured: dict = {}
 
@@ -92,7 +93,7 @@ def test_jit_main_passes_devices_1_for_single_gpu(monkeypatch, tmp_path):
         captured["devices"] = devices
         raise SystemExit("stop-after-build_trainer")  # short-circuit the fit
 
-    monkeypatch.setattr(cli_mod, "build_trainer", fake_build_trainer)
+    monkeypatch.setattr(core_mod, "build_trainer", fake_build_trainer)
 
     from tests.test_training_cli import _write_tiny_configs
 
@@ -115,6 +116,7 @@ def test_jit_main_passes_devices_1_for_single_gpu(monkeypatch, tmp_path):
 def test_jit_main_passes_devices_n_for_multi_gpu(monkeypatch, tmp_path):
     """JiT ``main(-g N>1)`` passes ``devices=N`` to build_trainer."""
     from manifold.training import cli as cli_mod
+    from manifold.training import core as core_mod
 
     captured: dict = {}
 
@@ -122,7 +124,7 @@ def test_jit_main_passes_devices_n_for_multi_gpu(monkeypatch, tmp_path):
         captured["devices"] = devices
         raise SystemExit("stop")
 
-    monkeypatch.setattr(cli_mod, "build_trainer", fake_build_trainer)
+    monkeypatch.setattr(core_mod, "build_trainer", fake_build_trainer)
     from tests.test_training_cli import _write_tiny_configs
 
     env, train, net = _write_tiny_configs(tmp_path)

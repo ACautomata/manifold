@@ -116,6 +116,11 @@ class LatentX0MAE(pl.Callback):
     batches; the callback only averages what ran).
     """
 
+    #: Declares the metric this callback logs so the registry's
+    #: ``validate_monitor`` accepts a ``val/x0_mae`` checkpoint monitor without
+    #: the shell mutating ``module.logged_metrics`` (ADR-0029).
+    logged_metrics: frozenset[str] = frozenset({"val/x0_mae"})
+
     def on_fit_start(self, trainer, module) -> None:
         self._mean = _attach(module, _X0_ATTR)
         self._mean.to(module.device if hasattr(module, "device") else "cpu")

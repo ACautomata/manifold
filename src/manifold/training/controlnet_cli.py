@@ -42,6 +42,7 @@ except ImportError:  # pragma: no cover
 from ..config import opt
 from ..data.datamodule import build_datamodule
 from ..modules.controlnet_latent_flow import ControlNetLatentFlowModule
+from manifold.training.callbacks import CallbackContext, CheckpointSpec
 from .metrics import LatentX0MAE, TrainLossLogger
 from .trainer import build_trainer
 
@@ -73,35 +74,22 @@ class ControlNetInputs:
     warm_fn: Any = None
 
 
-def _build_checkpoint(
+def _ckpt(
     model_dir: str,
     *,
     monitor_metric: str = "val/x0_mae",
     save_top_k: int = 3,
 ) -> ModelCheckpoint:
-    """Stock Lightning ``ModelCheckpoint`` for the supervised ControlNet (ADR-0006).
-
-    Monitors ``val/x0_mae`` (the latent-space target-prediction MAE, mode ``min`` —
-    the raw optimizer arm, no EMA). The metric is the same callback the JiT cli uses
-    (the ControlNet's validation forward returns ``pred`` / ``target`` just like
-    JiT's), and it is **globally reduced** under DDP: :class:`LatentX0MAE` accumulates
-    into a sample-weighted ``torchmetrics.MeanMetric`` and logs the Metric object, so
-    Lightning fires the cross-rank reduction to the true global mean (issue #146). A
-    rank-local fallback (``save_top_k=1`` + ``save_last``) would throw away
-    best-checkpoint selection for no correctness gain, so the monitor stays ON under
-    DDP. ``auto_insert_metric_name = False`` because the key contains a ``/``.
-    """
-    return ModelCheckpoint(
-        dirpath=model_dir,
-        filename=f"controlnet-{{epoch:03d}}-{{{monitor_metric}:.3f}}",
-        monitor=monitor_metric,
-        mode="min",
+    """A ``ModelCheckpoint`` via :class:`CheckpointSpec` (ADR-0029)."""
+    return CheckpointSpec(
+        monitor_metric=monitor_metric,
         save_top_k=save_top_k,
-        save_last=True,
-        save_on_train_epoch_end=True,
-        auto_insert_metric_name=False,
-        save_weights_only=False,
-    )
+        mode="min",
+        filename=f"controlnet-{{epoch:03d}}-{{{monitor_metric}:.3f}}",
+    ).build(CallbackContext(
+        module=None, vae=None, datamodule=None, inference_recipe=None,
+        model_dir=model_dir, seed=0,
+    ))
 
 
 def run_controlnet_training(
@@ -137,7 +125,7 @@ def run_controlnet_training(
     # val/x0_mae is globally reduced under DDP (LatentX0MAE logs a sample-weighted
     # MeanMetric), so the monitored checkpoint stays on under multi-GPU (issue #146)
     # — no save_top_k=1 degradation.
-    ckpt = _build_checkpoint(
+    ckpt = _ckpt(
         model_dir,
         monitor_metric="val/x0_mae",
         save_top_k=save_top_k,

@@ -617,13 +617,13 @@ def test_paired_reward_main_forces_2c_in_channels_regardless_of_config(tmp_path)
 
 
 def test_paired_reward_build_checkpoint_monitors_gen_pair_acc_and_ddp_fallback():
-    """_build_checkpoint monitors val/gen_pair_acc (single-GPU) and drops it under DDP."""
+    """_ckpt monitors val/gen_pair_acc (single-GPU) and drops it under DDP."""
     from pathlib import Path
 
-    from manifold.training.reward_cli import _build_checkpoint
+    from manifold.training.reward_cli import _ckpt
 
-    single = _build_checkpoint(str(Path("/tmp/_prw_ckpt_a").resolve()), multi_gpu=False)
-    multi = _build_checkpoint(str(Path("/tmp/_prw_ckpt_b").resolve()), multi_gpu=True)
+    single = _ckpt(str(Path("/tmp/_prw_ckpt_a").resolve()), monitor_metric="val/gen_pair_acc")
+    multi = _ckpt(str(Path("/tmp/_prw_ckpt_b").resolve()), monitor_metric=None)
     assert single.monitor == "val/gen_pair_acc"  # the within-fake-ranking probe metric
     assert multi.monitor is None  # DDP: no rank-0-shard selection
     assert multi.save_last and multi.save_top_k == 1
