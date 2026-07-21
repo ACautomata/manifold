@@ -12,6 +12,11 @@ Public API:
 from manifold.metrics.fid.callback import FIDCallback
 from manifold.metrics.fid.decoder import LatentDecoder
 from manifold.metrics.fid.extractor import FeatureExtractor
+from manifold.metrics.fid.math import (
+    frechet_distance_unbiased,
+    get_features_2p5d,
+    make_feature_network,
+)
 from manifold.metrics.fid.reducer import SufficientStatsReducer
 from manifold.metrics.fid.rollout import FixedSampleRollout
 from manifold.metrics.fid.vram import VramStage
@@ -23,4 +28,7 @@ __all__ = [
     "LatentDecoder",
     "SufficientStatsReducer",
     "VramStage",
+    "frechet_distance_unbiased",
+    "get_features_2p5d",
+    "make_feature_network",
 ]

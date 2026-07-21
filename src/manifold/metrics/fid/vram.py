@@ -82,14 +82,12 @@ class VramStage:
         # Snapshot VAE CPU state BEFORE moving it (so a partial move can be
         # undone by load_state_dict into a fresh .to("cpu") VAE).
         self._vae_cpu_state = {k: v.detach().clone() for k, v in self.vae.state_dict().items()}
+        # Staged flag BEFORE any fallible work: if ``vae.to(device)`` fails
+        # partway (e.g., staging OOM), ``_restore_to_cpu()`` moves any already-
+        # moved parameters back instead of being a no-op (codex #171 P2).
+        self._staged = True
         try:
             self.vae.to(device)
-            # Mark staged BEFORE any further work that might raise — the finally
-            # in on_validation_epoch_end calls _restore_eval_to_cpu only when
-            # _eval_staged is True. A skip-path return before this flag would
-            # leave the full VAE resident on the training GPU for the rest of
-            # the run (the VRAM pressure the skip is meant to avoid).
-            self._staged = True
 
             # Lazy feature_net build (fail-safe): a raising factory (bad/corrupt
             # cache, version mismatch) is caught -> feature_net stays None ->

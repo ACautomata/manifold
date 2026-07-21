@@ -290,10 +290,24 @@ class FIDCallback(pl.Callback):
                     real_planes = self._real_planes(
                         decoder, extractor, device,
                     )
-                    real_stats = [
-                        features_to_sufficient_stats(p.float())
-                        for p in real_planes
-                    ]
+                    d = self._feat_dim
+                    real_stats = []
+                    for p in real_planes:
+                        if p.numel() == 0:
+                            # Empty shard → correctly-sized zero stats
+                            # (codex #171 P1 round 2).
+                            real_stats.append((
+                                torch.zeros(d, device=device,
+                                            dtype=torch.float32),
+                                torch.zeros(d, d, device=device,
+                                            dtype=torch.float32),
+                                0,
+                            ))
+                        else:
+                            real_stats.append(
+                                features_to_sufficient_stats(p.float()),
+                            )
+                    del real_planes  # release before the synthetic phase
                 except Exception:
                     local_real_error = True
                     real_stats = None
@@ -315,21 +329,36 @@ class FIDCallback(pl.Callback):
                     self._real_moments_cache = reducer(
                         [zero_s for _ in range(3)], device,
                     )
+                # Release preproc buffers after caching (codex #171 P2).
+                del real_stats
 
             # -- Synth moments + log. ----------------------------------------
             # Generate, decode, extract, AND compute sufficient stats under
             # error capture — ``features_to_sufficient_stats`` (float
             # conversion + ``features.T @ features``) is fallible and must
-            # complete before the error rendezvous (codex #171 P1).
+            # complete before the error rendezvous (codex #171 P1). Empty
+            # feature tensors (num_synth < world_size) are converted to
+            # correctly-sized zero stats before the rendezvous (P1 round 2).
             local_error = False
             try:
                 synth_planes = self._synth_planes(
                     rollout, decoder, extractor, device,
                 )
-                synth_stats = [
-                    features_to_sufficient_stats(p.float())
-                    for p in synth_planes
-                ]
+                d = self._feat_dim
+                synth_stats = []
+                for p in synth_planes:
+                    if p.numel() == 0:
+                        synth_stats.append((
+                            torch.zeros(d, device=device,
+                                        dtype=torch.float32),
+                            torch.zeros(d, d, device=device,
+                                        dtype=torch.float32),
+                            0,
+                        ))
+                    else:
+                        synth_stats.append(
+                            features_to_sufficient_stats(p.float()),
+                        )
             except Exception:
                 local_error = True
                 synth_stats = None
