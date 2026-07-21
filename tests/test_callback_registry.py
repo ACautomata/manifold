@@ -200,3 +200,38 @@ def test_validate_monitor_fails_when_extra_callback_omits_metric():
     specs = reg.resolve(["checkpoint"], cfg={"checkpoint": {"monitor_metric": "val/x0_mae"}})
     with pytest.raises(ValueError, match="monitor_metric 'val/x0_mae'"):
         reg.validate_monitor(specs, module=None, extra_callbacks=None)
+
+
+# -- issue #161: TrainingSpine -------------------------------------------------
+
+
+def test_training_spine_fails_fast_without_checkpoint(tmp_path):
+    """A callback_names override that drops 'checkpoint' fails with a clear
+    ValueError instead of a StopIteration from next(...) (codex #170 P2).
+
+    TrainingSpine.run requires a ModelCheckpoint in the resolved list (the run_*
+    return contract); this exercises the path directly with an empty override so
+    resolve/build/validate never touch a real Lightning module.
+    """
+    from unittest.mock import MagicMock
+
+    from manifold.training.core import TrainingSpine
+
+    spine = TrainingSpine()
+    spine.registry.register("train_loss", TrainLossSpec)
+
+    with pytest.raises(ValueError, match="no ModelCheckpoint"):
+        spine.run(
+            module=MagicMock(),
+            datamodule=MagicMock(),
+            ctx=CallbackContext(
+                module=None, vae=None, datamodule=None, inference_recipe=None,
+                model_dir=str(tmp_path), seed=0,
+            ),
+            default_names=["train_loss"],
+            callback_names_override=["train_loss"],  # no checkpoint
+            max_epochs=1,
+            model_dir=str(tmp_path),
+            devices=1,
+            accelerator="cpu",
+        )

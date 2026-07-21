@@ -99,7 +99,17 @@ class TrainingSpine:
         # emits (e.g. LatentX0MAE's val/x0_mae) validates without the shell
         # mutating module.logged_metrics.
         self.registry.validate_monitor(specs, module, extra_callbacks=extra_callbacks)
-        ckpt = next(c for c in callbacks if isinstance(c, ModelCheckpoint))
+        ckpt = next((c for c in callbacks if isinstance(c, ModelCheckpoint)), None)
+        if ckpt is None:
+            # A callback_names_override that drops "checkpoint" leaves no
+            # ModelCheckpoint to return. The JiT shell (and the run_* contract)
+            # expect one, so fail fast with a clear message rather than a
+            # StopIteration deep in next(...).
+            raise ValueError(
+                f"TrainingSpine.run: the resolved callback list has no "
+                f"ModelCheckpoint (names={names!r}). A checkpoint callback is "
+                f"required; include 'checkpoint' in default_names or the override."
+            )
         trainer = build_trainer(
             max_epochs=max_epochs,
             callbacks=callbacks,
