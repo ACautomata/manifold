@@ -6,7 +6,8 @@ the singular-branch rollout degenerates to the deployed ``sample_latent_flow`` a
 the ``(B, G)`` group; the rollout is fully ``no_grad`` (the grad eval lives in the
 inner loop); the clipped-surrogate loss is finite and its gradient pushes toward
 higher-advantage transitions; backward touches the policy UNet ONLY (the frozen
-``RewardModel`` is unregistered — off the checkpoint/optimizer); and a GRPO run
+``RewardModel`` is registered + dual-excluded — off the checkpoint/optimizer,
+ADR-0031); and a GRPO run
 completes end-to-end on toy injected policy + frozen reward via the CLI smoke,
 writing a checkpoint and logging ``val/mean_reward``.
 """
@@ -324,11 +325,11 @@ def _module(latent_shape=_LAT, **kw):
 
 
 def test_module_backward_updates_unet_only():
-    """backward populates UNet (policy) grads; the frozen RewardModel is unregistered.
+    """backward populates UNet (policy) grads; the frozen RewardModel stays untouched.
 
-    The Module HOLDS the frozen reward (unregistered via object.__setattr__) — so it
-    is absent from parameters()/state_dict()/optimizer, and backward only touches the
-    policy UNet (#56 acceptance: the exclusion invariant, mirroring RewardModule)."""
+    The Module HOLDS the frozen reward registered + dual-excluded (ADR-0031) — so it
+    is absent from state_dict()/optimizer, and backward only touches the policy UNet
+    (#56 acceptance: the exclusion invariant, mirroring RewardModule)."""
     mod = _module()
     torch.manual_seed(0)
     noise = torch.randn(2, *_LAT)
@@ -346,13 +347,106 @@ def test_module_backward_updates_unet_only():
     # Policy UNet: every param got a finite grad.
     unet_params = list(mod.unet.parameters())
     assert unet_params and all(p.grad is not None and torch.isfinite(p.grad).all() for p in unet_params)
-    # Frozen reward: held but UNREGISTERED — grads None, off the optimizer/checkpoint.
+    # Frozen reward: registered + dual-excluded — grads None, off the optimizer/checkpoint.
     assert all(p.grad is None for p in mod.reward_model.parameters())
     assert "reward_model" not in mod.state_dict()
     opt = mod.configure_optimizers()["optimizer"]
     opt_ids = {id(p) for p in opt.param_groups[0]["params"]}
     assert opt_ids == {id(p) for p in unet_params}
     assert opt_ids.isdisjoint({id(p) for p in mod.reward_model.parameters()})
+
+
+def test_frozen_arms_registered_but_dual_excluded():
+    """Frozen arms are registered (in parameters()) but dual-excluded (ADR-0031, AC1).
+
+    Registration lets Lightning own device placement (the on_fit_start manual move is
+    gone); the off-optimizer + off-checkpoint invariants survive via requires_grad=False
+    + the state_dict() override — NOT via the old object.__setattr__ registration bypass.
+    The arms appear in parameters() (spt.Module filters only callbacks_*), but carry no
+    grad, sit in no optimizer group, and emit no checkpoint keys.
+    """
+    import copy as _copy
+
+    from manifold import UNet3DConditionModel
+    from manifold.modules import GRPOModule
+
+    torch.manual_seed(0)
+    policy = UNet3DConditionModel(num_class_embeds=4, include_spacing_input=True)
+    reference = _copy.deepcopy(policy)
+    mod = GRPOModule(
+        policy, _reward_model(), FlowMatchGRPOScheduler(eta=0.5),
+        G=2, eta_step_list=(0,), num_steps=3, latent_shape=_LAT, lr=1e-3,
+        reference_policy=reference, kl_coef=0.1,
+    )
+    # The declared frozen set: reward + reference (Mode-1 unet is the trainable policy).
+    assert mod._frozen_arm_names == frozenset({"reward_model", "reference_unet"})
+
+    module_param_ids = {id(p) for p in mod.parameters()}
+    # Registered ⇒ the frozen arms' params are present in parameters() ...
+    assert {id(p) for p in mod.reward_model.parameters()} <= module_param_ids
+    assert {id(p) for p in mod.reference_unet.parameters()} <= module_param_ids
+    # ... but frozen (requires_grad=False) ...
+    assert not any(p.requires_grad for p in mod.reward_model.parameters())
+    assert not any(p.requires_grad for p in mod.reference_unet.parameters())
+    # ... while the trainable policy stays trainable.
+    assert any(p.requires_grad for p in mod.unet.parameters())
+
+    # Off the optimizer: it wires the trainable arm only.
+    opt = mod.configure_optimizers()["optimizer"]
+    opt_ids = {id(p) for g in opt.param_groups for p in g["params"]}
+    assert opt_ids == {id(p) for p in mod.unet.parameters()}
+    assert opt_ids.isdisjoint({id(p) for p in mod.reward_model.parameters()})
+    assert opt_ids.isdisjoint({id(p) for p in mod.reference_unet.parameters()})
+
+    # Off the checkpoint: state_dict() strips the frozen prefixes (the trainable arm stays).
+    keys = set(mod.state_dict())
+    assert not any(k.split(".", 1)[0] in {"reward_model", "reference_unet"} for k in keys)
+    assert any(k.startswith("unet.") for k in keys)
+
+
+def test_load_state_dict_strict_except_frozen_allowlist():
+    """load_state_dict is strict on trainable keys, lenient only on the frozen arms (AC2).
+
+    A checkpoint (state_dict() strips frozen arms) round-trips into a fresh module with
+    strict=True — the frozen arms' absence is the one tolerated mismatch (they are rebuilt
+    fresh each launch). A missing or unexpected TRAINABLE key raises instead of silently
+    resuming on stale / random weights (no blanket strict=False).
+    """
+    mod = _module()
+    sd = mod.state_dict()  # trainable unet.* only (frozen arms stripped)
+
+    # 1. Round-trip into a fresh module: frozen arms absent from sd → allowlisted, OK.
+    fresh = _module()
+    fresh.load_state_dict(sd)  # strict=True (default)
+
+    # 2. Drop one TRAINABLE key → strict load must raise (no silent partial resume).
+    a_trainable_key = next(k for k in sd if k.startswith("unet."))
+    short = {k: v for k, v in sd.items() if k != a_trainable_key}
+    with pytest.raises(RuntimeError, match="missing"):
+        fresh.load_state_dict(short)
+
+    # 3. An extra UNEXPECTED key → strict load must raise.
+    extra = {**sd, "unet.NOT_A_REAL_PARAM": torch.zeros(1)}
+    with pytest.raises(RuntimeError, match="unexpected"):
+        fresh.load_state_dict(extra)
+
+
+def test_train_keeps_frozen_arms_in_eval():
+    """module.train() re-freezes the registered frozen arms to eval (ADR-0031 mode-mgmt).
+
+    Registration makes nn.Module.train() recurse into the frozen arms and flip them to
+    training mode; the train() override re-applies eval() so a frozen reward's BatchNorm
+    running stats cannot drift during rollout / reward evaluation. The trainable policy
+    follows the module mode.
+    """
+    mod = _module()
+    mod.train(True)
+    assert not mod.reward_model.training, "frozen reward must stay eval after train(True)"
+    assert mod.unet.training, "trainable policy follows the module mode"
+    # eval() is symmetric: the frozen arm stays eval either way.
+    mod.train(False)
+    assert not mod.reward_model.training
+    assert not mod.unet.training
 
 
 def test_module_advantage_group_normalized_in_buffer():
@@ -410,8 +504,8 @@ def test_kl_is_zero_at_init_and_grows_with_drift():
     only on t ⇒ the two transitions share variance) must (a) read ~0 while the trainable
     policy still equals its frozen reference deepcopy, (b) turn positive once the policy
     weights move, (c) flow gradient to the policy ONLY (the reference is frozen +
-    unregistered, mirroring the reward invariant), and (d) keep the reference off the
-    checkpoint/optimizer.
+    registered + dual-excluded, mirroring the reward invariant), and (d) keep the
+    reference off the checkpoint/optimizer.
     """
     import copy as _copy
 
@@ -454,7 +548,7 @@ def test_kl_is_zero_at_init_and_grows_with_drift():
     # (c) grad flows to the policy UNet, NEVER to the frozen reference.
     assert all(p.grad is not None and torch.isfinite(p.grad).all() for p in mod.unet.parameters())
     assert all(p.grad is None for p in mod.reference_unet.parameters()), "reference must stay frozen"
-    # (d) the reference is unregistered: off the checkpoint + the optimizer.
+    # (d) the reference is registered + dual-excluded: off the checkpoint + the optimizer.
     assert "reference_unet" not in mod.state_dict()
     opt_ids = {id(p) for p in mod.configure_optimizers()["optimizer"].param_groups[0]["params"]}
     assert opt_ids.isdisjoint({id(p) for p in mod.reference_unet.parameters()})
@@ -547,7 +641,8 @@ def test_run_grpo_training_writes_ckpt_and_logs_mean_reward(tmp_path):
     ckpts = list(Path(str(tmp_path)).glob("*.ckpt"))
     assert any(p.name == "last.ckpt" for p in ckpts)
     assert ckpt.best_model_path and Path(ckpt.best_model_path).is_file()
-    # on_fit_start moved the unregistered frozen reward onto the module device.
+    # The registered frozen reward is moved onto the module device by Lightning's
+    # automatic .to(device) (ADR-0031 — no manual on_fit_start move).
     assert next(trainer.model.reward_model.parameters()).device == trainer.model.device
 
 
@@ -993,17 +1088,19 @@ def test_mode2_requires_freeze_unet():
 
 
 def test_mode2_freezes_base_and_optimizes_controlnet_only():
-    """Mode-2: base frozen + unregistered; optimizer wires ControlNet params only."""
+    """Mode-2: base frozen + registered (dual-excluded); optimizer wires ControlNet only."""
     base = _mode2_base()
     cn = _mode2_controlnet(base)
     module = _mode2_module(base, cn, _mode2_reward())
 
-    # Base frozen + held unregistered (off parameters/state_dict/checkpoint).
+    # Base frozen + registered + dual-excluded (ADR-0031): present in parameters() but
+    # requires_grad=False, off the optimizer, off state_dict() (the dual-exclude invariant
+    # now holds via registration + the overrides, not the old object.__setattr__ bypass).
     assert not any(p.requires_grad for p in base.parameters())
-    opt_param_ids = {id(p) for p in module.parameters()}
-    assert not ({id(p) for p in base.parameters()} & opt_param_ids)
-    assert {id(p) for p in cn.parameters()} <= opt_param_ids
-    assert not any(k.startswith("unet.") for k in module.state_dict())
+    module_param_ids = {id(p) for p in module.parameters()}
+    assert {id(p) for p in base.parameters()} <= module_param_ids  # registered ⇒ present
+    assert {id(p) for p in cn.parameters()} <= module_param_ids
+    assert not any(k.startswith("unet.") for k in module.state_dict())  # stripped
     assert any("controlnet" in k for k in module.state_dict())
 
     # Optimizer wires ONLY the ControlNet params.
@@ -1011,6 +1108,11 @@ def test_mode2_freezes_base_and_optimizes_controlnet_only():
     opt_params = {p for g in opt.param_groups for p in g["params"]}
     assert opt_params == set(cn.parameters())
     assert not (opt_params & set(base.parameters()))
+    # Mode-management (ADR-0031): module.train() recurses into the registered frozen base
+    # — the train() override re-freezes it to eval so its BatchNorm stats cannot drift.
+    module.train(True)
+    assert not module.unet.training, "Mode-2 frozen base must stay eval after module.train()"
+    assert module.controlnet.training, "trainable ControlNet follows the module mode"
 
 
 def test_mode2_kl_anchor_is_base_plus_controlnet_pair():

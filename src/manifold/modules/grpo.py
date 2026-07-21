@@ -313,7 +313,11 @@ class GRPOModule(spt.Module):
 
     Holds the **trainable JiT UNet** (Mode-1 policy) OR the **frozen base UNet +
     trainable ControlNet** (Mode-2 policy), plus the **frozen**
-    :class:`~manifold.RewardModel` (unregistered via ``object.__setattr__``). No EMA;
+    :class:`~manifold.RewardModel` and (optional) frozen reference policy. The frozen
+    arms are **registered + dual-excluded** (ADR-0031): normal ``nn.Module`` children
+    so Lightning owns their device placement, kept off the optimizer and the checkpoint
+    via the :meth:`state_dict` / :meth:`load_state_dict` overrides, and held in
+    :meth:`eval` across ``module.train()`` via the :meth:`train` override. No EMA;
     resumes / selects / exports the raw arm (ADR-0006/0012).
 
     **Two modes (ADR-0028).** The transition ``x_θ`` source is unified behind
@@ -331,7 +335,7 @@ class GRPOModule(spt.Module):
 
     Args:
         policy: the trainable JiT x0-denoiser UNet (Mode-1 policy). In Mode-2 this is
-            the **frozen base** UNet (held unregistered — see ``controlnet``).
+            the **frozen base** UNet (registered + dual-excluded — see ``controlnet``).
         reward_model: the frozen :class:`~manifold.RewardModel` scoring the terminal
             latent (Mode-1 and Mode-2 both score ``z_K`` unconditionally, ``reward(z_K)``).
         scheduler: a stateless :class:`FlowMatchGRPOScheduler`.
@@ -351,10 +355,10 @@ class GRPOModule(spt.Module):
         reward_temp: the tanh temperature (≈ the real-data reward std, ~8 from calibration).
         controlnet: optional :class:`~manifold.ControlNet3DConditionModel`. When set
             (with ``freeze_unet=True``) the module runs **Mode-2**: the base UNet is
-            frozen + unregistered, the ControlNet is the only optimized arm, and the
-            batch must carry ``src_latent`` / ``src_label`` / ``tgt_label``.
-        freeze_unet: freeze + unregister the base UNet (required in Mode-2; a no-op
-            guard in Mode-1). When ``controlnet`` is set this must be ``True``.
+            frozen + registered (dual-excluded), the ControlNet is the only optimized
+            arm, and the batch must carry ``src_latent`` / ``src_label`` / ``tgt_label``.
+        freeze_unet: freeze the base UNet (required in Mode-2; a no-op guard in
+            Mode-1). When ``controlnet`` is set this must be ``True``.
     """
 
     def __init__(
@@ -385,7 +389,7 @@ class GRPOModule(spt.Module):
         if controlnet is not None and not freeze_unet:
             raise ValueError(
                 "Mode-2 (controlnet set) requires freeze_unet=True — the base UNet must "
-                "be frozen + unregistered so only the ControlNet is optimized."
+                "be frozen (registered + dual-excluded) so only the ControlNet is optimized."
             )
         # NOTE: forward is NOT passed to spt.Module — training_step is overridden
         # directly (the multi-step inner loop cannot fit the single-loss seam).
@@ -394,31 +398,38 @@ class GRPOModule(spt.Module):
                                   "freeze_unet": freeze_unet})
         self.freeze_unet = bool(freeze_unet)
         if controlnet is not None:
-            # Mode-2: the base UNet is FROZEN + UNregistered (object.__setattr__ bypasses
-            # nn.Module registration) → off parameters()/state_dict()/optimizer/DDP,
-            # moved to the device in on_fit_start. The ControlNet is the only registered
-            # (optimized + checkpointed) arm.
+            # Mode-2: the base UNet is FROZEN + registered (a normal nn.Module child
+            # so Lightning's automatic .to(device) moves it per-rank), kept off the
+            # optimizer and the checkpoint via the dual-exclude in state_dict() /
+            # load_state_dict() (ADR-0031). The ControlNet is the only optimized +
+            # checkpointed arm. (No manual on_fit_start .to(device) — Lightning owns it.)
             policy = policy.eval()
             for p in policy.parameters():
                 p.requires_grad_(False)
-            object.__setattr__(self, "unet", policy)
+            self.unet = policy
             self.controlnet = controlnet  # registered → optimized / checkpointed
         else:
-            # Mode-1: the UNet is the trainable policy (registered).
+            # Mode-1: the UNet is the trainable policy (registered, optimized).
             self.unet = policy
             self.controlnet = None
         self.scheduler = scheduler  # carries η (the SDE exploration knob)
-        # Frozen reward, held UNregistered (object.__setattr__ bypasses nn.Module
-        # registration) → absent from parameters()/state_dict()/optimizer/DDP, moved
-        # to the device manually in on_fit_start (mirrors RewardModule's denoiser).
+        # Frozen reward, registered + dual-excluded (ADR-0031): a normal nn.Module
+        # child so Lightning's .to(device) moves it, but kept off the optimizer (the
+        # trainable-arm-only configure_optimizers + requires_grad=False) and off the
+        # checkpoint (the state_dict() override), and held in eval() across
+        # module.train() via the train() override (the mode-management cost of
+        # registration — the old object.__setattr__ bypass avoided it by hiding the
+        # arm from the module tree, at the cost of Lightning not owning its device).
         reward_model = reward_model.eval()
         for p in reward_model.parameters():
             p.requires_grad_(False)
-        object.__setattr__(self, "reward_model", reward_model)
+        self.reward_model = reward_model
 
         # Frozen reference policy (the KL anchor, ADR-0015): a deepcopy of the policy,
-        # held UNregistered exactly like the reward. Mode-2: a ``(base, controlnet)``
-        # pair — both frozen + unregistered. ``None`` ⇒ no KL (v1 default).
+        # registered + dual-excluded exactly like the reward (ADR-0031). Mode-2: a
+        # ``(base, controlnet)`` pair — both frozen + registered. ``None`` ⇒ no KL (the
+        # v1 default); the None arms stay plain attributes (not submodules), so they
+        # contribute no keys to state_dict() and no params to parameters().
         if reference_policy is not None:
             if controlnet is not None:
                 ref_base, ref_controlnet = reference_policy
@@ -428,17 +439,17 @@ class GRPOModule(spt.Module):
                 ref_controlnet = ref_controlnet.eval()
                 for p in ref_controlnet.parameters():
                     p.requires_grad_(False)
-                object.__setattr__(self, "reference_unet", ref_base)
-                object.__setattr__(self, "reference_controlnet", ref_controlnet)
+                self.reference_unet = ref_base
+                self.reference_controlnet = ref_controlnet
             else:
                 reference_policy = reference_policy.eval()
                 for p in reference_policy.parameters():
                     p.requires_grad_(False)
-                object.__setattr__(self, "reference_unet", reference_policy)
-                object.__setattr__(self, "reference_controlnet", None)
+                self.reference_unet = reference_policy
+                self.reference_controlnet = None
         else:
-            object.__setattr__(self, "reference_unet", None)
-            object.__setattr__(self, "reference_controlnet", None)
+            self.reference_unet = None
+            self.reference_controlnet = None
 
         self.G = int(G)
         self.eta_step_list = tuple(int(k) for k in eta_step_list)
@@ -452,6 +463,21 @@ class GRPOModule(spt.Module):
         self.reward_temp = float(reward_temp)
         self._val_reward_sum = 0.0
         self._val_reward_count = 0
+
+        #: The registered submodule prefixes kept off the optimizer + checkpoint
+        #: (ADR-0031 dual-exclude). Always the frozen reward; the Mode-2 frozen base
+        #: ``unet``; and the frozen KL-anchor arms when present. The Mode-1 ``unet``
+        #: (the trainable policy) is intentionally NOT here. Declared once at init —
+        #: the arm set is fixed at construction — and shared by state_dict() (strip)
+        #: and load_state_dict() (the strict-load allow-list).
+        frozen = {"reward_model"}
+        if self.controlnet is not None:  # Mode-2: the base UNet is the frozen arm
+            frozen.add("unet")
+        if self.reference_unet is not None:
+            frozen.add("reference_unet")
+        if self.reference_controlnet is not None:
+            frozen.add("reference_controlnet")
+        self._frozen_arm_names: frozenset[str] = frozenset(frozen)
 
     # -- Mode-2 (ControlNet) helpers ------------------------------------------
 
@@ -585,31 +611,84 @@ class GRPOModule(spt.Module):
         if count:
             self.log("val/mean_reward", total / count, prog_bar=True, sync_dist=False)
 
-    # -- frozen-reward lifecycle ---------------------------------------------
+    # -- frozen-arm registration + dual-exclude (ADR-0031) --------------------
 
-    def on_fit_start(self) -> None:
-        """Move the unregistered frozen reward (and reference policy) to the device.
+    def _is_frozen_key(self, key: str) -> bool:
+        """Whether a ``state_dict`` key belongs to a registered frozen arm.
 
-        The ``object.__setattr__`` bypass keeps these off Lightning's books, so its
-        automatic ``.to(device)`` skips them. The real path moves them already; this
-        is the safety net for direct ``fit`` calls.
+        Matched on the key's top-level segment (the prefix before the first ``.``), so
+        ``reward_model.conv.weight`` matches the ``reward_model`` arm. Non-frozen keys
+        (the trainable ``unet`` in Mode-1, the trainable ``controlnet`` in Mode-2)
+        return ``False`` — they stay on the checkpoint and in the optimizer.
         """
-        self.reward_model.to(self.device)
-        if self.reference_unet is not None:
-            self.reference_unet.to(self.device)
-        if self.controlnet is not None:
-            # Mode-2: the base UNet is unregistered (object.__setattr__) → Lightning's
-            # .to(device) skips it too; move it here like the reward/reference.
-            self.unet.to(self.device)
-            if self.reference_controlnet is not None:
-                self.reference_controlnet.to(self.device)
+        return key.split(".", 1)[0] in self._frozen_arm_names
+
+    def state_dict(self, *args, **kwargs):
+        """Strip the registered frozen arms — they are rebuilt fresh each launch.
+
+        The frozen reward / reference / Mode-2 base stay off the checkpoint: the reward
+        is reloaded from its own ``.ckpt``, the reference is a launch-time ``deepcopy``
+        (ADR-0028), and the Mode-2 base comes from the native export. Registering the
+        arms (so Lightning owns their device placement) would otherwise leak their
+        weights into the checkpoint; this override restores the off-checkpoint invariant
+        at the source, so direct ``mod.state_dict()`` calls see them stripped (ADR-0031).
+        """
+        full = super().state_dict(*args, **kwargs)
+        return {k: v for k, v in full.items() if not self._is_frozen_key(k)}
+
+    def load_state_dict(self, state_dict, strict: bool = True, **kwargs):
+        """Strict load over the TRAINABLE keys; frozen arms are an explicit allow-list.
+
+        The checkpoint never carries frozen-arm weights (``state_dict()`` strips them);
+        the arms are rebuilt fresh each launch (ADR-0031). Strip any stray frozen keys
+        a stale pre-refactor checkpoint may carry too, then enforce strict parity on
+        the trainable keys ONLY — a missing/unexpected TRAINABLE key (an incomplete or
+        mode-mismatched ``.ckpt``) surfaces loudly, NOT silently via a blanket
+        ``strict=False`` (which would also hide a missing trainable key and resume on
+        random or stale weights, corrupting the experiment). The frozen arms being
+        absent from the checkpoint is the one tolerated mismatch.
+        """
+        incoming = {k: v for k, v in state_dict.items() if not self._is_frozen_key(k)}
+        result = super().load_state_dict(incoming, strict=False, **kwargs)
+        # super() reports the registered frozen arms as missing (present in the module,
+        # absent in the incoming) — that is the allow-listed tolerance. Anything else is
+        # a real trainable-key mismatch and (when strict) must raise.
+        bad_missing = [k for k in result.missing_keys if not self._is_frozen_key(k)]
+        bad_unexpected = [k for k in result.unexpected_keys if not self._is_frozen_key(k)]
+        if strict and (bad_missing or bad_unexpected):
+            raise RuntimeError(
+                f"Error(s) loading state_dict for {type(self).__name__} (frozen arms "
+                f"{sorted(self._frozen_arm_names)} allow-listed): missing "
+                f"{len(bad_missing)} trainable key(s) {bad_missing[:5]}; unexpected "
+                f"{len(bad_unexpected)} key(s) {bad_unexpected[:5]}."
+            )
+        return result
+
+    def train(self, mode: bool = True):
+        """Re-freeze ``eval()`` on the registered frozen arms after ``super().train()``.
+
+        Registration makes Lightning's ``module.train(mode)`` recurse into the frozen
+        arms and flip them to training mode — an ``eval()`` set at construction does
+        NOT persist. A frozen arm in training mode would let its BatchNorm running
+        stats drift during rollout / reward evaluation, corrupting the supposedly-fixed
+        function. This override re-applies ``eval()`` to every present frozen arm after
+        the recursive call (the mode-management cost registration buys; ADR-0031).
+        """
+        result = super().train(mode)
+        for name in self._frozen_arm_names:
+            arm = getattr(self, name, None)
+            if arm is not None:
+                arm.eval()
+        return result
 
     # -- optimizer ------------------------------------------------------------
 
     def configure_optimizers(self):
         """Adam over the optimized arm only — the UNet (Mode-1) or the ControlNet (Mode-2).
 
-        The frozen base UNet + reward + reference are unregistered (off the optimizer)."""
+        The frozen arms (Mode-2 base, reward, reference) are registered but
+        ``requires_grad=False`` and never selected here, so the optimizer never touches
+        them — the off-optimizer invariant holds at the param-group level (ADR-0031)."""
         params = self.controlnet.parameters() if self.controlnet is not None else self.unet.parameters()
         return {"optimizer": torch.optim.Adam(params, lr=self.lr)}
 
