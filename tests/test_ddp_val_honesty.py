@@ -88,14 +88,15 @@ def test_l3_feature_net_built_all_ranks(tmp_path):
 
 
 def test_l3_fidcallback_supports_feature_net_factory():
-    """``FIDCallback`` accepts ``feature_net_factory`` and builds it lazily in
-    ``_stage_eval_on_device`` (now on every rank)."""
-    from manifold.metrics.fid_callback import FIDCallback
+    """``FIDCallback`` accepts ``feature_net_factory`` and the factory is built
+    lazily in ``VramStage.__enter__`` (on every rank)."""
+    from manifold.metrics.fid.callback import FIDCallback
+    from manifold.metrics.fid.vram import VramStage
 
     sig = inspect.signature(FIDCallback.__init__)
     assert "feature_net_factory" in sig.parameters, "FIDCallback missing feature_net_factory"
-    stage_src = inspect.getsource(FIDCallback._stage_eval_on_device)
-    assert "feature_net_factory" in stage_src, "lazy build not in _stage_eval_on_device"
+    stage_src = inspect.getsource(VramStage.__enter__)
+    assert "feature_net_factory" in stage_src, "lazy build not in VramStage.__enter__"
 
 
 # -- L1: FID _gated is cadence-only (no rank-0 guard/warning) -------------------
@@ -104,7 +105,7 @@ def test_l3_fidcallback_supports_feature_net_factory():
 def test_l1_fid_no_rank0_gate():
     """The FID ``_gated`` is cadence-only under ADR-0025: no ``is_global_zero`` guard
     and no rank-0 warning (every rank generates + extracts features for its shard)."""
-    from manifold.metrics import fid_callback
+    from manifold.metrics.fid import callback as fid_callback
 
     src = inspect.getsource(fid_callback.FIDCallback._gated)
     assert "is_global_zero" not in src, "FIDCallback._gated still has a rank-0 guard"

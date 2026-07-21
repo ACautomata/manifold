@@ -540,7 +540,7 @@ def _real_inputs(
             }
 
     # Cap the FID real-reference subset (mirrors the JiT cli): FIDCallback decodes the
-    # whole ``real_latents`` tensor in ONE _real_moments() pass, so an unbounded val
+    # whole ``real_latents`` tensor in ONE ``_real_planes()`` pass, so an unbounded val
     # set would OOM the FID phase. Seeded prefix ⇒ the reference is fixed across runs.
     val_subset_size = int(opt(cfg, "val_subset_size", 32))
     g = torch.Generator().manual_seed(0)

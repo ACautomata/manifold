@@ -11,13 +11,23 @@
   PNG every epoch + at fit end (crash-robust on remote DCU).
 """
 
-from .fid import frechet_distance_unbiased, get_features_2p5d, make_feature_network
-from .fid_callback import FIDCallback
+from .fid.callback import FIDCallback
+from .fid.decoder import LatentDecoder
+from .fid.extractor import FeatureExtractor
+from .fid.math import frechet_distance_unbiased, get_features_2p5d, make_feature_network
+from .fid.reducer import SufficientStatsReducer
+from .fid.rollout import FixedSampleRollout
+from .fid.vram import VramStage
 from .metric_plot_callback import MetricsPlotCallback
 
 __all__ = [
     "FIDCallback",
+    "FeatureExtractor",
+    "FixedSampleRollout",
+    "LatentDecoder",
     "MetricsPlotCallback",
+    "SufficientStatsReducer",
+    "VramStage",
     "frechet_distance_unbiased",
     "get_features_2p5d",
     "make_feature_network",

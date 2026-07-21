@@ -124,15 +124,15 @@ def test_f3_no_rank_world_kwargs_at_cli_call_sites():
 
 def test_f5_fidcallback_real_latents_lazy():
     """``FIDCallback`` accepts ``real_latents=None`` at construction and pulls it
-    lazily from ``real_latents_source`` at the first ``_real_moments`` call (F5 -
-    the val reference does not exist until ``DataModule.setup()`` runs)."""
-    from manifold.metrics.fid_callback import FIDCallback
+    lazily from ``real_latents_source`` at the first ``_ensure_real_latents`` call
+    (F5 - the val reference does not exist until ``DataModule.setup()`` runs)."""
+    from manifold.metrics.fid.callback import FIDCallback
 
     sig = inspect.signature(FIDCallback.__init__)
     assert "real_latents_source" in sig.parameters, "FIDCallback missing real_latents_source"
-    # The lazy pull lives in _real_moments.
-    src = inspect.getsource(FIDCallback._real_moments)
-    assert "real_latents is None" in src, "_real_moments does not lazy-pull real_latents (F5)"
+    # The lazy pull lives in _ensure_real_latents.
+    src = inspect.getsource(FIDCallback._ensure_real_latents)
+    assert "real_latents is None" in src, "_ensure_real_latents does not lazy-pull real_latents (F5)"
 
 
 def test_f5_inference_recipe_latent_shape_is_lazy():
@@ -262,15 +262,14 @@ def test_p2_feature_net_factory_failure_skips_fid_and_logs_sentinel(tmp_path):
     class _Tr:
         is_global_zero = True
         current_epoch = 0
-    fid._stage_eval_on_device()
-    assert getattr(fid, "_fid_disabled", False) is True, "factory failure must set _fid_disabled"
-    assert fid.feature_net is None
 
     # on_validation_epoch_end logs sentinels (inf) for the monitored metrics, no raise.
     logged = {}
     module.log = lambda key, value, **k: logged.__setitem__(key, value)  # type: ignore[assignment]
     fid.on_validation_epoch_end(_Tr(), module)
     assert logged.get("val/fid") == float("inf")
+    # VAE is back on CPU after the staging cycle.
+    assert next(fid.vae.parameters()).device.type == "cpu", "VAE left on GPU after the FID skip"
 
 
 def test_p2_raising_factory_caught_and_skips_fid(tmp_path):
@@ -307,18 +306,13 @@ def test_p2_raising_factory_caught_and_skips_fid(tmp_path):
     class _Tr:
         is_global_zero = True
         current_epoch = 0
-    # The raising factory is caught -> no exception escapes _stage_eval_on_device.
-    fid._stage_eval_on_device()
-    assert getattr(fid, "_fid_disabled", False) is True
-    assert fid.feature_net is None
-
+    # The raising factory is caught inside VramStage.__enter__ -> fid_disabled=True
+    # -> on_validation_epoch_end logs inf sentinels; no exception escapes.
     logged = {}
     module.log = lambda key, value, **k: logged.__setitem__(key, value)  # type: ignore[assignment]
     fid.on_validation_epoch_end(_Tr(), module)  # no raise; logs inf sentinels
     assert logged.get("val/fid") == float("inf")
 
     # codex #85 re-review P2: the skip-path early return must NOT leave the VAE on
-    # the training GPU. on_validation_epoch_end's finally -> _restore_eval_to_cpu
-    # restores it to CPU when _eval_staged is True (set before the early return).
-    assert fid._eval_staged is False, "_eval_staged not reset by the restore"
+    # the training GPU. VramStage.__exit__ always restores the VAE to CPU.
     assert next(fid.vae.parameters()).device.type == "cpu", "VAE left on GPU after the FID skip"
