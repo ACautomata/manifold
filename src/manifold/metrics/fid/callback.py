@@ -40,7 +40,7 @@ except ImportError:  # pragma: no cover — lightning is a hard dep via spt
 
 from manifold.metrics.fid.decoder import LatentDecoder
 from manifold.metrics.fid.extractor import FeatureExtractor
-from manifold.metrics.fid.math import frechet_from_moments
+from manifold.metrics.fid.math import features_to_sufficient_stats, frechet_from_moments
 from manifold.metrics.fid.reducer import SufficientStatsReducer
 from manifold.metrics.fid.rollout import FixedSampleRollout
 from manifold.metrics.fid.vram import VramStage
@@ -166,24 +166,25 @@ class FIDCallback(pl.Callback):
             )
 
     @torch.no_grad()
-    def _real_moments(
+    def _real_planes(
         self, decoder: LatentDecoder, extractor: FeatureExtractor,
-        reducer: SufficientStatsReducer, device: torch.device,
-    ) -> list[tuple[torch.Tensor, torch.Tensor, int] | None]:
-        """Decode this rank's strided shard of the fixed real subset once; all-reduce
-        per-plane sufficient stats; cache the global (mu, sigma, n)."""
+        device: torch.device,
+    ) -> list[torch.Tensor]:
+        """Decode + extract real features; return three ``[M_axis, D_feat]``
+        tensors (one per plane), or three ``empty(0)`` for an empty shard.
+
+        Does NOT reduce — the caller adds an error rendezvous before calling
+        the reducer, so a rank-local decode/extraction failure cannot cause
+        peers to block in a missing all_reduce.
+        """
         self._ensure_real_latents()
         rank, world = self._rank_world()
         shard = self.real_latents[rank::world]
         if shard.shape[0] == 0:
-            # Empty real shard (val_subset_size < world_size): skip decode
-            # (MONAI sliding_window_inference raises on a 0-batch) and
-            # contribute zero stats so the collective stays symmetric.
-            return reducer([torch.empty(0) for _ in range(3)], device)
+            return [torch.empty(0) for _ in range(3)]
         self.vae.eval()
         real_images = decoder(shard)
-        planes = extractor(real_images)
-        return reducer(planes, device)
+        return extractor(real_images)
 
     @torch.no_grad()
     def _synth_planes(
@@ -216,15 +217,36 @@ class FIDCallback(pl.Callback):
             return
 
         device = self._device()
-        with VramStage(
+
+        # -- Stage VAE + feature_net (may raise rank-locally). ---------------
+        # Python does NOT call ``__exit__`` when ``__enter__`` raises, so
+        # lifecycle is managed manually with a stage-error rendezvous before
+        # any collective (collective-count invariant).
+        local_stage_error = False
+        stage = VramStage(
             self.vae,
             feature_net=self.feature_net,
             feature_net_factory=self.feature_net_factory,
             device_fn=self._device,
             feat_dim=self._feat_dim,
-        ) as stage:
-            # Rendezvous #1: all-reduce the disabled flag so all ranks agree
-            # whether to skip FID (collective-count invariant).
+        )
+        try:
+            stage.__enter__()
+        except Exception:
+            local_stage_error = True
+
+        # Rendezvous #1: stage error flag — first collective, symmetric for
+        # ALL ranks. If ANY rank failed during staging, EVERY rank returns
+        # after this single collective (no divergence).
+        if self._all_reduce_flag(self._make_error_flag(local_stage_error)):
+            if stage._staged:
+                stage.__exit__(None, None, None)
+            module.log("val/fid", float("inf"))
+            return
+
+        # All ranks staged successfully — manual lifecycle.
+        try:
+            # Rendezvous #2 (ex-#1): disabled flag so all ranks agree on skip.
             if self._all_reduce_flag(
                 torch.tensor(
                     [1.0 if stage.fid_disabled else 0.0],
@@ -258,28 +280,81 @@ class FIDCallback(pl.Callback):
             )
             reducer = SufficientStatsReducer(self._feat_dim)
 
-            # Real moments (once, cached).
+            # -- Real moments (once, cached). --------------------------------
+            # Decode/extract + stats computation is fallible — error
+            # rendezvous before reduction so a rank-local failure cannot
+            # orphan peers in the reducer's all_reduce (codex #171 P1).
             if self._real_moments_cache is None:
-                self._real_moments_cache = self._real_moments(
-                    decoder, extractor, reducer, device,
-                )
+                local_real_error = False
+                try:
+                    real_planes = self._real_planes(
+                        decoder, extractor, device,
+                    )
+                    real_stats = [
+                        features_to_sufficient_stats(p.float())
+                        for p in real_planes
+                    ]
+                except Exception:
+                    local_real_error = True
+                    real_stats = None
 
-            # Synth moments + compute + log.
+                # Rendezvous #3: real preproc error before reducer.
+                if self._all_reduce_flag(self._make_error_flag(local_real_error)):
+                    module.log("val/fid", float("inf"))
+                    return
+
+                if real_stats is not None:
+                    self._real_moments_cache = reducer(real_stats, device)
+                else:
+                    d = self._feat_dim
+                    zero_s = (
+                        torch.zeros(d, device=device, dtype=torch.float32),
+                        torch.zeros(d, d, device=device, dtype=torch.float32),
+                        0,
+                    )
+                    self._real_moments_cache = reducer(
+                        [zero_s for _ in range(3)], device,
+                    )
+
+            # -- Synth moments + log. ----------------------------------------
+            # Generate, decode, extract, AND compute sufficient stats under
+            # error capture — ``features_to_sufficient_stats`` (float
+            # conversion + ``features.T @ features``) is fallible and must
+            # complete before the error rendezvous (codex #171 P1).
             local_error = False
             try:
-                synth_planes = self._synth_planes(rollout, decoder, extractor, device)
+                synth_planes = self._synth_planes(
+                    rollout, decoder, extractor, device,
+                )
+                synth_stats = [
+                    features_to_sufficient_stats(p.float())
+                    for p in synth_planes
+                ]
             except Exception:
                 local_error = True
-                synth_planes = [torch.empty(0) for _ in range(3)]
+                synth_stats = None
 
-            # Rendezvous #2: error flag before entering reducer's all_reduce.
+            # Rendezvous #4 (ex-#2): error flag before reducer's all_reduce.
             if self._all_reduce_flag(self._make_error_flag(local_error)):
                 module.log("val/fid", float("inf"))
                 return
 
-            synth = reducer(synth_planes, device)
+            # Reduce (no fallible work — stats already computed).
+            if synth_stats is not None:
+                synth = reducer(synth_stats, device)
+            else:
+                d = self._feat_dim
+                zero_s = (
+                    torch.zeros(d, device=device, dtype=torch.float32),
+                    torch.zeros(d, d, device=device, dtype=torch.float32),
+                    0,
+                )
+                synth = reducer([zero_s for _ in range(3)], device)
+
             self._compute_and_log(module, synth,
                                   total_key="val/fid", plane_key="val/fid")
+        finally:
+            stage.__exit__(None, None, None)
 
     # -- compute + log -------------------------------------------------------
 

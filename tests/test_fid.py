@@ -236,9 +236,9 @@ def test_fid_callback_same_seed_reproduces(latent_module):
                 assert a[2] == b[2]
 
         # The real arm moments are reproducible across calls too.
-        r1, r2 = cb._real_moments(decoder, extractor, reducer, device), cb._real_moments(
-            decoder, extractor, reducer, device,
-        )
+        r1_planes = cb._real_planes(decoder, extractor, device)
+        r2_planes = cb._real_planes(decoder, extractor, device)
+        r1, r2 = reducer(r1_planes, device), reducer(r2_planes, device)
         for a, b in zip(r1, r2):
             assert (a is None) == (b is None)
             if a is not None:
@@ -619,7 +619,8 @@ def test_codex116_empty_real_shard_skips_decode(latent_module, monkeypatch):
         from manifold.metrics.fid import FeatureExtractor
 
         extractor = FeatureExtractor(cb.feature_net, center_slices_ratio=cb.center_slices_ratio)
-        out = cb._real_moments(decoder, extractor, reducer, device)
+        planes = cb._real_planes(decoder, extractor, device)
+        out = reducer(planes, device)
         # Empty shard -> contributes zero stats -> global n==0 (single-process) -> None.
         assert all(m is None for m in out), "empty shard should yield None moments"
         assert decoded["n"] == 0, "decode was called on the empty shard (Comment 3)"

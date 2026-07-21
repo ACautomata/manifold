@@ -9,6 +9,8 @@ ADR-0006).
 
 from __future__ import annotations
 
+from typing import Generator
+
 import torch
 
 
@@ -56,17 +58,18 @@ class FixedSampleRollout:
         self._seed = int(seed)
 
     @torch.no_grad()
-    def __call__(self, device: torch.device) -> list[torch.Tensor]:
-        """Generate this rank's strided slice of ``num_synth``.
+    def __call__(self, device: torch.device) -> Generator[torch.Tensor, None, None]:
+        """Generate this rank's strided slice of ``num_synth`` as a lazy
+        generator — each latent is yielded and released before the next,
+        preventing OOM from retaining all latents simultaneously (codex #171 P2).
 
-        Returns:
-            List of ``[1, C, D, H, W]`` latent tensors (one per assigned index).
+        Yields:
+            ``[1, C, D, H, W]`` latent tensors (one per assigned index).
         """
         rank, world = _rank_world()
-        latents: list[torch.Tensor] = []
         for i in range(rank, self._num_synth, world):
             gen = torch.Generator(device=device).manual_seed(self._seed + i)
-            latent = self._module.sample(
+            yield self._module.sample(
                 self._latent_shape,
                 self._spacing,
                 self._modality,
@@ -75,5 +78,3 @@ class FixedSampleRollout:
                 cfg_interval=self._cfg_interval,
                 generator=gen,
             )
-            latents.append(latent)
-        return latents

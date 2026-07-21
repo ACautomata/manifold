@@ -26,13 +26,18 @@ class SufficientStatsReducer:
 
     def __call__(
         self,
-        planes: list[Tensor],
+        planes: list[Tensor | tuple[Tensor, Tensor, int]],
         device: torch.device,
     ) -> list[tuple[Tensor, Tensor, int] | None]:
         """All-reduce per-plane sufficient stats to global ``(mu, sigma, n)``.
 
+        Each input is either a feature tensor ``[M_axis, D_feat]`` or a
+        pre-computed sufficient-stats tuple ``(sum_x, sum_xxT, n)`` — the
+        latter avoids fallible float conversion + ``features.T @ features``
+        inside the reduction sequence (codex #171 P1).
+
         Args:
-            planes: list of 3 per-plane feature tensors ``[M_axis, D_feat]``.
+            planes: list of 3 items (feature tensor or pre-computed stats).
             device: the device for zero-stat allocation.
 
         Returns:
@@ -44,18 +49,19 @@ class SufficientStatsReducer:
             world = int(torch.distributed.get_world_size())
         d = self._feat_dim
         out: list[tuple[Tensor, Tensor, int] | None] = []
-        for feats in planes:
-            # Contribute stats for any non-empty shard (n>=1): sum_x / sum_xxT are
-            # well-defined for a single sample, and a one-sample rank's stats still
-            # participate in the global (post-all_reduce) moments - only the GLOBAL n
-            # must be >= 2 for a covariance, checked AFTER the reduce. Zero stats are
-            # reserved for a genuinely empty shard (so the collective stays symmetric).
-            if feats.numel() == 0 or feats.shape[0] == 0:
-                sum_x = torch.zeros(d, device=device, dtype=torch.float32)
-                sum_xxT = torch.zeros(d, d, device=device, dtype=torch.float32)
-                n = 0
+        for item in planes:
+            if isinstance(item, Tensor):
+                # Feature tensor [N, D] (possibly empty).
+                feats = item
+                if feats.numel() == 0 or feats.shape[0] == 0:
+                    sum_x = torch.zeros(d, device=device, dtype=torch.float32)
+                    sum_xxT = torch.zeros(d, d, device=device, dtype=torch.float32)
+                    n = 0
+                else:
+                    sum_x, sum_xxT, n = features_to_sufficient_stats(feats.float())
             else:
-                sum_x, sum_xxT, n = features_to_sufficient_stats(feats.float())
+                # Pre-computed sufficient stats (sum_x, sum_xxT, n).
+                sum_x, sum_xxT, n = item  # type: ignore[misc]
             if world > 1:
                 torch.distributed.all_reduce(sum_x)
                 torch.distributed.all_reduce(sum_xxT)

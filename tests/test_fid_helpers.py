@@ -253,6 +253,25 @@ def test_reducer_n2_yields_moments():
         assert n == 3
 
 
+def test_reducer_accepts_precomputed_stats():
+    """Reducer accepts pre-computed (sum_x, sum_xxT, n) tuples (codex #171 P1)."""
+    from manifold.metrics.fid.math import features_to_sufficient_stats, moments_from_sufficient_stats
+
+    reducer = SufficientStatsReducer(feat_dim=4)
+    feats = torch.randn(3, 4)
+    # Compute stats manually.
+    s_x, s_xx, n = features_to_sufficient_stats(feats.float())
+    # Pass pre-computed stats tuple instead of feature tensor.
+    result = reducer([(s_x, s_xx, n), (s_x, s_xx, n), (s_x, s_xx, n)],
+                     device=torch.device("cpu"))
+    # Same shape contract as feature-tensor path.
+    assert len(result) == 3
+    for (mu, sigma, n_out) in result:
+        assert mu.shape == (4,)
+        assert sigma.shape == (4, 4)
+        assert n_out == 3
+
+
 # -- FixedSampleRollout (low-level) ------------------------------------------
 
 
@@ -283,7 +302,7 @@ def test_rollout_produces_correct_count():
         num_synth=4,
         seed=0,
     )
-    latents = rollout(torch.device("cpu"))
+    latents = list(rollout(torch.device("cpu")))
     assert len(latents) == 4  # world=1 → all 4 generated
 
 
@@ -304,8 +323,8 @@ def test_rollout_deterministic_seed():
         num_synth=3,
         seed=42,
     )
-    first = rollout(torch.device("cpu"))
-    second = rollout(torch.device("cpu"))
+    first = list(rollout(torch.device("cpu")))
+    second = list(rollout(torch.device("cpu")))
     for a, b in zip(first, second):
         assert torch.equal(a, b), "latents differ across passes with same seed"
 
@@ -331,15 +350,13 @@ def test_all_reduce_flag_uses_max_op():
 
 
 def test_on_validation_epoch_end_has_error_rendezvous():
-    """on_validation_epoch_end contains two rendezvous points:
-    (1) disabled-flag all_reduce, and (2) error-flag all_reduce before reducer."""
+    """on_validation_epoch_end contains four rendezvous points:
+    (1) stage-error all_reduce, (2) disabled-flag all_reduce,
+    (3) real-preproc error all_reduce, (4) synth error all_reduce."""
     from manifold.metrics.fid.callback import FIDCallback
 
     src = inspect.getsource(FIDCallback.on_validation_epoch_end)
-    # Rendezvous #1: disabled flag via _all_reduce_flag.
     assert "_all_reduce_flag" in src
-    # Rendezvous #2: error flag before reducer.
-    # Count occurrences of _all_reduce_flag — should be 2.
-    assert src.count("_all_reduce_flag") >= 2, (
-        "on_validation_epoch_end must have at least 2 rendezvous points"
+    assert src.count("_all_reduce_flag") >= 4, (
+        "on_validation_epoch_end must have at least 4 rendezvous points"
     )
