@@ -19,6 +19,7 @@ from .loader import (
     merge_overrides,
     opt,
     require_paths,
+    resolve_callback_names,
 )
 
 __all__ = [
@@ -32,4 +33,5 @@ __all__ = [
     "merge_overrides",
     "opt",
     "require_paths",
+    "resolve_callback_names",
 ]

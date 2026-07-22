@@ -10,10 +10,15 @@ datamodule, derives its dynamic default callback-name set, and delegates to
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Mapping
 
 import lightning.pytorch as pl
 from lightning.pytorch.callbacks import ModelCheckpoint
+
+try:
+    from lightning.pytorch.utilities.rank_zero import rank_zero_info
+except ImportError:  # pragma: no cover
+    from pytorch_lightning.utilities.rank_zero import rank_zero_info  # type: ignore
 
 from manifold.training.callbacks import CallbackContext, CallbackRegistry
 from manifold.training.trainer import build_trainer
@@ -51,11 +56,20 @@ class TrainingSpine:
         callback_cfg: dict[str, dict] | None = None,
         callback_names_override: list[str] | None = None,
         extra_callbacks: list | None = None,
+        forbidden_callbacks: Mapping[str, str] | None = None,
+        forbidden_monitors: Mapping[str, str] | None = None,
     ) -> tuple[pl.Trainer, ModelCheckpoint]:
         """Run the full training spine.
 
         The merge order (ADR-0029): *default_names* → *callback_cfg* knobs →
         *callback_names_override* **replaces** the name list.
+
+        After the merge, *forbidden_callbacks* force-removes named callbacks and
+        *forbidden_monitors* rejects a checkpoint monitor_metric — both with a
+        loud ``rank_zero_info`` — **before** resolution. This is the post-merge
+        guard that lets a shell (e.g. GRPO Mode-2) forbid a callback no YAML /
+        CLI override can re-enable, rather than only suppressing it at
+        default-derivation (ADR-0032).
 
         After resolving and building the registry callbacks, any
         *extra_callbacks* (e.g. the hand-appended ``LatentX0MAE``) are
@@ -81,6 +95,12 @@ class TrainingSpine:
                 *default_names* (the CLI ``--callbacks`` flag).
             extra_callbacks: Non-registry callbacks to append after
                 registry callbacks (e.g. ``LatentX0MAE``).
+            forbidden_callbacks: Optional ``{name: reason}`` map; each name is
+                force-removed from the merged list (with a loud log) before
+                resolution — a YAML / CLI override cannot re-enable it.
+            forbidden_monitors: Optional ``{metric: reason}`` map; if the merged
+                checkpoint ``monitor_metric`` matches, a loud log precedes a
+                ``ValueError`` before resolution.
 
         Returns:
             ``(trainer, ckpt)`` so callers can find the written ``.ckpt``.
@@ -90,6 +110,25 @@ class TrainingSpine:
             if callback_names_override is not None
             else default_names
         )
+        if forbidden_callbacks:
+            for name in [n for n in names if n in forbidden_callbacks]:
+                rank_zero_info(
+                    "TrainingSpine: dropping callback %r post-merge (%s); "
+                    "a YAML/CLI override cannot re-enable it here.",
+                    name, forbidden_callbacks[name],
+                )
+                names.remove(name)
+        if forbidden_monitors and callback_cfg:
+            monitor = (callback_cfg.get("checkpoint") or {}).get("monitor_metric")
+            if monitor is not None and monitor in forbidden_monitors:
+                rank_zero_info(
+                    "TrainingSpine: checkpoint monitor %r is forbidden (%s).",
+                    monitor, forbidden_monitors[monitor],
+                )
+                raise ValueError(
+                    f"TrainingSpine.run: checkpoint monitor_metric {monitor!r} is "
+                    f"forbidden here ({forbidden_monitors[monitor]})."
+                )
         specs = self.registry.resolve(names, callback_cfg)
         callbacks: list = self.registry.build(specs, ctx)
         if extra_callbacks:

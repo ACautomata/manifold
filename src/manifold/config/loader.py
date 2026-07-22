@@ -150,3 +150,18 @@ def opt(cfg: DictConfig, key: str, default: Any = None) -> Any:
     ``???`` key.
     """
     return OmegaConf.select(cfg, key, default=default)
+
+
+def resolve_callback_names(cli: str | None, cfg: DictConfig) -> list[str] | None:
+    """Resolve the CLI/YAML callback-name list for the training spine (ADR-0032).
+
+    The comma-separated CLI ``--callbacks`` string REPLACES the YAML ``callbacks:``
+    name list (CLI-overrides-YAML parity with OmegaConf list-replace semantics).
+    Returns ``None`` when neither is supplied, so a shell uses its derived default
+    callback-name set (unchanged behaviour for runs that do not opt in).
+    """
+    names = [token for token in (cli.split(",") if cli else []) if token] or None
+    if names is not None:
+        return names
+    yaml_list = opt(cfg, "callbacks", None)
+    return list(yaml_list) if yaml_list is not None else None

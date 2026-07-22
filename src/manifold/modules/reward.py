@@ -157,6 +157,11 @@ class RewardModule(spt.Module):
             batches this size at epoch end).
     """
 
+    #: Declares the metric this Module logs so the registry's
+    #: ``validate_monitor`` accepts a ``val/gen_pair_acc`` checkpoint monitor
+    #: (ADR-0029).
+    logged_metrics: frozenset[str] = frozenset({"val/gen_pair_acc"})
+
     def __init__(
         self,
         reward_model: RewardModel,
