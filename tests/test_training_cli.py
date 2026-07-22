@@ -11,7 +11,6 @@ the held-VAE decode. Plus resume via ``ckpt_path`` and the ``main`` console entr
 
 from __future__ import annotations
 
-import sys
 from pathlib import Path
 
 import torch
@@ -612,14 +611,13 @@ def test_main_preserves_dotlist_precedence_between_fid_and_fid_eval(tmp_path, mo
 
 
 def test_export_cli_matches_function(tmp_path):
-    """scripts/export_checkpoint.py CLI mirrors export_to_native (converter-style)."""
+    """manifold-export CLI mirrors export_to_native (converter-style)."""
     module = _module()
     _run(tmp_path / "run", module=module, enable_fid=True)
     ckpt_path = str(tmp_path / "run" / "last.ckpt")
 
     env, train, net = _write_tiny_configs(tmp_path)
-    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
-    import export_checkpoint as cli  # type: ignore[import-not-found]
+    import manifold.training.export_cli as cli
 
     rc = cli.main(
         ["--ckpt", ckpt_path, "--output", str(tmp_path / "cli_native"), "--network-config", net]
@@ -761,8 +759,7 @@ def test_export_cli_controlnet_pipeline(tmp_path):
     ckpt_path = tmp_path / "controlnet.ckpt"
     _write_supervised_controlnet_ckpt(ckpt_path, controlnet)
 
-    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
-    import export_checkpoint as cli  # type: ignore[import-not-found]
+    import manifold.training.export_cli as cli
 
     rc = cli.main(
         ["--ckpt", str(ckpt_path), "--output", str(tmp_path / "cn_native"),
@@ -787,8 +784,7 @@ def test_export_cli_controlnet_requires_base_native_dir(tmp_path):
     ckpt_path = tmp_path / "c.ckpt"
     torch.save({"state_dict": {}}, str(ckpt_path))
 
-    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
-    import export_checkpoint as cli  # type: ignore[import-not-found]
+    import manifold.training.export_cli as cli
 
     with pytest.raises(ValueError, match="base-native-dir"):
         cli.main(

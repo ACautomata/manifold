@@ -31,7 +31,7 @@ conda env ``hope``) and the confirmed **JiT/x0** checkpoint
 
 Example (gauss)::
 
-    python scripts/validate_against_hope.py \\
+    python tests/parity/validate_against_hope.py \\
         --manifold-pipeline /data72/junran/manifold-runtime/checkpoints/jit \\
         --hope-ckpt /data72/junran/hope-runtime/brats2023_finetune_jit/diff_unet_3d_rflow-brats2023_jit.pt \\
         --vae-ckpt /data72/junran/hope-runtime/models/autoencoder_v1.pt \\

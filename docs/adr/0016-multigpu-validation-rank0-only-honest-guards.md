@@ -82,6 +82,11 @@ decided offline via export.
   `scripts/diag_*`); in-training FID selection is not relied upon under
   multi-GPU. Distributed FID is large effort (distributed generation + feature
   gather + small-sample-bias-corrected math) for low marginal value.
+  *(Correction — ADR-0025 / ADR-0033: this rationale is doubly stale. ADR-0025
+  made `val/fid` a distributed per-plane `all_reduce` **inside the fit**, so
+  in-training FID selection already covers multi-GPU; and ADR-0033 removed the
+  offline `scripts/diag_*` / `scripts/eval_paired_step_sweep.py` tools named
+  here. Deleting the diag scripts opens no selection gap.)*
 - **`MeanMetric(weight=batch_size)` is the true sample-weighted global mean.**
   The repo already uses `sync_dist=True` for exact cases (`reward.py`), but the
   `train/loss_epoch` / `val/x0_mae` callbacks accumulated `_sum/_n` with no

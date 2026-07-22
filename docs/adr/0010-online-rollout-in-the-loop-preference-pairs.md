@@ -88,11 +88,13 @@ reward was uninformative for ranking fully generated latents).
 - Training reads the warmed latent cache via a clean-latent dataset (scale-on-read)
   over **train subjects only** — the held-out-subject split is enforced at the
   dataloader, not only at val-precompute (no leakage).
-- The offline pair-generation script (`scripts/generate_reward_pairs.py`) and
-  `generate_reward_pairs` / `generate_generated_end_probe` are retained for the
-  one-time val/probe precompute and offline inspection; the offline *train*-pair
-  path is superseded. A new `generate_full_range_val_pairs` mirrors the train
-  distribution for validation.
+- The offline pair-generation functions `generate_reward_pairs` /
+  `generate_generated_end_probe` are retained for the one-time val/probe
+  precompute and offline inspection; the offline *train*-pair path is
+  superseded. (The standalone `scripts/generate_reward_pairs.py` wrapper was
+  retired in ADR-0033; these functions live in `src/manifold/data/reward_pairs.py`.)
+  A new `generate_full_range_val_pairs` mirrors the train distribution for
+  validation.
 - ADR-0009's preference-pair *definition* changes (disjoint halves → full-range
   ordered); ADR-0009's generated-end-probe rationale (measure the train/inference
   gap) is unchanged and is now the selection metric.

@@ -6,7 +6,7 @@ is the single source of truth for x0-latent generation.
 :meth:`LatentFlowModule.sample` (in-training generation — the FID callback) and
 :meth:`LatentFlowPipeline.sample_latent` (inference) both delegate here, so the
 train and infer paths cannot drift. Sampler parity against the upstream ``hope``
-implementation was verified during migration (``scripts/_archive/validate_against_hope.py``).
+implementation was verified during migration (``tests/parity/validate_against_hope.py``).
 
 The mechanism is unchanged from ADR-0002: the scheduler's
 :meth:`~manifold.schedulers.FlowMatchHeunDiscreteScheduler.euler_step` /
