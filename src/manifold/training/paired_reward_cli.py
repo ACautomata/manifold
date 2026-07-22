@@ -316,7 +316,7 @@ def _real_inputs(
     """Build the real paired-reward inputs from the ControlNet native export + latent cache.
 
     Loads the frozen ControlNet generator (``--native-dir``, T7's
-    :func:`~manifold.data.paired_reward_pairs.load_frozen_controlnet_generator` —
+    :func:`~manifold.training.controlnet_inputs.load_frozen_controlnet_generator` —
     frozen base + ControlNet + base scheduler + scaling_factor), resolves the
     **paired** train/val split
     (``_train_val_manifests`` / ``val_data_base_dir`` / ``val_fraction`` - NOT JiT
@@ -334,8 +334,9 @@ def _real_inputs(
     from ..config import autoencoder_divisor
     from ..data.paired_brats import build_brats_pair_manifest
     from ..data.paired_latent_dataset import PairedLatentDataset, paired_cache_tag
-    from ..data.paired_reward_pairs import build_paired_reward_inputs, load_frozen_controlnet_generator
+    from ..data.paired_reward_pairs import build_paired_reward_inputs
     from ..data.paired_volume_dataset import PairedNiftiVolumeDataset
+    from .controlnet_inputs import load_frozen_controlnet_generator
 
     # target_dim MUST match the paired_train cache the generator trained on (cache
     # reuse, ADR-0021/0022: sample_ids are derived from the volume + target_dim, so

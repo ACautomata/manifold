@@ -27,7 +27,6 @@ Sibling of :mod:`manifold.data.reward_pairs` (the JiT reward); reuses
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Sequence
 
 import torch
@@ -276,47 +275,6 @@ def build_paired_reward_probe(
     return RewardPairDataset(torch.cat(winners), torch.cat(losers))
 
 
-def load_frozen_controlnet_generator(native_dir: str | Path):
-    """Load the frozen ControlNet generator (the reward's fake source) from a ControlNet native export.
-
-    The ControlNet counterpart of the (deleted) paired-JiT generator loader
-    (ADR-0027/T7). The native dir is the layout written by
-    :meth:`~manifold.ControlNetLatentFlowPipeline.save_pretrained` (the raw arm, no
-    EMA). The generator is the **supervised ControlNet's** noise→data policy: a
-    **frozen base UNet** + a **frozen ControlNet** whose residuals steer it. The
-    reward's fakes become the ControlNet's generation
-    (:func:`~manifold.modules.controlnet_rollout` /
-    :func:`~manifold.modules.controlnet_partial_rollout`), replacing the deleted
-    src→tgt rollout.
-
-    - The scheduler is the **base** :class:`FlowMatchHeunDiscreteScheduler` (the
-      loser is a full ``0 -> 1`` rollout), NOT the Partial subclass — only the probe
-      path constructs that (ADR-0023).
-    - Both arms are frozen + eval + grad-disabled (the reward precomputes fakes once,
-      ADR-0020). The VAE's ``scaling_factor`` is returned so callers scale the raw
-      paired-cache src latents into the generator's training space (ADR-0021).
-
-    Returns:
-        ``(base_unet, controlnet, scheduler, scaling_factor)`` — the frozen + eval
-        base UNet, the frozen ControlNet, the base scheduler, and the VAE scaling
-        factor.
-    """
-    from ..pipelines.controlnet_latent_flow import ControlNetLatentFlowPipeline
-
-    pipe = ControlNetLatentFlowPipeline.from_pretrained(str(native_dir))
-    # The base scheduler (NOT the Partial subclass): the loser is a full 0->1
-    # rollout. Only the probe constructs Partial (ADR-0023).
-    scheduler = FlowMatchHeunDiscreteScheduler(**pipe.scheduler.config)
-    scaling_factor = float(pipe.vae.scaling_factor)
-    pipe.unet.eval()
-    for p in pipe.unet.parameters():
-        p.requires_grad_(False)
-    pipe.controlnet.eval()
-    for p in pipe.controlnet.parameters():
-        p.requires_grad_(False)
-    return pipe.unet, pipe.controlnet, scheduler, scaling_factor
-
-
 def _stack_paired_latents(dataset) -> tuple[Tensor, Tensor, Tensor, Tensor, Tensor]:
     """Stack a warmed :class:`~manifold.data.PairedLatentDataset` into ``(src, tgt, src_lab, tgt_lab, spacing)``.
 
@@ -455,5 +413,4 @@ __all__ = [
     "build_paired_reward_pairs",
     "build_paired_reward_inputs",
     "build_paired_reward_probe",
-    "load_frozen_controlnet_generator",
 ]
