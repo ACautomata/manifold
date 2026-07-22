@@ -683,10 +683,10 @@ def _real_inputs_mode2(
     from ..data.paired_brats import build_brats_pair_manifest
     from ..data.paired_latent_dataset import PairedLatentDataset
     from ..data.paired_manifests import _train_val_manifests
-    from ..data.paired_reward_pairs import load_frozen_controlnet_generator
     from ..data.paired_volume_dataset import PairedNiftiVolumeDataset
     from ..models.reward_model import RewardModel
     from ..schedulers.scheduling_flow_match_grpo import FlowMatchGRPOScheduler
+    from .controlnet_inputs import load_frozen_controlnet_generator
 
     # 1. Frozen base UNet + ControlNet + base scheduler + scaling_factor from the
     # ControlNet native export (the supervised stage-1 artifact, ADR-0027). Both arms

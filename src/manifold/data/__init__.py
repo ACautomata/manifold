@@ -37,7 +37,6 @@ from .paired_manifests import _train_val_manifests
 from .paired_reward_pairs import (
     build_paired_reward_pairs,
     build_paired_reward_probe,
-    load_frozen_controlnet_generator,
 )
 from .paired_volume_dataset import PairedNiftiVolumeDataset
 from .reward_pairs import (
@@ -93,3 +92,21 @@ __all__ = [
     "save_reward_pairs",
     "warm_latent_pipeline",
 ]
+
+
+def __getattr__(name):
+    """Lazy re-export of the relocated ControlNet-GRPO loader (issue #176).
+
+    ``load_frozen_controlnet_generator`` moved from this package's
+    ``paired_reward_pairs`` module to ``manifold.training.controlnet_inputs``
+    (its only consumer is the GRPO real-input path). It stays re-exported here for
+    the previously-exposed ``manifold.data`` surface (issue #176 acceptance), but
+    imported lazily to avoid a ``data -> training -> data.datamodule`` import cycle
+    (the training CLI modules import ``data.datamodule`` at top level).
+    """
+    if name == "load_frozen_controlnet_generator":
+        from ..training.controlnet_inputs import load_frozen_controlnet_generator as _loader
+
+        globals()[name] = _loader  # cache: subsequent access skips __getattr__
+        return _loader
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
