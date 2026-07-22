@@ -14,8 +14,8 @@ args to produce the x0 prediction.
 
 This is the single source of truth for the ControlNet rollout: the inference
 :class:`~manifold.pipelines.ControlNetLatentFlowPipeline`, the supervised
-:class:`~manifold.modules.ControlNetLatentFlowModule` validation, the GRPO Mode-2
-suffix, and the reward fake-builder all delegate here, so the paths cannot drift.
+:class:`~manifold.modules.ControlNetLatentFlowModule` validation, the GRPO
+ControlNet-path suffix, and the reward fake-builder all delegate here, so the paths cannot drift.
 
 Two regimes share the per-step injection helper (never a duplicated Heun loop):
 
