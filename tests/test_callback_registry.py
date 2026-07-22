@@ -235,3 +235,79 @@ def test_training_spine_fails_fast_without_checkpoint(tmp_path):
             devices=1,
             accelerator="cpu",
         )
+
+
+# -- issue #165: post-merge forbidden policy ----------------------------------
+
+
+def test_training_spine_forbidden_callbacks_force_removed_post_merge(tmp_path, monkeypatch):
+    """forbidden_callbacks drops named callbacks AFTER the name merge, so a
+    ``callback_names_override`` (the CLI ``--callbacks`` flag) cannot re-enable
+    them — the GRPO Mode-2 fid guard, expressed generically with no GRPO
+    vocabulary in the spine (ADR-0032).
+    """
+    from unittest.mock import MagicMock
+
+    from lightning.pytorch.callbacks import ModelCheckpoint
+
+    from manifold.training.core import TrainingSpine
+
+    captured = {}
+
+    def _fake_build_trainer(**kwargs):
+        captured["callbacks"] = kwargs.get("callbacks")
+        return MagicMock()
+
+    monkeypatch.setattr("manifold.training.core.build_trainer", _fake_build_trainer)
+
+    spine = TrainingSpine()
+    spine.registry.register("fid", FIDSpec)
+    spine.registry.register("checkpoint", CheckpointSpec)
+
+    module = type("M", (), {"logged_metrics": frozenset({"val/mean_reward"})})()
+    trainer, ckpt = spine.run(
+        module=module,
+        datamodule=MagicMock(),
+        ctx=_fid_ctx()[0],
+        default_names=["fid", "checkpoint"],
+        callback_names_override=["fid", "checkpoint"],  # an override re-adds fid
+        callback_cfg={
+            "checkpoint": {"monitor_metric": "val/mean_reward"},
+            "fid": {"num_synth": 99},  # knobs for the dropped name are never read
+        },
+        forbidden_callbacks={"fid": "constant frozen-base metric"},
+        max_epochs=1,
+        model_dir=str(tmp_path),
+        devices=1,
+        accelerator="cpu",
+    )
+    built = captured["callbacks"]
+    assert not any(isinstance(c, FIDCallback) for c in built), "fid was not force-removed post-merge"
+    assert any(isinstance(c, ModelCheckpoint) for c in built), "checkpoint was dropped too"
+    assert ckpt is not None and ckpt.monitor == "val/mean_reward"
+
+
+def test_training_spine_forbidden_monitor_raises(tmp_path):
+    """forbidden_monitors rejects a checkpoint ``monitor_metric`` with a loud
+    ValueError BEFORE resolution — the GRPO Mode-2 ``val/fid`` monitor guard."""
+    from unittest.mock import MagicMock
+
+    from manifold.training.core import TrainingSpine
+
+    spine = TrainingSpine()
+    spine.registry.register("fid", FIDSpec)
+    spine.registry.register("checkpoint", CheckpointSpec)
+
+    with pytest.raises(ValueError, match="val/fid"):
+        spine.run(
+            module=MagicMock(),
+            datamodule=MagicMock(),
+            ctx=_fid_ctx()[0],
+            default_names=["checkpoint"],
+            callback_cfg={"checkpoint": {"monitor_metric": "val/fid"}},
+            forbidden_monitors={"val/fid": "constant frozen-base metric"},
+            max_epochs=1,
+            model_dir=str(tmp_path),
+            devices=1,
+            accelerator="cpu",
+        )

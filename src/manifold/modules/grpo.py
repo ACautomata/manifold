@@ -361,6 +361,11 @@ class GRPOModule(spt.Module):
             Mode-1). When ``controlnet`` is set this must be ``True``.
     """
 
+    #: Declares the metric this Module logs so the registry's
+    #: ``validate_monitor`` accepts a ``val/mean_reward`` checkpoint monitor
+    #: (val/fid comes from FIDCallback, not here). ADR-0029.
+    logged_metrics: frozenset[str] = frozenset({"val/mean_reward"})
+
     def __init__(
         self,
         policy,

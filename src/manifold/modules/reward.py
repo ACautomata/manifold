@@ -157,6 +157,16 @@ class RewardModule(spt.Module):
             batches this size at epoch end).
     """
 
+    #: Declares every validation metric this Module logs so the registry's
+    #: ``validate_monitor`` accepts any of them as a checkpoint monitor (ADR-0029).
+    #: ``val/gen_pair_acc`` (the generated-end probe) is the default; ``val/pair_acc``
+    #: / ``val/roc_auc`` are the within-fake-ranking metrics ``on_validation_epoch_end``
+    #: logs over the val pairs — all reachable monitors now that the checkpoint block
+    #: forwards through the spine.
+    logged_metrics: frozenset[str] = frozenset(
+        {"val/gen_pair_acc", "val/pair_acc", "val/roc_auc"}
+    )
+
     def __init__(
         self,
         reward_model: RewardModel,

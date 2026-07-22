@@ -36,11 +36,10 @@ from lightning.pytorch.callbacks import ModelCheckpoint
 
 from ..config import opt
 from ..data.datamodule import build_datamodule
-from ..metrics import FIDCallback
 from ..modules.grpo import GRPOModule
 from ..schedulers.scheduling_flow_match_grpo import FlowMatchGRPOScheduler
-from manifold.training.callbacks import CallbackContext, CheckpointSpec
-from .trainer import build_trainer
+from manifold.training.callbacks import CallbackContext, CheckpointSpec, FIDSpec, TrainLossSpec
+from manifold.training.core import TrainingSpine
 
 
 @dataclass
@@ -77,25 +76,6 @@ class GRPOInputs:
     fid_spacing: Sequence[float] = (1.0, 1.0, 1.0)
 
 
-def _ckpt(
-    model_dir: str,
-    *,
-    monitor_metric: str = "val/mean_reward",
-    mode: str = "max",
-    save_top_k: int = 1,
-) -> ModelCheckpoint:
-    """A ``ModelCheckpoint`` via :class:`CheckpointSpec` (ADR-0029)."""
-    return CheckpointSpec(
-        monitor_metric=monitor_metric,
-        save_top_k=save_top_k,
-        mode=mode,
-        filename=f"grpo-{{epoch:03d}}-{{{monitor_metric}:.3f}}",
-    ).build(CallbackContext(
-        module=None, vae=None, datamodule=None, inference_recipe=None,
-        model_dir=model_dir, seed=0,
-    ))
-
-
 def run_grpo_training(
     *,
     module: GRPOModule,
@@ -116,15 +96,24 @@ def run_grpo_training(
     num_synth: int = 16,
     center_slices_ratio: float = 0.5,
     cov_ridge: float = 1e-6,
+    callback_names: list[str] | None = None,
+    callback_cfg: dict[str, dict] | None = None,
 ) -> tuple[pl.Trainer, ModelCheckpoint]:
     """Assemble callbacks + ``Trainer`` and ``fit`` the GRPO module (the core seam).
 
-    Builds a stock ``ModelCheckpoint`` (monitoring ``val/fid`` when the FID callback
-    is attached, else ``val/mean_reward``) — and, when ``inputs`` carries the FID
-    triple (``vae`` / ``real_latents`` / ``feature_net``), attaches
-    :class:`~manifold.metrics.FIDCallback` with **no EMA** (GRPO evaluates the raw
-    policy, #59) — then runs ``Trainer.fit`` on the conditioning datamodule + the val
-    set. Returns ``(trainer, ckpt)`` so callers can find the written ``.ckpt``.
+    The shell (ADR-0032): seed, the FID-triple decision, the monitor/mode
+    derivation, then delegate to :class:`TrainingSpine.run` — the single caller of
+    the callback registry. When ``inputs`` carries the FID triple
+    (``vae`` / ``real_latents`` / ``feature_net``) an :class:`FIDSpec` callback is
+    attached (no EMA — GRPO evaluates the raw policy, #59) and the checkpoint
+    selects on ``val/fid`` (min); otherwise validation is ``val/mean_reward`` (max).
+    Returns ``(trainer, ckpt)`` so callers can find the written ``.ckpt``.
+
+    Mode-2 (ADR-0028: ``module.controlnet`` set) suppresses FID two ways: at
+    default-derivation (the constant frozen-base metric is skipped) AND post-merge
+    via :class:`TrainingSpine`'s ``forbidden_callbacks`` / ``forbidden_monitors``
+    — a YAML / CLI ``--callbacks fid`` override or a ``val/fid`` monitor cannot
+    re-enable it.
 
     Args:
         inputs: the train/val conditioning datasets + the policy/reward/scheduler
@@ -133,6 +122,10 @@ def run_grpo_training(
             when the FID triple is present, else ``val/mean_reward`` (max). Pass
             explicitly to override.
         ckpt_path: optional warm-start / resume checkpoint passed to ``fit``.
+        callback_names: optional CLI ``--callbacks`` override (a full name-list
+            replacement of the derived defaults; ADR-0032).
+        callback_cfg: optional ``{name: {knob: value}}`` YAML knob overrides,
+            merged over the shell-derived defaults (the YAML ``callbacks:`` block).
     """
     pl.seed_everything(seed, workers=True)
     fid_active = (
@@ -144,7 +137,9 @@ def run_grpo_training(
     # the FID callback's unconditional `module.sample()` rollout ignores the
     # ControlNet — so val/fid would be a CONSTANT frozen-base metric, independent of
     # the learned policy. Selecting on it is meaningless; skip the unconditional FID
-    # in Mode-2 and select on the conditional reward (val/mean_reward).
+    # in Mode-2 and select on the conditional reward (val/mean_reward). The
+    # post-merge forbidden policy (below) makes this airtight against YAML/CLI
+    # overrides that try to re-add it.
     mode2 = getattr(module, "controlnet", None) is not None
     if mode2 and fid_active:
         rank_zero_info(
@@ -155,50 +150,111 @@ def run_grpo_training(
         fid_active = False
     if monitor_metric is None:
         monitor_metric = "val/fid" if fid_active else "val/mean_reward"
-    if mode is None:
-        # Derive from the FINAL metric (not fid_active): a caller who overrides
-        # monitor_metric back to val/mean_reward must get mode=max, not the FID min.
-        mode = "min" if monitor_metric == "val/fid" else "max"
-    ckpt = _ckpt(
-        model_dir, monitor_metric=monitor_metric, mode=mode, save_top_k=save_top_k
-    )
-    callbacks: list[pl.Callback] = [ckpt]
-    if fid_active:
-        callbacks.append(
-            FIDCallback(
-                module=module,
-                vae=inputs.vae,
-                real_latents=inputs.real_latents,
-                feature_net=inputs.feature_net,
-                feature_net_factory=inputs.feature_net_factory,
-                latent_shape=(1, *module.latent_shape),
-                spacing=inputs.fid_spacing,
-                modality=int(inputs.fid_modality),
-                num_inference_steps=module.num_steps,
-                num_synth=num_synth,
-                center_slices_ratio=center_slices_ratio,
-                cov_ridge=cov_ridge,
-                seed=seed,
-            )
-        )
+    # mode is derived from the FINAL (post-merge) monitor below, unless the caller
+    # (or a YAML checkpoint.mode knob) supplies it explicitly — so a YAML
+    # ``checkpoint.monitor_metric=val/mean_reward`` override without a ``mode``
+    # does not keep the shell's ``val/fid``-derived ``min`` (codex #183 P1).
+
     datamodule = build_datamodule(
         inputs.train_ds, batch_size=batch_size, val_dataset=inputs.val_ds, num_workers=num_workers
     )
-    trainer = build_trainer(
+
+    # Shell-derived callback knobs; YAML/CLI callback_cfg wins (merged over).
+    cfg_built: dict[str, dict] = {
+        "checkpoint": {
+            "monitor_metric": monitor_metric,
+            "save_top_k": save_top_k,
+        }
+    }
+    if mode is not None:
+        cfg_built["checkpoint"]["mode"] = mode
+    default_names = ["checkpoint"]
+    if fid_active:
+        default_names.append("fid")
+        cfg_built["fid"] = {
+            "num_synth": num_synth,
+            "center_slices_ratio": center_slices_ratio,
+            "cov_ridge": cov_ridge,
+        }
+    for name, knobs in (callback_cfg or {}).items():
+        cfg_built.setdefault(name, {}).update(knobs)
+
+    # Derive mode + filename from the FINAL (post-merge) monitor unless the merged
+    # cfg supplied them explicitly. ``val/fid`` is min; every other GRPO monitor
+    # (val/mean_reward, or a YAML override) is max. An unmonitored checkpoint keeps
+    # the plain prefix.
+    ckpt_cfg = cfg_built["checkpoint"]
+    final_monitor = ckpt_cfg.get("monitor_metric")
+    if ckpt_cfg.get("mode") is None:
+        ckpt_cfg["mode"] = "min" if final_monitor == "val/fid" else "max"
+    if ckpt_cfg.get("filename") is None:
+        ckpt_cfg["filename"] = (
+            f"grpo-{{epoch:03d}}-{{{final_monitor}:.3f}}"
+            if final_monitor is not None
+            else "grpo-{epoch:03d}"
+        )
+
+    # GRPO's FID reference is the held real_latents (ADR-0032) — its conditioning
+    # datamodule carries no val_latents, so real_latents is passed explicitly and
+    # FIDSpec.build forwards it to FIDCallback. Built only when FID is active.
+    inference_recipe = None
+    if fid_active:
+        inference_recipe = {
+            "latent_shape": (1, *module.latent_shape),
+            "spacing": list(inputs.fid_spacing),
+            "modality": int(inputs.fid_modality),
+            "num_inference_steps": module.num_steps,
+            "guidance_scale": 1.0,
+            "cfg_interval": None,
+        }
+
+    ctx = CallbackContext(
+        module=module,
+        vae=inputs.vae,
+        datamodule=datamodule,
+        inference_recipe=inference_recipe,
+        model_dir=model_dir,
+        seed=seed,
+        feature_net=inputs.feature_net,
+        feature_net_factory=inputs.feature_net_factory,
+        real_latents=inputs.real_latents,
+    )
+
+    forbidden_callbacks = None
+    forbidden_monitors = None
+    if mode2:
+        reason = (
+            "Mode-2 (ControlNet on frozen base): unconditional FID ignores the "
+            "ControlNet — a constant frozen-base metric, independent of the policy"
+        )
+        forbidden_callbacks = {"fid": reason}
+        forbidden_monitors = {"val/fid": reason}
+
+    spine = TrainingSpine()
+    spine.registry.register("train_loss", TrainLossSpec)
+    spine.registry.register("fid", FIDSpec)
+    spine.registry.register("checkpoint", CheckpointSpec)
+    return spine.run(
+        module=module,
+        datamodule=datamodule,
+        ctx=ctx,
+        default_names=default_names,
         max_epochs=max_epochs,
-        callbacks=callbacks,
         model_dir=model_dir,
         devices=devices,
         accelerator=accelerator,
         limit_val_batches=limit_val_batches,
-        extra_kwargs=(
+        extra_trainer_kwargs=(
             {"limit_train_batches": limit_train_batches}
             if limit_train_batches is not None
             else None
         ),
+        ckpt_path=ckpt_path,
+        callback_cfg=cfg_built,
+        callback_names_override=callback_names,
+        forbidden_callbacks=forbidden_callbacks,
+        forbidden_monitors=forbidden_monitors,
     )
-    trainer.fit(module, datamodule=datamodule, ckpt_path=ckpt_path)
-    return trainer, ckpt
 
 
 # -- console entry -----------------------------------------------------------
@@ -261,6 +317,11 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         help="cap train batches/epoch (a debug knob for the fast v2 re-measure; the full "
              "run leaves it unset).",
     )
+    parser.add_argument(
+        "--callbacks",
+        default=None,
+        help="comma-separated callback names; REPLACES the YAML callbacks: list (ADR-0032).",
+    )
     parser.add_argument("overrides", nargs="*", help="Hydra-style dotlist overrides.")
     return parser.parse_args(argv)
 
@@ -278,7 +339,7 @@ def main(argv: list[str] | None = None, *, data_provider=None) -> int:
 
     from omegaconf import OmegaConf
 
-    from ..config import load_config, merge_overrides, require_paths
+    from ..config import load_config, merge_overrides, require_paths, resolve_callback_names
 
     cfg = load_config(args.env, args.train, args.network)
     cfg = merge_overrides(cfg, {"num_gpus": args.num_gpus}, list(args.overrides))
@@ -373,6 +434,16 @@ def main(argv: list[str] | None = None, *, data_provider=None) -> int:
         )
         return 0
 
+    # ADR-0032: the CLI ``--callbacks`` (comma list) REPLACES the YAML
+    # ``callbacks:`` name list; the YAML ``fid:`` / ``checkpoint:`` knob blocks
+    # forward as the callback_cfg override. Both are ``None``/empty when neither is
+    # supplied, so the shell uses its derived defaults (unchanged behaviour).
+    cb_names = resolve_callback_names(args.callbacks, cfg)
+    callback_cfg: dict[str, dict] = {"checkpoint": dict(opt(cfg, "checkpoint", {}))}
+    fid_block = opt(cfg, "fid", None)
+    if fid_block is not None:
+        callback_cfg["fid"] = dict(fid_block)
+
     run_grpo_training(
         module=module,
         inputs=inputs,
@@ -380,10 +451,11 @@ def main(argv: list[str] | None = None, *, data_provider=None) -> int:
         max_epochs=int(args.max_epochs or gcfg.n_epochs),
         devices=args.num_gpus if args.num_gpus > 1 else 1,
         batch_size=int(gcfg.batch_size),
-        save_top_k=int(opt(cfg, "checkpoint.save_top_k", 1)),
         seed=seed,
         ckpt_path=args.resume,
         limit_train_batches=args.limit_train_batches,
+        callback_names=cb_names,
+        callback_cfg=callback_cfg,
     )
     print(f"[manifold-train-grpo] done; checkpoints under {cfg.model_dir}")
     return 0

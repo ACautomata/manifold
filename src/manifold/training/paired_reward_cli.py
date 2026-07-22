@@ -43,8 +43,9 @@ from ..config import opt
 from ..data.datamodule import build_datamodule
 from ..models.reward_model import RewardModel
 from ..modules.paired_reward import PairedRewardModule
-from .reward_cli import _ckpt
-from .trainer import build_trainer, is_multi_gpu
+from manifold.training.callbacks import CallbackContext, CheckpointSpec, TrainLossSpec
+from manifold.training.core import TrainingSpine
+from .trainer import is_multi_gpu
 
 
 @dataclass
@@ -79,41 +80,68 @@ def run_paired_reward_training(
     limit_val_batches: int | float = 1.0,
     seed: int = 0,
     ckpt_path: str | None = None,
+    callback_names: list[str] | None = None,
+    callback_cfg: dict[str, dict] | None = None,
 ) -> tuple[pl.Trainer, ModelCheckpoint]:
     """Assemble callbacks + ``Trainer`` and ``fit`` the paired reward module (the core seam).
 
-    Builds a stock ``ModelCheckpoint`` (monitoring the generated-end probe) and runs
-    ``Trainer.fit`` on the precomputed train-pair datamodule + the precomputed val
-    pairs. Returns ``(trainer, ckpt)`` so callers can find the written ``.ckpt``.
+    The shell (ADR-0032): seed, the mandatory-probe guard, the pre-fit probe
+    mutation, a stock ``ModelCheckpoint`` (monitoring the generated-end probe, or
+    an unmonitored fallback under DDP where the metric is rank-local), then
+    delegate to :class:`TrainingSpine.run`. Returns ``(trainer, ckpt)`` so callers
+    can find the written ``.ckpt``.
 
     Args:
         inputs: the precomputed train/val/probe pair datasets (no generator).
         ckpt_path: optional warm-start / resume checkpoint passed to ``fit``.
+        callback_names: optional CLI ``--callbacks`` override (a full name-list
+            replacement of the derived defaults; ADR-0032).
+        callback_cfg: optional ``{name: {knob: value}}`` YAML knob overrides,
+            merged over the shell-derived defaults (the YAML ``callbacks:`` block).
     """
     # Seed deterministically so direct callers (tests, notebooks) get reproducible
     # runs; ``main`` also seeds, harmlessly, before building the module.
     pl.seed_everything(seed, workers=True)
     multi_gpu = is_multi_gpu(devices)
-    # The generated-end probe is mandatory (ADR-0023): ``val/gen_pair_acc`` is the
-    # load-bearing monitor, and ``PairedRewardModule`` only logs it when a probe is
-    # attached. Under single-GPU the checkpoint monitors the metric, so a missing
-    # probe would crash Lightning's ``ModelCheckpoint`` (monitor key never seen).
-    # Fail fast with a clear error rather than a MisconfigurationException at fit.
-    # DDP drops the monitor (rank-local selection is unreliable), so no probe is
-    # needed there.
-    if not multi_gpu and monitor_metric == "val/gen_pair_acc" and inputs.val_probe is None:
+
+    # Shell-derived checkpoint knobs, then the YAML/CLI callback_cfg override wins,
+    # then the DDP monitor=None fallback is re-asserted POST-merge so a YAML
+    # monitor_metric cannot restore a rank-local metric under DDP.
+    ckpt_monitor = monitor_metric if not multi_gpu else None
+    cfg_built: dict[str, dict] = {
+        "checkpoint": {
+            "monitor_metric": ckpt_monitor,
+            "mode": mode,
+            "save_top_k": save_top_k,
+        }
+    }
+    for name, knobs in (callback_cfg or {}).items():
+        cfg_built.setdefault(name, {}).update(knobs)
+    if multi_gpu:
+        cfg_built["checkpoint"]["monitor_metric"] = None
+    effective_monitor = cfg_built["checkpoint"]["monitor_metric"]
+    # Derive the filename from the EFFECTIVE (post-merge) monitor unless supplied.
+    if cfg_built["checkpoint"].get("filename") is None:
+        cfg_built["checkpoint"]["filename"] = (
+            f"reward-{{epoch:03d}}-{{{effective_monitor}:.3f}}"
+            if effective_monitor is not None
+            else "reward-{epoch:03d}"
+        )
+
+    # The generated-end probe is mandatory (ADR-0023) only when the EFFECTIVE
+    # monitor is ``val/gen_pair_acc`` — the metric the Module logs solely from the
+    # probe. A YAML override to a non-probe metric (or ``null``) legitimately opts
+    # out of the probe requirement (codex #183 P2). Under single-GPU the monitored
+    # checkpoint would crash Lightning if the probe metric never appears; under DDP
+    # the monitor is dropped (rank-local selection is unreliable), so no probe is
+    # needed there (effective_monitor is None).
+    if effective_monitor == "val/gen_pair_acc" and inputs.val_probe is None:
         raise ValueError(
             "Paired reward training monitors val/gen_pair_acc, but no generated-end "
             "probe was provided (inputs.val_probe is None). The probe is mandatory "
             "(ADR-0023) - build it via build_paired_reward_probe and pass it in, or "
             "set monitor_metric to a logged metric."
         )
-    ckpt = _ckpt(
-        model_dir,
-        monitor_metric=monitor_metric if not multi_gpu else None,
-        mode=mode,
-        save_top_k=save_top_k,
-    )
     # Score the fixed generated-end probe in training-batch-size chunks (bounds
     # epoch-end memory); attach the probe if the inputs carry one.
     module.probe_batch_size = int(batch_size)
@@ -125,16 +153,32 @@ def run_paired_reward_training(
         val_dataset=inputs.val_pair_ds,
         num_workers=num_workers,
     )
-    trainer = build_trainer(
+
+    spine = TrainingSpine()
+    spine.registry.register("train_loss", TrainLossSpec)
+    spine.registry.register("checkpoint", CheckpointSpec)
+    ctx = CallbackContext(
+        module=module,
+        vae=None,
+        datamodule=datamodule,
+        inference_recipe=None,
+        model_dir=model_dir,
+        seed=seed,
+    )
+    return spine.run(
+        module=module,
+        datamodule=datamodule,
+        ctx=ctx,
+        default_names=["checkpoint"],
         max_epochs=max_epochs,
-        callbacks=[ckpt],
         model_dir=model_dir,
         devices=devices,
         accelerator=accelerator,
         limit_val_batches=limit_val_batches,
+        ckpt_path=ckpt_path,
+        callback_cfg=cfg_built,
+        callback_names_override=callback_names,
     )
-    trainer.fit(module, datamodule=datamodule, ckpt_path=ckpt_path)
-    return trainer, ckpt
 
 
 # -- console entry -----------------------------------------------------------
@@ -170,6 +214,11 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument(
         "--resume", default=None, help="resume a Lightning .ckpt (trainer.fit(ckpt_path=...))."
     )
+    parser.add_argument(
+        "--callbacks",
+        default=None,
+        help="comma-separated callback names; REPLACES the YAML callbacks: list (ADR-0032).",
+    )
     parser.add_argument("overrides", nargs="*", help="Hydra-style dotlist overrides.")
     return parser.parse_args(argv)
 
@@ -188,7 +237,7 @@ def main(argv: list[str] | None = None, *, data_provider=None) -> int:
 
     from omegaconf import OmegaConf
 
-    from ..config import load_config, merge_overrides, require_paths
+    from ..config import load_config, merge_overrides, require_paths, resolve_callback_names
 
     cfg = load_config(args.env, args.train, args.network)
     cfg = merge_overrides(cfg, {"num_gpus": args.num_gpus}, list(args.overrides))
@@ -237,6 +286,13 @@ def main(argv: list[str] | None = None, *, data_provider=None) -> int:
         lr=float(cfg.paired_reward_train.lr),
     )
 
+    # ADR-0032: the CLI ``--callbacks`` (comma list) REPLACES the YAML
+    # ``callbacks:`` name list; the YAML ``checkpoint:`` knob block forwards as
+    # the callback_cfg override. Both are ``None``/empty when neither is supplied,
+    # so the shell uses its derived defaults (unchanged behaviour).
+    cb_names = resolve_callback_names(args.callbacks, cfg)
+    callback_cfg = {"checkpoint": dict(opt(cfg, "checkpoint", {}))}
+
     run_paired_reward_training(
         module=module,
         inputs=inputs,
@@ -244,9 +300,10 @@ def main(argv: list[str] | None = None, *, data_provider=None) -> int:
         max_epochs=int(args.max_epochs or cfg.paired_reward_train.n_epochs),
         devices=args.num_gpus if args.num_gpus > 1 else 1,
         batch_size=int(cfg.paired_reward_train.batch_size),
-        save_top_k=int(opt(cfg, "checkpoint.save_top_k", 1)),
         seed=seed,
         ckpt_path=args.resume,
+        callback_names=cb_names,
+        callback_cfg=callback_cfg,
     )
     print(f"[manifold-train-paired-reward] done; checkpoints under {cfg.model_dir}")
     return 0

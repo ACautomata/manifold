@@ -832,6 +832,60 @@ def test_run_grpo_training_monitor_override_derives_correct_mode(tmp_path):
     assert ckpt.mode == "max", "overriding monitor_metric must derive mode from the metric, not fid_active"
 
 
+def test_run_grpo_training_yaml_monitor_override_derives_mode_post_merge(tmp_path, monkeypatch):
+    """codex #183 P1: a YAML callback_cfg ``checkpoint.monitor_metric`` override
+    (without ``mode``) is merged, then ``mode`` is re-derived from the FINAL
+    monitor — ``val/mean_reward`` ⇒ ``max``, not the ``val/fid`` default's ``min``
+    (which would silently select the lowest-reward checkpoint).
+    """
+    from unittest.mock import MagicMock
+
+    from manifold import AutoencoderKL, UNet3DConditionModel
+    from manifold.modules import GRPOModule
+    from manifold.training.grpo_cli import GRPOInputs, run_grpo_training
+
+    captured = {}
+
+    class _FakeSpine:
+        def __init__(self):
+            self.registry = MagicMock()
+
+        def run(self, **kw):
+            captured.update(kw)
+            return MagicMock(), MagicMock()
+
+    monkeypatch.setattr("manifold.training.grpo_cli.TrainingSpine", _FakeSpine)
+
+    torch.manual_seed(0)
+    policy = UNet3DConditionModel(num_class_embeds=4, include_spacing_input=True)
+    inputs = GRPOInputs(
+        policy=policy, reward_model=_reward_model(), scheduler=FlowMatchGRPOScheduler(eta=0.5),
+        train_ds=_ToyCondDS(), val_ds=_ToyCondDS(), latent_shape=_LAT,
+        vae=AutoencoderKL(scaling_factor=0.5),  # FID triple ⇒ default monitor val/fid, mode min
+        real_latents=torch.randn(6, *_LAT),
+        feature_net=_FakeFeatureNet(),
+    )
+    module = GRPOModule(
+        inputs.policy, inputs.reward_model, inputs.scheduler,
+        G=2, eta_step_list=(0,), num_steps=3, latent_shape=_LAT, lr=1e-3,
+    )
+    run_grpo_training(
+        module=module, inputs=inputs, model_dir=str(tmp_path),
+        max_epochs=1, devices=1, accelerator="cpu", batch_size=2,
+        callback_cfg={"checkpoint": {"monitor_metric": "val/mean_reward"}},  # YAML override, no mode
+    )
+    ck = captured["callback_cfg"]["checkpoint"]
+    assert ck["monitor_metric"] == "val/mean_reward"
+    assert ck["mode"] == "max", "mode must re-derive from the merged monitor, not the val/fid min"
+
+
+def test_grpo_module_declared_logged_metrics():
+    """GRPOModule declares val/mean_reward so the registry's monitor union accepts it."""
+    from manifold.modules import GRPOModule
+
+    assert GRPOModule.logged_metrics == frozenset({"val/mean_reward"})
+
+
 def test_grpo_module_sample_is_deployed_heun_not_the_sde(unet):
     """GRPOModule.sample is the deployed two-eval Heun — η does NOT leak into val gen (#58).
 
@@ -1403,6 +1457,71 @@ def test_run_grpo_training_mode2_skips_unconditional_fid(tmp_path):
         "FIDCallback attached in Mode-2 — a constant frozen-base metric"
     )
     assert ckpt.monitor == "val/mean_reward"
+
+
+def test_run_grpo_training_mode2_callback_override_drops_fid(tmp_path, monkeypatch):
+    """Issue #165: a Mode-2 ``--callbacks fid`` (or YAML) override is force-removed
+    POST-merge by the spine's forbidden_callbacks — FID stays off, the checkpoint
+    keeps monitoring ``val/mean_reward`` (max), and the drop is loudly logged. The
+    guard is therefore not only at default-derivation.
+    """
+    import manifold.training.core as core
+    from manifold.metrics import FIDCallback
+    from manifold.modules import GRPOModule
+    from manifold.training.grpo_cli import GRPOInputs, run_grpo_training
+
+    class _FakeVAE:  # FID triple present — would force fid_active=True in Mode-1
+        pass
+
+    base = _mode2_base()
+    cn = _mode2_controlnet(base)
+    inputs = GRPOInputs(
+        policy=base,
+        reward_model=_mode2_reward(),
+        scheduler=FlowMatchGRPOScheduler(eta=0.5),
+        train_ds=_ToyPairedCondDS(),
+        val_ds=_ToyPairedCondDS(),
+        latent_shape=(4, 16, 16, 8),
+        controlnet=cn,
+        vae=_FakeVAE(),
+        real_latents=torch.randn(2, 4, 16, 16, 8),
+        feature_net=object(),
+    )
+    module = GRPOModule(
+        base, inputs.reward_model, FlowMatchGRPOScheduler(eta=0.5),
+        G=2, eta_step_list=[0], num_steps=3, latent_shape=(4, 16, 16, 8),
+        controlnet=cn, freeze_unet=True, lr=1e-5,
+    )
+
+    # Capture the SPINE's post-merge drop log (core.rank_zero_info); the shell's
+    # own default-derivation skip log uses grpo_cli's separate binding and is
+    # not captured here, isolating the post-merge guard.
+    dropped = []
+    real_info = core.rank_zero_info
+
+    def _capture(msg, *args, **kwargs):
+        dropped.append((msg, args))
+        return real_info(msg, *args, **kwargs)
+
+    monkeypatch.setattr(core, "rank_zero_info", _capture)
+
+    trainer, ckpt = run_grpo_training(
+        module=module, inputs=inputs, model_dir=str(tmp_path),
+        max_epochs=1, devices=1, accelerator="cpu", batch_size=2,
+        callback_names=["fid", "checkpoint"],  # the override that tries to re-add fid
+    )
+
+    assert not any(isinstance(c, FIDCallback) for c in trainer.callbacks), (
+        "Mode-2 --callbacks fid override re-enabled FID — a constant frozen-base metric"
+    )
+    assert ckpt.monitor == "val/mean_reward"
+    assert ckpt.mode == "max"
+    assert any("post-merge" in str(msg) for msg, _ in dropped), (
+        f"expected a post-merge fid drop log; captured spine logs: {dropped!r}"
+    )
+    assert any("fid" in str(args) for _, args in dropped), (
+        f"expected the drop to name 'fid'; captured spine logs: {dropped!r}"
+    )
 
 
 # -- the real _real_inputs_mode2 CLI path (#143) ------------------------------

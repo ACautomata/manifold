@@ -10,6 +10,7 @@ registered spec to exercise.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import ClassVar
 
 import lightning.pytorch as pl
 
@@ -24,6 +25,10 @@ class TrainLossSpec:
     Matches the :class:`CallbackSpec` Protocol structurally (a ``build`` method
     over :class:`CallbackContext`) without inheriting it.
     """
+
+    #: The metric TrainLossLogger emits; ClassVar keeps it out of the spec's knob
+    #: surface while allowing checkpoint monitor validation (ADR-0029).
+    logged_metrics: ClassVar[frozenset[str]] = frozenset({"train/loss_epoch"})
 
     def build(self, ctx: CallbackContext) -> pl.Callback:
         return TrainLossLogger()
