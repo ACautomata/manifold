@@ -1,4 +1,3 @@
-#!/usr/bin/env python
 """Export a manifold training ``.ckpt`` to the native per-component inference dir.
 
 The ADR-0006 bridge: load a Lightning ``.ckpt``, bake the inference UNet (the
@@ -9,7 +8,7 @@ loads.
 
 Example (gauss, JiT noise->data)::
 
-    python scripts/export_checkpoint.py \\
+    manifold-export \\
         --ckpt /data72/junran/manifold-runtime/lightning/last.ckpt \\
         --network-config configs/network/config_network.yaml \\
         --vae-checkpoint models/autoencoder_v1.pt \\
@@ -17,7 +16,7 @@ Example (gauss, JiT noise->data)::
 
 Example (paired src->tgt - the reward's frozen generator)::
 
-    python scripts/export_checkpoint.py \\
+    manifold-export \\
         --ckpt <paired_run>/last.ckpt \\
         --network-config configs/network/config_network.yaml \\
         --vae-checkpoint models/autoencoder_v1.pt \\
@@ -34,21 +33,14 @@ Example (paired src->tgt - the reward's frozen generator)::
 from __future__ import annotations
 
 import argparse
-import sys
-from pathlib import Path
 
-# Allow running the script directly from a source checkout (no install needed).
-_ROOT = Path(__file__).resolve().parent.parent
-if str(_ROOT / "src") not in sys.path:
-    sys.path.insert(0, str(_ROOT / "src"))
-
-from manifold.config import (  # noqa: E402
+from manifold.config import (
     build_scheduler,
     build_unet,
     build_vae,
     load_config,
 )
-from manifold.training.export import export_to_native  # noqa: E402
+from manifold.training.export import export_to_native
 
 
 def main(argv: list[str] | None = None) -> int:

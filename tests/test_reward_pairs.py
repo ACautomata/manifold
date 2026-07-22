@@ -10,8 +10,6 @@ and the frozen denoiser loads from a native export.
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import pytest
 import torch
 from torch import nn
@@ -390,57 +388,6 @@ def test_load_frozen_denoiser_from_native_export(tmp_path):
     assert out.shape == (1, *_LAT)
 
 
-# -- generation script (end-to-end console entry) ---------------------------
-
-
-def test_generate_reward_pairs_script_end_to_end(tmp_path):
-    """scripts/generate_reward_pairs.py: native export → frozen denoiser → pairs cache."""
-    import sys
-
-    torch.manual_seed(0)
-    unet = UNet3DConditionModel(num_class_embeds=4, include_spacing_input=True)
-    LatentFlowPipeline(
-        unet,
-        AutoencoderKL(scaling_factor=0.5),
-        FlowMatchHeunDiscreteScheduler(),
-    ).save_pretrained(str(tmp_path / "native"))
-
-    # A handful of clean latents on disk (cache-item dicts, two per subject).
-    latents_dir = tmp_path / "latents"
-    latents_dir.mkdir()
-    for s in range(6):
-        for v in range(2):
-            torch.save(
-                {"latent": torch.randn(*_LAT), "sample_id": f"subj_{s}"},
-                latents_dir / f"subj_{s}__v{v}__abc.pt",
-            )
-
-    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
-    try:
-        import generate_reward_pairs as cli  # type: ignore[import-not-found]
-
-        rc = cli.main(
-            [
-                "--native-dir", str(tmp_path / "native"),
-                "--latents-dir", str(latents_dir),
-                "--output-dir", str(tmp_path / "pairs"),
-                "--num-steps", "2",
-                "--modality", "1",
-                "--val-fraction", "0.34",
-                "--batch-size", "4",
-            ]
-        )
-    finally:
-        sys.path.pop(0)
-    assert rc == 0
-    train, val, probe = load_reward_pairs(tmp_path / "pairs")
-    assert len(train) + len(val) == 12
-    assert probe is not None and len(probe) > 0  # generated-end probe written
-    assert train.winners.shape[1:] == _LAT
-    assert torch.isfinite(train.winners).all() and torch.isfinite(val.losers).all()
-
-
-
 # -- Codex #45 regression: subject id + per-sample conditioning + scaling ----
 
 
@@ -502,52 +449,6 @@ def test_generate_reward_pairs_slices_per_sample_modality_across_batches():
     seen = torch.stack([s for s in rec.seen_labels if s is not None])
     # Each batch's labels are a slice of the per-sample modality (order-independent check).
     assert torch.equal(seen.unique().sort().values, torch.tensor([0, 1, 2, 3]))
-
-
-def test_generate_reward_pairs_applies_scaling_via_script(tmp_path):
-    """The script scales raw cache latents by the native VAE scaling_factor before denoising.
-
-    Equivalent pairs come from running generate_reward_pairs directly on
-    manually-scaled latents with the same frozen denoiser + seed (the script's
-    `clean = clean * scaling_factor` must make them identical).
-    """
-    import sys
-
-    torch.manual_seed(0)
-    unet = UNet3DConditionModel(num_class_embeds=4, include_spacing_input=True)
-    # Native export carries scaling_factor on the VAE.
-    LatentFlowPipeline(
-        unet, AutoencoderKL(scaling_factor=2.0), FlowMatchHeunDiscreteScheduler(),
-    ).save_pretrained(str(tmp_path / "native"))
-
-    raw = torch.randn(8, *_LAT)
-    latents_dir = tmp_path / "latents"
-    latents_dir.mkdir()
-    for i in range(8):
-        torch.save({"latent": raw[i], "sample_id": f"subj_{i // 2}"}, latents_dir / f"s{i}__v.pt")
-
-    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
-    try:
-        import generate_reward_pairs as cli  # type: ignore[import-not-found]
-    finally:
-        sys.path.pop(0)
-    rc = cli.main(
-        ["--native-dir", str(tmp_path / "native"), "--latents-dir", str(latents_dir),
-         "--output-dir", str(tmp_path / "pairs"), "--num-steps", "2", "--val-fraction", "0.34",
-         "--batch-size", "4"]
-    )
-    assert rc == 0
-    script_train, _script_val, _ = load_reward_pairs(tmp_path / "pairs")
-
-    # Direct generation on MANUALLY-scaled latents with the same denoiser + seed.
-    denoiser, scheduler, scaling = load_frozen_denoiser(tmp_path / "native")
-    sids = [f"subj_{i // 2}" for i in range(8)]
-    direct_train, _direct_val = generate_reward_pairs(
-        raw * scaling, sids, denoiser, scheduler, spacing=[1.0, 1.0, 1.0], modality=1,
-        num_steps=2, val_fraction=0.34, batch_size=4, seed=0, device="cpu",
-    )
-    # Same subject split (seeded) + same scaling + same denoiser → identical winners.
-    assert torch.allclose(script_train.winners, direct_train.winners, atol=1e-6)
 
 
 # -- #48/#50/#51: online rollout-in-the-loop + full-range ordered pairs --------

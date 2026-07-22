@@ -54,10 +54,8 @@ dev = [
 
 [project.scripts]
 # The JiT training launcher (issue #28): compose config -> warm cache -> fit.
-# `python -m` parity for the export bridge is scripts/export_checkpoint.py.
 manifold-train = "manifold.training.cli:main"
 # The standalone reward-training launcher (issue #39/#40): precomputed pairs -> fit.
-# Pair generation is scripts/generate_reward_pairs.py (loads the frozen JiT export).
 manifold-train-reward = "manifold.training.reward_cli:main"
 # The GRPO policy-post-training launcher (issue #55/#56): the frozen reward steers a
 # Granular-GRPO singular-branch update of the raw-arm JiT x0-denoiser (the policy).
@@ -72,6 +70,10 @@ manifold-train-paired-reward = "manifold.training.paired_reward_cli:main"
 # frozen base loads from --native-dir (a JiT native export); the paired cache from
 # --latents-dir. Stage 2 (ControlNet GRPO) runs via manifold-train-grpo --grpo-mode 2.
 manifold-train-controlnet = "manifold.training.controlnet_cli:main"
+# The checkpoint -> native inference-dir export bridge (ADR-0006 / ADR-0033): bake
+# the inference UNet/VAE/scheduler (jit / paired / controlnet) from a Lightning
+# ``.ckpt`` into a dir ``LatentFlowPipeline.from_pretrained`` loads.
+manifold-export = "manifold.training.export_cli:main"
 
 [project.urls]
 Homepage = "https://github.com/junran/manifold"
