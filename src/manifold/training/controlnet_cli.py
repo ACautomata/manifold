@@ -332,9 +332,9 @@ def _real_inputs(
     from ..data.latent_pipeline import make_encode_fn, resolve_warm_device
     from ..data.paired_brats import build_brats_pair_manifest
     from ..data.paired_latent_dataset import PairedLatentDataset, paired_cache_tag
+    from ..data.paired_manifests import _train_val_manifests
     from ..data.paired_volume_dataset import PairedNiftiVolumeDataset
     from ..pipelines.latent_flow import LatentFlowPipeline
-    from .paired_reward_cli import _train_val_manifests
 
     # 1. Frozen base UNet (the raw-arm JiT policy) + VAE (carries scaling_factor).
     base_pipe = LatentFlowPipeline.from_pretrained(str(native_dir))
