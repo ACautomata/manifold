@@ -7,7 +7,7 @@ latent cache warmed through the JiT export's VAE, or a fake via the
 ``data_provider`` injection seam for the CPU smoke), and calls ``Trainer.fit``. The
 supervised ControlNet job is the first stage of the two-stage ControlNet pipeline:
 train the ControlNet on the frozen base to translate ``x_src`` → ``x_tgt`` before
-any GRPO (stage 2 runs via ``manifold-train-grpo --grpo-mode 2``).
+any GRPO (stage 2 runs via ``manifold-train-grpo`` pointed at the ControlNet export).
 
 The integration core :func:`run_controlnet_training` preserves the ControlNet-specific
 paired datamodule assembly, then delegates callback construction, ``Trainer`` setup,

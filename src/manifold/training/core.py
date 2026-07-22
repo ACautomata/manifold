@@ -67,7 +67,7 @@ class TrainingSpine:
         After the merge, *forbidden_callbacks* force-removes named callbacks and
         *forbidden_monitors* rejects a checkpoint monitor_metric — both with a
         loud ``rank_zero_info`` — **before** resolution. This is the post-merge
-        guard that lets a shell (e.g. GRPO Mode-2) forbid a callback no YAML /
+        guard that lets a shell (e.g. the GRPO ControlNet path) forbid a callback no YAML /
         CLI override can re-enable, rather than only suppressing it at
         default-derivation (ADR-0032).
 

@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import copy
+import json
 import os
 from dataclasses import dataclass
 from typing import Any, Sequence
@@ -67,7 +68,7 @@ class GRPOInputs:
     val_ds: Any
     latent_shape: Sequence[int]
     reference_policy: Any = None  # the frozen KL anchor (ADR-0015); None ⇒ no KL (v1)
-    controlnet: Any = None  # Mode-2: the trainable ControlNet (ADR-0028); None ⇒ Mode-1
+    controlnet: Any = None  # the trainable ControlNet (set iff --native-dir is a ControlNet export)
     vae: Any = None
     real_latents: Any = None
     feature_net: Any = None
@@ -109,8 +110,9 @@ def run_grpo_training(
     selects on ``val/fid`` (min); otherwise validation is ``val/mean_reward`` (max).
     Returns ``(trainer, ckpt)`` so callers can find the written ``.ckpt``.
 
-    Mode-2 (ADR-0028: ``module.controlnet`` set) suppresses FID two ways: at
-    default-derivation (the constant frozen-base metric is skipped) AND post-merge
+    When the ControlNet is present (``module.controlnet`` set — the policy was inferred
+    from a ControlNet export, ADR-0034), the unconditional FID is suppressed two ways:
+    at default-derivation (the constant frozen-base metric is skipped) AND post-merge
     via :class:`TrainingSpine`'s ``forbidden_callbacks`` / ``forbidden_monitors``
     — a YAML / CLI ``--callbacks fid`` override or a ``val/fid`` monitor cannot
     re-enable it.
@@ -133,17 +135,17 @@ def run_grpo_training(
         and inputs.real_latents is not None
         and (inputs.feature_net is not None or inputs.feature_net_factory is not None)
     )
-    # Mode-2 (ADR-0028): the base UNet is frozen and only the ControlNet trains, but
-    # the FID callback's unconditional `module.sample()` rollout ignores the
-    # ControlNet — so val/fid would be a CONSTANT frozen-base metric, independent of
-    # the learned policy. Selecting on it is meaningless; skip the unconditional FID
-    # in Mode-2 and select on the conditional reward (val/mean_reward). The
-    # post-merge forbidden policy (below) makes this airtight against YAML/CLI
-    # overrides that try to re-add it.
-    mode2 = getattr(module, "controlnet", None) is not None
-    if mode2 and fid_active:
+    # When the ControlNet is present the base UNet is frozen and only the ControlNet
+    # trains, but the FID callback's unconditional `module.sample()` rollout ignores
+    # the ControlNet — so val/fid would be a CONSTANT frozen-base metric, independent
+    # of the learned policy. Selecting on it is meaningless; skip the unconditional
+    # FID and select on the conditional reward (val/mean_reward). The post-merge
+    # forbidden policy (below) makes this airtight against YAML/CLI overrides that
+    # try to re-add it.
+    controlnet_present = getattr(module, "controlnet", None) is not None
+    if controlnet_present and fid_active:
         rank_zero_info(
-            "Mode-2 (ControlNet on frozen base): skipping unconditional FID — it "
+            "ControlNet policy (frozen base): skipping unconditional FID — it "
             "ignores the ControlNet (a constant frozen-base metric). Monitoring "
             "val/mean_reward (the conditional-reward progress signal) instead."
         )
@@ -222,9 +224,9 @@ def run_grpo_training(
 
     forbidden_callbacks = None
     forbidden_monitors = None
-    if mode2:
+    if controlnet_present:
         reason = (
-            "Mode-2 (ControlNet on frozen base): unconditional FID ignores the "
+            "ControlNet policy (frozen base): unconditional FID ignores the "
             "ControlNet — a constant frozen-base metric, independent of the policy"
         )
         forbidden_callbacks = {"fid": reason}
@@ -298,16 +300,6 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         "#59 launch gate; size G / eta_step_list / n_epochs before the full run.",
     )
     parser.add_argument(
-        "--grpo-mode",
-        type=int,
-        choices=(1, 2),
-        default=1,
-        help="GRPO mode (ADR-0028): 1 = train the UNet policy (default, unchanged); "
-        "2 = freeze the base UNet and train the ControlNet against the frozen reward "
-        "on the terminal latent z_K (requires the ControlNet + a paired conditioning "
-        "batch carrying src_latent / src_label / tgt_label).",
-    )
-    parser.add_argument(
         "--resume", default=None, help="resume a Lightning .ckpt (trainer.fit(ckpt_path=...))."
     )
     parser.add_argument(
@@ -374,30 +366,21 @@ def main(argv: list[str] | None = None, *, data_provider=None) -> int:
             raise ValueError(
                 "GRPO needs --native-dir <native export>, --reward-path <trained "
                 "RewardModel .ckpt>, and --latents-dir <latent cache> (or inject a "
-                "data_provider for the smoke). Mode-1: --native-dir is the raw-arm JiT "
-                "export; Mode-2: it is the supervised ControlNet export (frozen base + "
-                "ControlNet) and --latents-dir is the paired latent cache."
+                "data_provider for the smoke). Point --native-dir at a raw JiT export "
+                "to train the UNet policy, or a supervised ControlNet export (frozen "
+                "base + ControlNet) to train the ControlNet policy — the policy is "
+                "inferred from the export, not a flag (ADR-0034)."
             )
-        if args.grpo_mode == 2:
-            # Mode-2 builds the paired conditioning from data_base_dir (the BraTS
-            # manifest); Mode-1 reads the latent-cache files directly and needs no
-            # data dir. Require it only here so a ??? data_base_dir fails fast with
-            # CLI-override guidance instead of a deep MissingMandatoryValue.
+        # The ControlNet path builds the paired conditioning from data_base_dir (the
+        # BraTS manifest); the UNet path reads the latent-cache files directly and needs
+        # no data dir. Discriminate up front so a missing data_base_dir fails fast with
+        # CLI-override guidance instead of a deep MissingMandatoryValue.
+        if _detect_controlnet_export(args.native_dir):
             require_paths(cfg, keys=("model_dir", "data_base_dir"))
-            inputs = _real_inputs_mode2(cfg, args.native_dir, args.reward_path, args.latents_dir, device)
-        else:
-            inputs = _real_inputs(cfg, args.native_dir, args.reward_path, args.latents_dir, device)
+        inputs = _real_inputs(cfg, args.native_dir, args.reward_path, args.latents_dir, device)
 
     gcfg = cfg.grpo_train
     latent_shape = tuple(int(s) for s in opt(gcfg, "latent_shape", [4, 64, 64, 32]))
-    # ADR-0028 two-mode wiring: Mode-2 requires the ControlNet (built by the data
-    # provider / real inputs); Mode-1 has none and is unchanged.
-    if args.grpo_mode == 2 and inputs.controlnet is None:
-        raise ValueError(
-            "--grpo-mode 2 requires a ControlNet — the data provider / real inputs must "
-            "supply GRPOInputs.controlnet (and a paired conditioning batch carrying "
-            "src_latent / src_label / tgt_label). Mode-1 has no ControlNet."
-        )
     module = GRPOModule(
         inputs.policy,
         inputs.reward_model,
@@ -413,8 +396,8 @@ def main(argv: list[str] | None = None, *, data_provider=None) -> int:
         kl_coef=float(opt(gcfg, "kl_coef", 0.0)),
         reward_bound=str(opt(gcfg, "reward_bound", "none")),
         reward_temp=float(opt(gcfg, "reward_temp", 8.0)),
-        controlnet=inputs.controlnet if args.grpo_mode == 2 else None,
-        freeze_unet=args.grpo_mode == 2,
+        controlnet=inputs.controlnet,
+        freeze_unet=inputs.controlnet is not None,
     )
 
     if args.measure:
@@ -499,19 +482,149 @@ def run_grpo_measurement(
     return it_per_s, peak, elapsed
 
 
+def _detect_controlnet_export(native_dir) -> bool:
+    """Whether the native export under ``native_dir`` is a ControlNet export.
+
+    The unified real-input builder's discriminator (issue #177 / ADR-0034): reads
+    the pipeline's ``model_index.json`` (the per-component layout BOTH
+    :class:`~manifold.LatentFlowPipeline` and
+    :class:`~manifold.ControlNetLatentFlowPipeline` write on ``save_pretrained``)
+    and keys on a declared ``controlnet`` component. This is INDEPENDENT of
+    :func:`~manifold.training.controlnet_inputs.load_frozen_controlnet_generator`,
+    which ASSUMES ControlNet-ness (it accesses ``pipe.controlnet`` directly) and
+    therefore cannot detect it — the discriminator must run BEFORE the loader is
+    selected.
+
+    - A ControlNet export lists a ``controlnet`` component AND carries a
+      ``controlnet/`` subdir → ``True`` (build the frozen-base + ControlNet path).
+    - A raw JiT export lists no ``controlnet`` component → ``False`` (build the
+      trainable-UNet path).
+    - A dir with no ``model_index.json`` → ``False``: the discriminator only owns
+      the ControlNet-vs-JiT routing, so the downstream loader raises its own clear
+      "not a manifold pipeline directory" error.
+    - A dir that DECLARES a controlnet component but carries no ``controlnet/``
+      subdir is a corrupt / half-written export → fail fast with a clear error,
+      rather than silently routing it to the UNet path (which would mis-train) or
+      crashing deep in ``from_pretrained``.
+    """
+    index_path = os.path.join(str(native_dir), "model_index.json")
+    if not os.path.isfile(index_path):
+        return False
+    with open(index_path) as f:
+        index = json.load(f)
+    if "controlnet" not in index.get("components", {}):
+        return False
+    if not os.path.isdir(os.path.join(str(native_dir), "controlnet")):
+        raise FileNotFoundError(
+            f"{str(native_dir)!r} declares a ControlNet component in model_index.json "
+            f"but carries no controlnet/ subdir — the export is incomplete. Re-export "
+            f"with ControlNetLatentFlowPipeline.save_pretrained (the supervised "
+            f"stage-1 artifact, ADR-0027) or point --native-dir at a complete export."
+        )
+    return True
+
+
 def _real_inputs(
     cfg, native_dir: str, reward_path: str, latents_dir: str, device: torch.device
 ) -> GRPOInputs:
-    """Build the real GRPO inputs from the raw JiT arm + the trained reward (#59).
+    """Build the real GRPO inputs, inferring the policy from the native artifact (#177).
 
-    The raw-arm JiT UNet (ADR-0006: ``export_to_native`` bakes the raw ``state_dict``
-    weights) is the **trainable**
-    policy. The trained :class:`RewardModel` (a ``RewardModule`` Lightning checkpoint —
-    its ``reward_model.*`` state_dict) is the **frozen** reward. The latent cache
+    The unified real-input builder (ADR-0034): no ``--grpo-mode`` flag — the policy
+    is inferred from the native export under ``--native-dir``. A ControlNet export
+    (a ``controlnet`` component in its ``model_index.json``) builds the frozen-base +
+    trainable-ControlNet path with paired conditioning; a raw JiT export builds the
+    trainable-UNet path. The discriminator (:func:`_detect_controlnet_export`) runs
+    BEFORE either loader is selected — ``load_frozen_controlnet_generator`` assumes
+    ControlNet-ness and so cannot be the discriminator.
+
+    ``reward_path`` / ``latents_dir`` are NOT argparse-required (that would break the
+    ``data_provider`` injection seam for the CPU smoke); they are validated in
+    :func:`main`, only on the real path.
+    """
+    if _detect_controlnet_export(native_dir):
+        return _controlnet_real_inputs(cfg, native_dir, reward_path, latents_dir, device)
+    return _unet_real_inputs(cfg, native_dir, reward_path, latents_dir, device)
+
+
+def _load_frozen_reward(cfg, reward_path: str, device: torch.device, *, in_channels: int,
+                        latent_c: int | None = None):
+    """Load the frozen :class:`RewardModel` from its RewardModule checkpoint (shared).
+
+    Shared by both real-input paths: the reward scores the terminal latent ``z_K``
+    unconditionally (``reward(z_K)``, ``in_channels = C_latent``) for both the UNet
+    and the ControlNet policy. ``in_channels`` is the RewardModel's input-channel
+    count (the network config's ``reward_model.in_channels`` for the UNet path, the
+    latent channel count for the ControlNet path). ``latent_c``, when given (the
+    ControlNet path), validates the checkpoint's first conv against the single-latent
+    contract — a 2·C condition-aware paired-reward ckpt is incompatible and fails fast
+    with a readable error (codex #151). ``None`` (the UNet path) skips the check.
+
+    weights_only=True first (no arbitrary-code-execution risk); fall back to False only
+    for the weights_only restriction itself (non-allowlisted globals in a full Lightning
+    ckpt's callback/optimizer state), NOT for file/IO errors (which must surface).
+    ``reward_path`` is the user's OWN trained reward (trusted — mirroring
+    ``export_to_native``; never point this at an untrusted ``.ckpt``).
+    """
+    import pickle
+
+    from ..models.reward_model import RewardModel
+
+    reward_cfg = opt(cfg, "reward_model", {})
+    reward_model = RewardModel(
+        spatial_dims=int(opt(reward_cfg, "spatial_dims", 3)),
+        in_channels=int(in_channels),
+        channels=int(opt(reward_cfg, "channels", 64)),
+        num_layers_d=int(opt(reward_cfg, "num_layers_d", 3)),
+        norm=str(opt(reward_cfg, "norm", "BATCH")),
+    )
+    try:
+        ckpt = torch.load(str(reward_path), map_location="cpu", weights_only=True)
+    except (pickle.UnpicklingError, ValueError):
+        rank_zero_info("reward ckpt %s needs weights_only=False (non-tensor state); loading trusted.", reward_path)
+        ckpt = torch.load(str(reward_path), map_location="cpu", weights_only=False)
+    state = ckpt.get("state_dict", ckpt)
+    reward_sd = {k[len("reward_model."):]: v for k, v in state.items() if k.startswith("reward_model.")}
+    if not reward_sd:
+        raise ValueError(
+            f"No 'reward_model.*' keys in {reward_path} — not a trained RewardModule checkpoint."
+        )
+    if latent_c is not None:
+        # Fail fast on a channel mismatch BEFORE load_state_dict's cryptic shape error:
+        # the z_K reward is scored unconditionally (in_channels = C_latent), so a 2·C
+        # condition-aware paired-reward ckpt (from manifold-train-paired-reward) is
+        # incompatible. Detect via the first conv's input-channel dim (shape [out, in, ...]).
+        first_conv = reward_sd.get("discriminator.initial_conv.conv.weight")
+        if first_conv is not None and int(first_conv.shape[1]) != latent_c:
+            raise ValueError(
+                f"Reward checkpoint {reward_path} has in_channels={int(first_conv.shape[1])}, "
+                f"but the z_K reward is scored unconditionally and needs a single-latent reward "
+                f"(in_channels={latent_c}). This looks like a 2·C condition-aware paired-reward "
+                "ckpt (manifold-train-paired-reward); the ControlNet policy does NOT concat x_src "
+                "into the reward (the policy x0 sees x_src instead). Point --reward-path at a "
+                "single-latent RewardModule checkpoint."
+            )
+    reward_model.load_state_dict(reward_sd, strict=True)
+    reward_model.eval().to(device)
+    for p in reward_model.parameters():
+        p.requires_grad_(False)
+    return reward_model
+
+
+def _unet_real_inputs(
+    cfg, native_dir: str, reward_path: str, latents_dir: str, device: torch.device
+) -> GRPOInputs:
+    """Build the real GRPO inputs for a raw JiT export (the trainable-UNet policy).
+
+    The raw-arm JiT UNet path, selected by :func:`_real_inputs` when the native
+    export is NOT a ControlNet export. The raw-arm JiT UNet (ADR-0006:
+    ``export_to_native`` bakes the raw ``state_dict`` weights) is the **trainable**
+    policy. The trained :class:`RewardModel` (a ``RewardModule`` Lightning checkpoint
+    — its ``reward_model.*`` state_dict) is the **frozen** reward. The latent cache
     furnishes the manifold conditioning (``{spacing, label}`` — GRPO is generative, so
     there is no clean-latent target) over train subjects AND the fixed real-reference
     latents (val subjects, scaled) the FID callback decodes. The RadImageNet
-    ``feature_net`` completes the FID triple (#58).
+    ``feature_net`` completes the FID triple (#58) — val/fid is meaningful for the
+    UNet policy.
 
     Launch is gated on the ns15 reward clearing ``val/gen_pair_acc > 0.8`` + a
     ``--measure`` run on the target cluster (#59) — not exercisable here (no real
@@ -522,7 +635,6 @@ def _real_inputs(
 
     from ..data.reward_pairs import load_cached_latents, partition_subjects
     from ..metrics import make_feature_network
-    from ..models.reward_model import RewardModel
     from ..pipelines.latent_flow import LatentFlowPipeline
 
     # 1. Raw-arm JiT UNet (the trainable policy) + VAE (carries scaling_factor).
@@ -541,35 +653,9 @@ def _real_inputs(
     # The reward_model architecture comes from the network config (``-t``) — opt()
     # falls back to the RewardModel defaults if a non-standard network file omits it.
     reward_cfg = opt(cfg, "reward_model", {})
-    reward_model = RewardModel(
-        spatial_dims=int(opt(reward_cfg, "spatial_dims", 3)),
-        in_channels=int(opt(reward_cfg, "in_channels", 4)),
-        channels=int(opt(reward_cfg, "channels", 64)),
-        num_layers_d=int(opt(reward_cfg, "num_layers_d", 3)),
-        norm=str(opt(reward_cfg, "norm", "BATCH")),
+    reward_model = _load_frozen_reward(
+        cfg, reward_path, device, in_channels=int(opt(reward_cfg, "in_channels", 4))
     )
-    # weights_only=True first (no arbitrary-code-execution risk); fall back to False
-    # only for the weights_only restriction itself (non-allowlisted globals in a full
-    # Lightning ckpt's callback/optimizer state), NOT for file/IO errors (which must
-    # surface). reward_path is the user's OWN trained reward (trusted — mirroring
-    # export_to_native; never point this at an untrusted .ckpt).
-    import pickle
-
-    try:
-        ckpt = torch.load(str(reward_path), map_location="cpu", weights_only=True)
-    except (pickle.UnpicklingError, ValueError):
-        rank_zero_info("reward ckpt %s needs weights_only=False (non-tensor state); loading trusted.", reward_path)
-        ckpt = torch.load(str(reward_path), map_location="cpu", weights_only=False)
-    state = ckpt.get("state_dict", ckpt)
-    reward_sd = {k[len("reward_model."):]: v for k, v in state.items() if k.startswith("reward_model.")}
-    if not reward_sd:
-        raise ValueError(
-            f"No 'reward_model.*' keys in {reward_path} — not a trained RewardModule checkpoint."
-        )
-    reward_model.load_state_dict(reward_sd, strict=True)
-    reward_model.eval().to(device)
-    for p in reward_model.parameters():
-        p.requires_grad_(False)
 
     # 3. Conditioning ({spacing, label}) + real_latents (val subjects, scaled) from cache.
     subject_regex = opt(cfg, "grpo.subject_regex", None)
@@ -650,29 +736,31 @@ def _real_inputs(
     )
 
 
-def _real_inputs_mode2(
+def _controlnet_real_inputs(
     cfg, native_dir: str, reward_path: str, latents_dir: str, device: torch.device
 ) -> GRPOInputs:
-    """Build the real Mode-2 GRPO inputs (frozen base + trainable ControlNet) (#143).
+    """Build the real GRPO inputs for a ControlNet export (frozen base + trainable ControlNet).
 
-    Mirrors ``controlnet_cli._real_inputs``'s paired-input construction, but starts
-    GRPO from a **supervised ControlNet export** (ADR-0027 stage 1 → ADR-0028 Mode-2):
+    The ControlNet path, selected by :func:`_real_inputs` when the native export IS a
+    ControlNet export. Mirrors ``controlnet_cli._real_inputs``'s paired-input
+    construction, but starts GRPO from a **supervised ControlNet export**
+    (ADR-0027 stage 1):
 
     - ``--native-dir`` is the **ControlNet native export** (frozen base UNet +
       ControlNet + VAE + scheduler — the layout ``ControlNetLatentFlowPipeline``
       writes / #144 bakes). ``load_frozen_controlnet_generator`` loads both arms
-      frozen; we then **unfreeze the ControlNet** (the only trainable arm in Mode-2)
-      and keep the base UNet frozen (``requires_grad_(False)`` — the GRPOModule also
-      holds it unregistered, off the optimizer/checkpoint).
+      frozen; we then **unfreeze the ControlNet** (the only trainable arm) and keep
+      the base UNet frozen (``requires_grad_(False)`` — the GRPOModule also holds it
+      unregistered, off the optimizer/checkpoint).
     - The conditioning is the **paired** latent cache (``--latents-dir``): each batch
       carries ``{src_latent, src_label, tgt_label, spacing}`` (the ControlNet control
       signal + the translation direction). Warmed over the paired train/val split via
       the same ``paired_train`` cache as the reward/supervised stages.
     - The reward scores the terminal latent ``z_K`` **unconditionally** — the same
-      single-latent reward (``in_channels = C_latent``) Mode-1 uses, loaded from a
-      ``RewardModule`` ``.ckpt``. Mode-2 does NOT use the 2·C condition-aware paired
-      reward: the ControlNet's conditional fidelity is driven by the policy x0 (which
-      sees ``x_src``), not by the reward input.
+      single-latent reward (``in_channels = C_latent``) the UNet path uses, loaded
+      from a ``RewardModule`` ``.ckpt``. The ControlNet policy does NOT use the 2·C
+      condition-aware paired reward: its conditional fidelity is driven by the policy
+      x0 (which sees ``x_src``), not by the reward input.
 
     Scale-consistency (ADR-0021): scale-on-read uses the ControlNet export's
     ``vae.scaling_factor`` verbatim (never re-estimated).
@@ -684,7 +772,6 @@ def _real_inputs_mode2(
     from ..data.paired_latent_dataset import PairedLatentDataset
     from ..data.paired_manifests import _train_val_manifests
     from ..data.paired_volume_dataset import PairedNiftiVolumeDataset
-    from ..models.reward_model import RewardModel
     from ..schedulers.scheduling_flow_match_grpo import FlowMatchGRPOScheduler
     from .controlnet_inputs import load_frozen_controlnet_generator
 
@@ -697,14 +784,26 @@ def _real_inputs_mode2(
         p.requires_grad_(False)  # the base stays frozen (held unregistered by GRPOModule)
     controlnet.to(device)
     for p in controlnet.parameters():
-        p.requires_grad_(True)  # the ControlNet is the only Mode-2 trainable arm
+        p.requires_grad_(True)  # the ControlNet is the only trainable arm
     # The frozen KL anchor (ADR-0015): a deepcopy of the initial (base, controlnet)
     # pair taken BEFORE any GRPO update. The recipe enables kl_coef (anti-reward-hacking);
     # without this reference the GRPOModule's _transition_kl early-returns and the
     # anchor silently disables (codex #151 P1). The Module freezes + unregisters both.
     reference_policy = (copy.deepcopy(base), copy.deepcopy(controlnet))
 
-    # 2. Paired conditioning: the paired train/val split warmed from the paired latent
+    # 2. Reward (frozen) from its RewardModule Lightning checkpoint — validated BEFORE
+    # the (expensive) paired cache warm so a bad reward ckpt fails fast (codex #151 /
+    # issue #177 AC7). The ControlNet policy scores the terminal latent z_K
+    # UNCONDITIONALLY (reward(z_K), in_channels = C_latent) — the same single-latent
+    # reward the UNet path uses, NOT the 2·C condition-aware paired reward. The
+    # ControlNet's conditional fidelity is driven by the policy x0 (which sees x_src),
+    # not by the reward input. latent_c is validated against the single-latent contract.
+    latent_c = int(opt(cfg, "latent_channels", 4))
+    reward_model = _load_frozen_reward(
+        cfg, reward_path, device, in_channels=latent_c, latent_c=latent_c
+    )
+
+    # 3. Paired conditioning: the paired train/val split warmed from the paired latent
     # cache. The cache carries UNSCALED latents; scale-on-read uses the export factor.
     inf_cfg = cfg.diffusion_unet_inference
     target_dim = tuple(int(d) for d in inf_cfg.dim)
@@ -730,7 +829,7 @@ def _real_inputs_mode2(
     train_manifest, val_manifest = _train_val_manifests(cfg, manifest)
     if not val_manifest:
         raise ValueError(
-            "Mode-2 GRPO needs a held-out val split (val_data_base_dir set, or "
+            "The ControlNet GRPO path needs a held-out val split (val_data_base_dir set, or "
             "val_fraction > 0); train data is never reused as val."
         )
 
@@ -751,7 +850,7 @@ def _real_inputs_mode2(
 
     # The paired cache is keyed by sample_id + cache_tag (NOT target_dim), so a
     # --latents-dir pointing at a cache warmed at a DIFFERENT target_dim silently
-    # reuses wrong-shape src latents — the Mode-2 ControlNet then fails at the first
+    # reuses wrong-shape src latents — the ControlNet then fails at the first
     # forward (its sampled rollout shape != the cached src shape). Mirror the
     # every-entry shape check paired_reward_cli._real_inputs uses (codex #151 P2):
     # validate EVERY unique latent's spatial shape (both splits) against this
@@ -767,7 +866,7 @@ def _real_inputs_mode2(
                 if cached_spatial != expected_spatial:
                     raise ValueError(
                         f"Cached paired latent ({split_name}, {sid}) spatial shape "
-                        f"{cached_spatial} does not match the Mode-2 recipe's "
+                        f"{cached_spatial} does not match the ControlNet recipe's "
                         f"target_dim={target_dim} / divisor={divisor} = {expected_spatial} "
                         f"(ceil). The paired cache was built with a different target_dim "
                         f"(or is a mixed/partial cache); point --latents-dir at a matching "
@@ -793,56 +892,8 @@ def _real_inputs_mode2(
                 "tgt_label": torch.as_tensor(item["tgt_label"], dtype=torch.long),
             }
 
-    # 3. Reward (frozen) from its RewardModule Lightning checkpoint. Mode-2 scores the
-    # terminal latent z_K UNCONDITIONALLY (reward(z_K), in_channels = C_latent) — the
-    # same single-latent reward Mode-1 uses, NOT the 2·C condition-aware paired reward.
-    # The ControlNet's conditional fidelity is driven by the policy x0 (which sees
-    # x_src), not by the reward input. weights_only=True first; fall back to False only
-    # for the weights_only restriction (mirrors _real_inputs).
-    latent_c = int(opt(cfg, "latent_channels", 4))
-    reward_cfg = opt(cfg, "reward_model", {})
-    reward_model = RewardModel(
-        spatial_dims=int(opt(reward_cfg, "spatial_dims", 3)),
-        in_channels=latent_c,
-        channels=int(opt(reward_cfg, "channels", 64)),
-        num_layers_d=int(opt(reward_cfg, "num_layers_d", 3)),
-        norm=str(opt(reward_cfg, "norm", "BATCH")),
-    )
-    import pickle
-
-    try:
-        ckpt = torch.load(str(reward_path), map_location="cpu", weights_only=True)
-    except (pickle.UnpicklingError, ValueError):
-        rank_zero_info("reward ckpt %s needs weights_only=False; loading trusted.", reward_path)
-        ckpt = torch.load(str(reward_path), map_location="cpu", weights_only=False)
-    state = ckpt.get("state_dict", ckpt)
-    reward_sd = {k[len("reward_model."):]: v for k, v in state.items() if k.startswith("reward_model.")}
-    if not reward_sd:
-        raise ValueError(
-            f"No 'reward_model.*' keys in {reward_path} — not a trained RewardModule checkpoint."
-        )
-    # Fail fast on a channel mismatch BEFORE load_state_dict's cryptic shape error:
-    # Mode-2 scores z_K unconditionally (in_channels = C_latent), so a 2·C
-    # condition-aware paired-reward ckpt (from manifold-train-paired-reward) is
-    # incompatible here — it must be used with the paired-reward path, not Mode-2.
-    # Detect via the first conv's input-channel dim (shape [out, in, kD, kH, kW]).
-    first_conv = reward_sd.get("discriminator.initial_conv.conv.weight")
-    if first_conv is not None and int(first_conv.shape[1]) != latent_c:
-        raise ValueError(
-            f"Reward checkpoint {reward_path} has in_channels={int(first_conv.shape[1])}, "
-            f"but Mode-2 scores z_K unconditionally and needs a single-latent reward "
-            f"(in_channels={latent_c}). This looks like a 2·C condition-aware paired-reward "
-            "ckpt (manifold-train-paired-reward) — Mode-2 intentionally does NOT concat "
-            "x_src into the reward (the policy x0 sees x_src instead). Point --reward-path "
-            "at a single-latent (Mode-1-style) RewardModule checkpoint."
-        )
-    reward_model.load_state_dict(reward_sd, strict=True)
-    reward_model.eval().to(device)
-    for p in reward_model.parameters():
-        p.requires_grad_(False)
-
     # 4. GRPO scheduler preserving the export's transport settings (t_eps /
-    # num_train_timesteps); only eta is the GRPO addition (mirrors _real_inputs).
+    # num_train_timesteps); only eta is the GRPO addition (mirrors _unet_real_inputs).
     sched_cfg = base_scheduler.config
     scheduler = FlowMatchGRPOScheduler(
         num_train_timesteps=int(sched_cfg.get("num_train_timesteps", 1000)),
@@ -852,12 +903,12 @@ def _real_inputs_mode2(
 
     latent_shape = tuple(int(s) for s in opt(cfg.grpo_train, "latent_shape", [4, 64, 64, 32]))
     rank_zero_info(
-        "GRPO Mode-2 real inputs: frozen base + trainable ControlNet (%d train / %d val "
+        "GRPO ControlNet real inputs: frozen base + trainable ControlNet (%d train / %d val "
         "paired conditioning); reward on z_K (in_channels=%d); scale_factor=%.6f (export).",
         len(train_ds), len(val_ds), latent_c, float(scaling_factor),
     )
     return GRPOInputs(
-        policy=base,  # the FROZEN base (GRPOModule holds it unregistered in Mode-2)
+        policy=base,  # the FROZEN base (GRPOModule holds it unregistered on the ControlNet path)
         reward_model=reward_model,
         scheduler=scheduler,
         train_ds=_PairedCondDS(train_ds),
@@ -865,6 +916,6 @@ def _real_inputs_mode2(
         latent_shape=latent_shape,
         reference_policy=reference_policy,  # the (base, controlnet) KL anchor (ADR-0015)
         controlnet=controlnet,  # the ONLY trainable arm
-        # No FID triple: Mode-2 selects on val/mean_reward (the unconditional FID would
-        # be a constant frozen-base metric — see run_grpo_training's mode2 skip).
+        # No FID triple: the ControlNet path selects on val/mean_reward (the unconditional
+        # FID would be a constant frozen-base metric — see run_grpo_training's controlnet skip).
     )

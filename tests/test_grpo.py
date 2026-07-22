@@ -1332,11 +1332,11 @@ def test_mode2_conditioning_reads_src_tgt_labels():
     assert torch.equal(tgt_labels, torch.tensor([2, 3]))
 
 
-# -- Mode-2 CLI entry point (#141): --grpo-mode 2 on the GRPO entry point --------
+# -- the ControlNet policy via the CLI seam (no --grpo-mode flag; #177) ---------
 
 
 class _ToyPairedCondDS(Dataset):
-    """A tiny PAIRED conditioning dataset for Mode-2 (train/val).
+    """A tiny PAIRED conditioning dataset for the ControlNet policy (train/val).
 
     Emits ``{spacing, src_latent, src_label, tgt_label}`` — the ControlNet's control
     signal + translation direction. GRPO samples the group noise; the paired batch
@@ -1359,7 +1359,7 @@ class _ToyPairedCondDS(Dataset):
 
 
 def _mode2_inputs():
-    """Mode-2 injection-seam bundle: frozen base + trainable ControlNet + reward + paired conditioning."""
+    """ControlNet injection-seam bundle: frozen base + trainable ControlNet + reward + paired conditioning."""
     from manifold.training.grpo_cli import GRPOInputs
 
     base = _mode2_base()
@@ -1375,21 +1375,20 @@ def _mode2_inputs():
     )
 
 
-def test_main_runs_end_to_end_mode2(tmp_path):
-    """main() ``--grpo-mode 2``: the ControlNet path runs end-to-end via the CLI seam.
+def test_main_runs_end_to_end_controlnet_policy(tmp_path):
+    """main() trains the ControlNet policy end-to-end via the CLI seam — no ``--grpo-mode``.
 
-    The Mode-2 entry-point acceptance (#141): ``--grpo-mode 2`` freezes the base
-    UNet and trains the ControlNet against the frozen reward on z_K. The
-    data_provider injects a frozen base + trainable ControlNet + paired conditioning;
-    main wires ``controlnet`` / ``freeze_unet`` into GRPOModule (the --grpo-mode
-    flag's load-bearing path) and writes a checkpoint.
+    Issue #177: the policy is inferred from the inputs, not a flag. The data_provider
+    injects a frozen base + trainable ControlNet + paired conditioning; main derives
+    ``controlnet`` / ``freeze_unet`` from ``GRPOInputs.controlnet`` and writes a
+    checkpoint. No ``--grpo-mode`` argument is passed (the flag is gone).
     """
     from manifold.training.grpo_cli import main as grpo_main
 
     env, train, net = _write_tiny_configs(tmp_path)
     rc = grpo_main(
         ["-e", env, "-c", train, "-t", net, "-g", "1", "--max-epochs", "1",
-         "--grpo-mode", "2", "grpo_train.latent_shape=[4,16,16,8]"],
+         "grpo_train.latent_shape=[4,16,16,8]"],
         data_provider=lambda cfg, device: _mode2_inputs(),
     )
     assert rc == 0
@@ -1397,35 +1396,19 @@ def test_main_runs_end_to_end_mode2(tmp_path):
     assert any(p.name == "last.ckpt" for p in ckpts)
 
 
-def test_main_mode2_requires_controlnet(tmp_path):
-    """``--grpo-mode 2`` without a ControlNet (Mode-1 inputs) fails fast at main.
-
-    The Mode-2 guard: ``--grpo-mode 2`` requires ``GRPOInputs.controlnet`` (the data
-    provider / real inputs must supply it); Mode-1 inputs have none.
-    """
-    from manifold.training.grpo_cli import main as grpo_main
-
-    env, train, net = _write_tiny_configs(tmp_path)
-    with pytest.raises(ValueError, match="ControlNet"):
-        grpo_main(
-            ["-e", env, "-c", train, "-t", net, "-g", "1", "--grpo-mode", "2"],
-            data_provider=lambda cfg, device: _inputs(),  # Mode-1 inputs — no controlnet
-        )
-
-
-def test_run_grpo_training_mode2_skips_unconditional_fid(tmp_path):
-    """Regression (codex #142): Mode-2 skips the unconditional FID and monitors
-    ``val/mean_reward`` even when the FID triple is present.
+def test_run_grpo_training_skips_unconditional_fid_when_controlnet_present(tmp_path):
+    """Regression (codex #142): the ControlNet policy skips the unconditional FID and
+    monitors ``val/mean_reward`` even when the FID triple is present.
 
     The base UNet is frozen and only the ControlNet trains, but FIDCallback's
     unconditional ``module.sample()`` rollout ignores the ControlNet — so val/fid
     would be a CONSTANT frozen-base metric, independent of the learned policy.
-    ``run_grpo_training`` must not attach it in Mode-2.
+    ``run_grpo_training`` must not attach it when the ControlNet is present.
     """
     from manifold.modules import GRPOModule
     from manifold.training.grpo_cli import GRPOInputs, run_grpo_training
 
-    class _FakeVAE:  # FID triple present — would force fid_active=True in Mode-1
+    class _FakeVAE:  # FID triple present — would force fid_active=True without the controlnet
         pass
 
     base = _mode2_base()
@@ -1454,23 +1437,23 @@ def test_run_grpo_training_mode2_skips_unconditional_fid(tmp_path):
     from manifold.metrics import FIDCallback
 
     assert not any(isinstance(c, FIDCallback) for c in trainer.callbacks), (
-        "FIDCallback attached in Mode-2 — a constant frozen-base metric"
+        "FIDCallback attached with the ControlNet present — a constant frozen-base metric"
     )
     assert ckpt.monitor == "val/mean_reward"
 
 
-def test_run_grpo_training_mode2_callback_override_drops_fid(tmp_path, monkeypatch):
-    """Issue #165: a Mode-2 ``--callbacks fid`` (or YAML) override is force-removed
-    POST-merge by the spine's forbidden_callbacks — FID stays off, the checkpoint
-    keeps monitoring ``val/mean_reward`` (max), and the drop is loudly logged. The
-    guard is therefore not only at default-derivation.
+def test_run_grpo_training_controlnet_callback_override_drops_fid(tmp_path, monkeypatch):
+    """Issue #165: a ``--callbacks fid`` (or YAML) override is force-removed POST-merge
+    by the spine's forbidden_callbacks when the ControlNet is present — FID stays off,
+    the checkpoint keeps monitoring ``val/mean_reward`` (max), and the drop is loudly
+    logged. The guard is therefore not only at default-derivation.
     """
     import manifold.training.core as core
     from manifold.metrics import FIDCallback
     from manifold.modules import GRPOModule
     from manifold.training.grpo_cli import GRPOInputs, run_grpo_training
 
-    class _FakeVAE:  # FID triple present — would force fid_active=True in Mode-1
+    class _FakeVAE:  # FID triple present — would force fid_active=True without the controlnet
         pass
 
     base = _mode2_base()
@@ -1512,7 +1495,7 @@ def test_run_grpo_training_mode2_callback_override_drops_fid(tmp_path, monkeypat
     )
 
     assert not any(isinstance(c, FIDCallback) for c in trainer.callbacks), (
-        "Mode-2 --callbacks fid override re-enabled FID — a constant frozen-base metric"
+        "ControlNet --callbacks fid override re-enabled FID — a constant frozen-base metric"
     )
     assert ckpt.monitor == "val/mean_reward"
     assert ckpt.mode == "max"
@@ -1524,13 +1507,104 @@ def test_run_grpo_training_mode2_callback_override_drops_fid(tmp_path, monkeypat
     )
 
 
-# -- the real _real_inputs_mode2 CLI path (#143) ------------------------------
+# -- the native-artifact discriminator (#177, ADR-0034) ------------------------
 #
-# Mode-2's real-data path loads the supervised ControlNet export (frozen base +
-# ControlNet) and resolves the paired conditioning split, then constructs a
-# GRPOInputs with controlnet set so main() reaches run_grpo_training without the
-# "requires a ControlNet" guard. The real BraTS + VAE path is cluster-only; these
-# tests fake the manifest / split / warmed cache / reward ckpt (the same seam
+# _detect_controlnet_export reads the native dir's model_index.json (the
+# per-component layout BOTH pipelines write) and keys on a declared ``controlnet``
+# component — INDEPENDENT of load_frozen_controlnet_generator, which ASSUMES
+# ControlNet-ness (it accesses pipe.controlnet directly) and so cannot be the
+# discriminator. A ControlNet export (ControlNetLatentFlowPipeline.save_pretrained)
+# lists a controlnet component + a controlnet/ subdir; a raw JiT export
+# (LatentFlowPipeline.save_pretrained) lists neither. The unified real-input
+# builder calls this BEFORE selecting which path to build (issue #177).
+
+
+def _save_jit_export(native_dir) -> None:
+    """Write a minimal raw-JiT native export (UNet + VAE + scheduler).
+
+    The ControlNet-less counterpart of ``_save_controlnet_export``: the layout
+    ``LatentFlowPipeline.save_pretrained`` writes (model_index.json with no
+    ``controlnet`` component, no ``controlnet/`` subdir).
+    """
+    from manifold import (
+        AutoencoderKL,
+        FlowMatchHeunDiscreteScheduler,
+        LatentFlowPipeline,
+        UNet3DConditionModel,
+    )
+
+    torch.manual_seed(0)
+    unet = UNet3DConditionModel(num_class_embeds=4, include_spacing_input=True)
+    LatentFlowPipeline(
+        unet, AutoencoderKL(scaling_factor=0.5), FlowMatchHeunDiscreteScheduler()
+    ).save_pretrained(str(native_dir))
+
+
+def test_detect_controlnet_export_true_for_controlnet_export(tmp_path):
+    """A ControlNet export (controlnet component declared + subdir) is detected."""
+    from tests.test_paired_reward_real import _save_controlnet_export
+
+    from manifold.training.grpo_cli import _detect_controlnet_export
+
+    _save_controlnet_export(tmp_path / "native")
+    assert _detect_controlnet_export(str(tmp_path / "native")) is True
+
+
+def test_detect_controlnet_export_false_for_raw_jit_export(tmp_path):
+    """A raw JiT export (no controlnet component) is NOT a ControlNet export."""
+    from manifold.training.grpo_cli import _detect_controlnet_export
+
+    _save_jit_export(tmp_path / "native")
+    assert _detect_controlnet_export(str(tmp_path / "native")) is False
+
+
+def test_detect_controlnet_export_false_when_not_a_pipeline_dir(tmp_path):
+    """A dir with no model_index.json is not a ControlNet export.
+
+    Returns False (does not itself raise) so the downstream loader raises its own
+    clear "not a manifold pipeline directory" error — the discriminator only owns
+    the ControlNet-vs-JiT routing, not the is-it-a-pipeline check.
+    """
+    from manifold.training.grpo_cli import _detect_controlnet_export
+
+    (tmp_path / "empty").mkdir()
+    assert _detect_controlnet_export(str(tmp_path / "empty")) is False
+
+
+def test_detect_controlnet_export_fails_fast_when_controlnet_subdir_missing(tmp_path):
+    """AC7: a ControlNet export expected (model_index declares a controlnet
+    component) but the artifact lacks the ``controlnet/`` subdir fails fast with a
+    clear error — not a deep from_pretrained crash, and NOT silently routed to the
+    UNet path (which would mis-train on a corrupt export)."""
+    import json
+
+    from manifold.training.grpo_cli import _detect_controlnet_export
+
+    native = tmp_path / "broken"
+    native.mkdir()
+    (native / "model_index.json").write_text(
+        json.dumps(
+            {
+                "format": "manifold",
+                "pipeline_class": "ControlNetLatentFlowPipeline",
+                "components": {
+                    "unet": "x", "controlnet": "x", "vae": "x", "scheduler": "x",
+                },
+            }
+        )
+    )
+    # No controlnet/ subdir on disk — the export declares ControlNet but ships no weights.
+    with pytest.raises(FileNotFoundError, match="controlnet"):
+        _detect_controlnet_export(str(native))
+
+
+# -- the real _real_inputs CLI path (unified: ControlNet OR UNet) (#143/#177) --
+#
+# The unified real-data builder infers the policy from the native artifact under
+# --native-dir: a ControlNet export (controlnet component) builds the frozen-base +
+# trainable-ControlNet path with paired conditioning; a raw JiT export builds the
+# trainable-UNet path. The real BraTS + VAE path is cluster-only; these tests fake
+# the manifest / split / warmed cache / reward ckpt (the same seam
 # paired_reward_cli's real-inputs test uses).
 
 
@@ -1605,13 +1679,15 @@ def _mode2_cfg(tmp_path):
     )
 
 
-def test_real_inputs_mode2_loads_controlnet_and_builds_paired_conditioning(tmp_path, monkeypatch):
-    """_real_inputs_mode2: frozen base + trainable ControlNet + paired conditioning (#143).
+def test_real_inputs_loads_controlnet_for_controlnet_export(tmp_path, monkeypatch):
+    """_real_inputs: a ControlNet export ⇒ frozen base + trainable ControlNet + paired conditioning.
 
-    Loads the supervised ControlNet export via load_frozen_controlnet_generator,
-    keeps the base frozen, unfreezes ONLY the ControlNet, resolves the paired
-    train/val split, and returns GRPOInputs.controlnet — so main() --grpo-mode 2
-    reaches run_grpo_training without the "requires a ControlNet" guard.
+    The unified builder infers the policy from the native artifact (#177): a
+    ControlNet export (``controlnet`` component in model_index.json) loads the
+    supervised ControlNet export via load_frozen_controlnet_generator, keeps the
+    base frozen, unfreezes ONLY the ControlNet, resolves the paired train/val
+    split, and returns GRPOInputs.controlnet set — so the ControlNet policy is
+    trained with no ``--grpo-mode`` flag.
     """
     from tests.test_paired_reward_real import _save_controlnet_export
 
@@ -1652,12 +1728,12 @@ def test_real_inputs_mode2_loads_controlnet_and_builds_paired_conditioning(tmp_p
     monkeypatch.setattr(pld_mod, "PairedLatentDataset", _FakePLD)
 
     cfg = _mode2_cfg(tmp_path)
-    inputs = grpo_cli._real_inputs_mode2(
+    inputs = grpo_cli._real_inputs(
         cfg, str(tmp_path / "native"), str(tmp_path / "reward.ckpt"),
         str(tmp_path / "cache"), torch.device("cpu"),
     )
 
-    # The ControlNet is supplied (main() won't trip the "requires a ControlNet" guard).
+    # The ControlNet export ⇒ the ControlNet policy (controlnet supplied).
     assert inputs.controlnet is not None
     # Base frozen; the ControlNet is the ONLY trainable arm.
     assert not any(p.requires_grad for p in inputs.policy.parameters())
@@ -1673,9 +1749,9 @@ def test_real_inputs_mode2_loads_controlnet_and_builds_paired_conditioning(tmp_p
     # ADR-0021: both datasets' scaling_factor set to the export's (0.5 in the helper).
     assert len(built) == 2
     assert all(ds.scaling_factor == 0.5 for ds in built), (
-        "_real_inputs_mode2 must set ds.scaling_factor = the export's scaling_factor (ADR-0021)"
+        "_real_inputs must set ds.scaling_factor = the export's scaling_factor (ADR-0021)"
     )
-    # No FID triple in Mode-2 (the unconditional FID is a constant frozen-base metric).
+    # No FID triple on the ControlNet path (the unconditional FID is a constant frozen-base metric).
     assert inputs.vae is None and inputs.real_latents is None and inputs.feature_net is None
     # The KL anchor (ADR-0015): a (base, controlnet) pair snapshot, so the recipe's
     # kl_coef does not silently disable (codex #151 P1). Weight-matched to the loaded
@@ -1688,8 +1764,67 @@ def test_real_inputs_mode2_loads_controlnet_and_builds_paired_conditioning(tmp_p
         assert torch.equal(ref_cn.state_dict()[k], v)
 
 
-def test_real_inputs_mode2_raises_on_no_val_split(tmp_path, monkeypatch):
-    """No held-out val split -> clear ValueError (train never reused as val)."""
+def test_real_inputs_routes_raw_jit_export_to_unet_path(tmp_path, monkeypatch):
+    """_real_inputs: a raw JiT export ⇒ the UNet policy (no ControlNet), the other path.
+
+    The flip side of the ControlNet-export routing (#177 / ADR-0034): a raw JiT
+    export (no ``controlnet`` component) builds the trainable-UNet path —
+    ``controlnet`` is ``None``, the policy UNet is trainable, the FID triple is
+    built (val/fid is meaningful for the UNet policy). The RadImageNet feature net
+    + the latent cache are faked (the real launch is cluster-only); the routing
+    outcome — not the heavy deps — is the assertion.
+    """
+    from manifold.data import reward_pairs
+    from manifold.training import grpo_cli
+
+    import omegaconf
+
+    _save_jit_export(tmp_path / "native")
+    _save_mode2_reward_ckpt(tmp_path / "reward.ckpt", in_channels=4)
+
+    # Fake the latent cache (the raw-JiT path reads conditioning + real-reference
+    # latents from it): 4 subjects, each one latent, val_fraction splits 2 / 2.
+    torch.manual_seed(0)
+    fake_items = [
+        {"spacing": [1.0, 1.0, 1.0], "label": 1, "latent": torch.randn(4, 8, 8, 8)}
+        for _ in range(4)
+    ]
+    fake_subject_ids = [f"s{i}" for i in range(4)]
+    monkeypatch.setattr(
+        reward_pairs, "load_cached_latents", lambda *a, **k: (fake_items, fake_subject_ids)
+    )
+    # Avoid the RadImageNet download (the real launch gate); a dummy feature net.
+    import torch.nn as nn
+
+    monkeypatch.setattr("manifold.metrics.make_feature_network", lambda *a, **k: nn.Identity())
+
+    cfg = omegaconf.OmegaConf.create(
+        {
+            "grpo": {"val_fraction": 0.5, "modality": 1, "spacing": [1.0, 1.0, 1.0]},
+            "reward_model": {"spatial_dims": 3, "in_channels": 4, "channels": 8,
+                             "num_layers_d": 1, "norm": "BATCH"},
+            "val_subset_size": 2,
+            "grpo_train": {"latent_shape": [4, 8, 8, 8], "eta": 0.7},
+            "random_seed": 0,
+        }
+    )
+    inputs = grpo_cli._real_inputs(
+        cfg, str(tmp_path / "native"), str(tmp_path / "reward.ckpt"),
+        str(tmp_path / "cache"), torch.device("cpu"),
+    )
+
+    # Raw JiT export ⇒ the UNet path: no ControlNet, the UNet is the trainable policy.
+    assert inputs.controlnet is None
+    assert any(p.requires_grad for p in inputs.policy.parameters())
+    # The FID triple is built on the UNet path (val/fid is meaningful for the UNet policy).
+    assert inputs.vae is not None and inputs.real_latents is not None and inputs.feature_net is not None
+    # The reward is frozen (shared across both paths).
+    assert not any(p.requires_grad for p in inputs.reward_model.parameters())
+
+
+
+def test_real_inputs_raises_on_no_val_split_controlnet_export(tmp_path, monkeypatch):
+    """ControlNet export, no held-out val split -> clear ValueError (train never reused as val)."""
     from tests.test_paired_reward_real import _save_controlnet_export
 
     from manifold.data import paired_brats as pb
@@ -1707,20 +1842,21 @@ def test_real_inputs_mode2_raises_on_no_val_split(tmp_path, monkeypatch):
 
     cfg = _mode2_cfg(tmp_path)
     with pytest.raises(ValueError, match="val split"):
-        grpo_cli._real_inputs_mode2(
+        grpo_cli._real_inputs(
             cfg, str(tmp_path / "native"), str(tmp_path / "reward.ckpt"),
             str(tmp_path / "cache"), torch.device("cpu"),
         )
 
 
-def test_real_inputs_mode2_rejects_condition_aware_reward_ckpt(tmp_path, monkeypatch):
+def test_real_inputs_rejects_condition_aware_reward_ckpt(tmp_path, monkeypatch):
     """A 2·C condition-aware paired-reward ckpt fails fast with a readable error.
 
-    Mode-2 scores z_K unconditionally (in_channels = C_latent = 4). Passing a
-    2·C paired-reward ckpt (in_channels = 8, from manifold-train-paired-reward)
-    must raise a clear ValueError BEFORE load_state_dict's cryptic shape error
-    (codex #151: the z_K-only reward is an intentional design decision; the check
-    turns the real 2·C-ckpt incompatibility into an actionable message).
+    The ControlNet policy scores z_K unconditionally (in_channels = C_latent = 4).
+    Passing a 2·C paired-reward ckpt (in_channels = 8, from
+    manifold-train-paired-reward) must raise a clear ValueError BEFORE
+    load_state_dict's cryptic shape error (codex #151: the z_K-only reward is an
+    intentional design decision; the check turns the real 2·C-ckpt incompatibility
+    into an actionable message).
     """
     from tests.test_paired_reward_real import _save_controlnet_export
 
@@ -1740,17 +1876,19 @@ def test_real_inputs_mode2_rejects_condition_aware_reward_ckpt(tmp_path, monkeyp
 
     cfg = _mode2_cfg(tmp_path)
     with pytest.raises(ValueError, match="in_channels=8"):
-        grpo_cli._real_inputs_mode2(
+        grpo_cli._real_inputs(
             cfg, str(tmp_path / "native"), str(tmp_path / "reward.ckpt"),
             str(tmp_path / "cache"), torch.device("cpu"),
         )
 
 
-def test_main_mode2_real_path_dispatches_and_builds_controlnet_module(tmp_path, monkeypatch):
-    """main() --grpo-mode 2 dispatches to _real_inputs_mode2 and reaches fit (no guard).
+def test_main_real_path_builds_controlnet_module_when_native_is_controlnet_export(tmp_path, monkeypatch):
+    """main() infers the ControlNet policy from a ControlNet export under --native-dir.
 
-    Exercises the full main() wiring (arg dispatch → _real_inputs_mode2 → GRPOModule
-    with controlnet + freeze_unet → run_grpo_training) with the paired cache faked.
+    The unified real-path acceptance (#177): no ``--grpo-mode`` flag — main() points
+    ``--native-dir`` at a ControlNet export, the builder discriminates and builds the
+    ControlNet path, and main wires ``controlnet`` / ``freeze_unet`` into GRPOModule →
+    run_grpo_training. The paired cache is faked (the real BraTS path is cluster-only).
     """
     from tests.test_paired_reward_real import _save_controlnet_export
 
@@ -1760,10 +1898,10 @@ def test_main_mode2_real_path_dispatches_and_builds_controlnet_module(tmp_path, 
     from manifold.training import grpo_cli
 
     env, train, net = _write_tiny_configs(tmp_path)
-    # Mode-2 requires data_base_dir + the paired/reward config blocks; the tiny configs
-    # already carry model_dir. Point data_base_dir at a throwaway dir and add the
-    # network-side blocks _real_inputs_mode2 reads (inference dim / autoencoder divisor /
-    # reward_model arch / grpo.cache_tag).
+    # The ControlNet path requires data_base_dir + the paired/reward config blocks;
+    # the tiny configs already carry model_dir. Point data_base_dir at a throwaway dir
+    # and add the network-side blocks _controlnet_real_inputs reads (inference dim /
+    # autoencoder divisor / reward_model arch / grpo.cache_tag).
     import omegaconf
     extra_env = omegaconf.OmegaConf.create({"data_base_dir": str(tmp_path)})
     env_cfg = omegaconf.OmegaConf.merge(omegaconf.OmegaConf.load(env), extra_env)
@@ -1808,7 +1946,7 @@ def test_main_mode2_real_path_dispatches_and_builds_controlnet_module(tmp_path, 
 
     rc = grpo_cli.main(
         ["-e", env, "-c", train, "-t", net, "-g", "1", "--max-epochs", "1",
-         "--grpo-mode", "2", "grpo_train.latent_shape=[4,16,16,8]",
+         "grpo_train.latent_shape=[4,16,16,8]",
          "--native-dir", str(tmp_path / "native"),
          "--reward-path", str(tmp_path / "reward.ckpt"),
          "--latents-dir", str(tmp_path / "cache")],
@@ -1838,12 +1976,12 @@ def test_mode2_recipe_resolves_inference_dim():
     assert tuple(int(d) for d in cfg.diffusion_unet_inference.dim) == (256, 256, 128)
 
 
-def test_real_inputs_mode2_rejects_stale_cache_shape(tmp_path, monkeypatch):
+def test_real_inputs_rejects_stale_cache_shape(tmp_path, monkeypatch):
     """A paired cache warmed at a different target_dim -> fail-fast ValueError (codex #151 P2).
 
     The cache key is sample_id + tag (NOT target_dim), so a stale cache silently
-    reuses wrong-shape src latents. _real_inputs_mode2 validates every unique
-    latent's spatial shape against the recipe's target_dim / divisor and raises.
+    reuses wrong-shape src latents. _real_inputs (ControlNet path) validates every
+    unique latent's spatial shape against the recipe's target_dim / divisor and raises.
     """
     from tests.test_paired_reward_real import _save_controlnet_export
 
@@ -1886,7 +2024,7 @@ def test_real_inputs_mode2_rejects_stale_cache_shape(tmp_path, monkeypatch):
 
     cfg = _mode2_cfg(tmp_path)  # dim [128,128,64]; autoencoder [8,8] -> divisor 2 -> (64,64,32)
     with pytest.raises(ValueError, match="Cached paired latent"):
-        grpo_cli._real_inputs_mode2(
+        grpo_cli._real_inputs(
             cfg, str(tmp_path / "native"), str(tmp_path / "reward.ckpt"),
             str(tmp_path / "cache"), torch.device("cpu"),
         )

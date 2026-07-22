@@ -1,16 +1,17 @@
 """ControlNet-GRPO input-assembly helpers.
 
 Owns the frozen-ControlNet-generator loader consumed by the GRPO real-input path
-(the ControlNet-GRPO policy loader, :func:`~manifold.training.grpo_cli._real_inputs_mode2`
-- Mode-2). Relocated from ``manifold.data.paired_reward_pairs`` (issue #176,
-ADR-0034 prefactor) so the about-to-be-deleted paired-reward pairs builder can be
-dropped (#174) without taking the loader with it; the loader's only consumer after
-the paired-reward pipeline's deletion is this GRPO real-input path.
+(the ControlNet-GRPO policy loader, :func:`~manifold.training.grpo_cli._controlnet_real_inputs`
+— the ControlNet path of the unified builder). Relocated from
+``manifold.data.paired_reward_pairs`` (issue #176, ADR-0034 prefactor) so the
+about-to-be-deleted paired-reward pairs builder can be dropped (#174) without taking
+the loader with it; the loader's only consumer after the paired-reward pipeline's
+deletion is this GRPO real-input path.
 
 The loader assumes the native dir is a ControlNet export (it accesses the
 pipeline's ``controlnet`` component directly) and therefore **cannot** be used as
-the discriminator for "is this a ControlNet export?" - the real-input unification
-ticket builds that discriminator separately.
+the discriminator for "is this a ControlNet export?" - the unified builder builds
+that discriminator separately (:func:`~manifold.training.grpo_cli._detect_controlnet_export`).
 """
 
 from __future__ import annotations
@@ -30,14 +31,15 @@ def load_frozen_controlnet_generator(native_dir: str | Path):
     :meth:`~manifold.ControlNetLatentFlowPipeline.save_pretrained` (the raw arm, no
     EMA). The generator is the **supervised ControlNet's** noise->data policy: a
     **frozen base UNet** + a **frozen ControlNet** whose residuals steer it. Its
-    only consumer is the GRPO real-input path (Mode-2,
-    :func:`~manifold.training.grpo_cli._real_inputs_mode2`), which loads both arms
-    frozen and then unfreezes the ControlNet as the only trainable arm.
+    only consumer is the GRPO real-input ControlNet path
+    (:func:`~manifold.training.grpo_cli._controlnet_real_inputs`), which loads both
+    arms frozen and then unfreezes the ControlNet as the only trainable arm.
 
     - The scheduler is the **base** :class:`FlowMatchHeunDiscreteScheduler` (the
-      Mode-2 generation is a full ``0 -> 1`` rollout), NOT the Partial subclass.
+      ControlNet-path generation is a full ``0 -> 1`` rollout), NOT the Partial
+      subclass.
     - Both arms come back frozen + eval + grad-disabled (the caller unfreezes the
-      ControlNet for Mode-2 training). The VAE's ``scaling_factor`` is returned so
+      ControlNet for training). The VAE's ``scaling_factor`` is returned so
       callers scale the raw paired-cache src latents into the generator's training
       space (ADR-0021).
 
@@ -49,8 +51,8 @@ def load_frozen_controlnet_generator(native_dir: str | Path):
     from ..pipelines.controlnet_latent_flow import ControlNetLatentFlowPipeline
 
     pipe = ControlNetLatentFlowPipeline.from_pretrained(str(native_dir))
-    # The base scheduler (NOT the Partial subclass): the Mode-2 generation is a
-    # full 0->1 rollout.
+    # The base scheduler (NOT the Partial subclass): the ControlNet-path generation
+    # is a full 0->1 rollout.
     scheduler = FlowMatchHeunDiscreteScheduler(**pipe.scheduler.config)
     scaling_factor = float(pipe.vae.scaling_factor)
     pipe.unet.eval()

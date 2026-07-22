@@ -1,17 +1,17 @@
-# ControlNet GRPO recipe preset — ADR-0028 Mode-2. Post-trains the supervised
-# ControlNet (stage 1, ADR-0027) against the condition-aware paired reward, with
-# the base UNet FROZEN (only the ControlNet is optimized). Composed with a
-# BraTS2023 env + the network config (latent metadata). The train/val sets carry
-# PAIRED conditioning (src_latent / src_label / tgt_label — the ControlNet's
-# control signal + translation direction); the rollout samples the group noise.
+# ControlNet GRPO recipe preset — ADR-0034. Post-trains the supervised ControlNet
+# (stage 1, ADR-0027) against the shared unconditional realism reward, with the base
+# UNet FROZEN (only the ControlNet is optimized). Composed with a BraTS2023 env + the
+# network config (latent metadata). The train/val sets carry PAIRED conditioning
+# (src_latent / src_label / tgt_label — the ControlNet's control signal + translation
+# direction); the rollout samples the group noise.
 #
-# Consumed by ``manifold-train-grpo --grpo-mode 2``. Selecting Mode-2 on the GRPO
-# entry point freezes the base UNet and steers the Granular-GRPO singular-branch
-# update of the ControlNet residuals (ADR-0028); Mode-1 (default) trains the UNet
-# policy and uses ``config_grpo.yaml``. The same ``--native-dir`` / ``--reward-path``
-# / ``--latents-dir`` launch args apply; ``--native-dir`` points at the ControlNet
-# native export (the supervised stage's output) which furnishes the base + the
-# ControlNet warm-start.
+# Consumed by ``manifold-train-grpo``. The policy is inferred from ``--native-dir``
+# (ADR-0034, no ``--grpo-mode`` flag): pointing it at the ControlNet native export (the
+# supervised stage's output, which furnishes the base + the ControlNet warm-start)
+# freezes the base UNet and steers the Granular-GRPO singular-branch update of the
+# ControlNet residuals; pointing it at a raw JiT export trains the UNet policy and uses
+# ``config_grpo.yaml``. The same ``--native-dir`` / ``--reward-path`` / ``--latents-dir``
+# launch args apply.
 
 grpo_train:
   batch_size: 2
@@ -55,9 +55,9 @@ grpo:
   spacing: [1.0, 1.0, 1.0]  # the FID generation recipe's voxel spacing.
 
 # The paired latent target shape + voxel spacing (the BraTS volume the VAE encodes
-# each unique contrast of). ``_real_inputs_mode2`` reads ``dim`` for the paired
+# each unique contrast of). ``_controlnet_real_inputs`` reads ``dim`` for the paired
 # cache's target_dim / divisor geometry (it must match the cache the supervised
-# stage warmed, ADR-0021/0022); without it the real Mode-2 launch raises
+# stage warmed, ADR-0021/0022); without it the real ControlNet-path launch raises
 # ConfigAttributeError before loading the cache (codex #151).
 diffusion_unet_inference:
   dim: [256, 256, 128]          # volume target shape [D, H, W] (the VAE encodes to latent // divisor)
