@@ -9,13 +9,14 @@ supervised ControlNet job is the first stage of the two-stage ControlNet pipelin
 train the ControlNet on the frozen base to translate ``x_src`` → ``x_tgt`` before
 any GRPO (stage 2 runs via ``manifold-train-grpo --grpo-mode 2``).
 
-The integration core :func:`run_controlnet_training` (Module + datamodule +
-callbacks + ``ModelCheckpoint`` + ``build_trainer`` + ``fit``) is split out so a
-tiny CPU smoke can drive it with a fake base + ControlNet + toy paired batches (the
-issue's testing seam) instead of the real JiT checkpoint + BraTS data. The
-real-data launch path (loading the frozen JiT base from ``--native-dir``, warming
-the paired cache from ``--latents-dir``) is gated on those artifacts existing on
-the cluster; the ``data_provider`` seam ships here for the CPU smoke.
+The integration core :func:`run_controlnet_training` preserves the ControlNet-specific
+paired datamodule assembly, then delegates callback construction, ``Trainer`` setup,
+and ``fit`` to :class:`TrainingSpine`. A tiny CPU smoke can drive it with a fake
+base + ControlNet + toy paired batches (the issue's testing seam) instead of the
+real JiT checkpoint + BraTS data. The real-data launch path (loading the frozen JiT
+base from ``--native-dir`` and warming the paired cache from ``--latents-dir``)
+requires those paths on the real branch; the ``data_provider`` seam ships here for
+the CPU smoke.
 """
 
 from __future__ import annotations
@@ -42,9 +43,10 @@ except ImportError:  # pragma: no cover
 from ..config import opt
 from ..data.datamodule import build_datamodule
 from ..modules.controlnet_latent_flow import ControlNetLatentFlowModule
-from manifold.training.callbacks import CallbackContext, CheckpointSpec
-from .metrics import LatentX0MAE, TrainLossLogger
-from .trainer import build_trainer
+from manifold.config import resolve_callback_names
+from manifold.training.callbacks import CallbackContext, CheckpointSpec, TrainLossSpec
+from manifold.training.core import TrainingSpine
+from manifold.training.metrics import LatentX0MAE
 
 
 @dataclass
@@ -74,24 +76,6 @@ class ControlNetInputs:
     warm_fn: Any = None
 
 
-def _ckpt(
-    model_dir: str,
-    *,
-    monitor_metric: str = "val/x0_mae",
-    save_top_k: int = 3,
-) -> ModelCheckpoint:
-    """A ``ModelCheckpoint`` via :class:`CheckpointSpec` (ADR-0029)."""
-    return CheckpointSpec(
-        monitor_metric=monitor_metric,
-        save_top_k=save_top_k,
-        mode="min",
-        filename=f"controlnet-{{epoch:03d}}-{{{monitor_metric}:.3f}}",
-    ).build(CallbackContext(
-        module=None, vae=None, datamodule=None, inference_recipe=None,
-        model_dir=model_dir, seed=0,
-    ))
-
-
 def run_controlnet_training(
     *,
     module: ControlNetLatentFlowModule,
@@ -106,12 +90,15 @@ def run_controlnet_training(
     seed: int = 0,
     ckpt_path: str | None = None,
     limit_val_batches: int | float = 1.0,
+    callback_names: list[str] | None = None,
+    callback_cfg: dict[str, dict] | None = None,
 ) -> tuple[pl.Trainer, ModelCheckpoint]:
-    """Assemble callbacks + ``Trainer`` and ``fit`` the ControlNet module (the core seam).
+    """Build the paired datamodule, then delegate training to ``TrainingSpine``.
 
-    Builds the train-metrics + latent-x0-MAE callbacks + a stock
-    ``ModelCheckpoint`` and runs ``Trainer.fit`` on the paired datamodule. Returns
-    ``(trainer, ckpt)`` so callers can find the written ``.ckpt``.
+    The shell preserves the legacy train-loss, latent-x0-MAE, and monitored
+    checkpoint callback set. ``TrainingSpine`` owns registry resolution, callback
+    construction, ``Trainer`` setup, and ``fit``; this function returns its
+    ``(trainer, ckpt)`` result unchanged.
 
     Args:
         inputs: the frozen base + ControlNet + scheduler + the paired train/val datasets.
@@ -119,18 +106,11 @@ def run_controlnet_training(
             latent-cache warm runs inside ``DataModule.setup()`` (issue #145 — post-PG,
             per-rank sharded); otherwise they are pre-warmed (the smoke/parity path).
         ckpt_path: optional warm-start / resume checkpoint passed to ``fit``.
+        callback_names: optional resolved callback-name replacement from YAML or
+            ``--callbacks``.
+        callback_cfg: optional callback knob overrides merged over shell defaults.
     """
     pl.seed_everything(seed, workers=True)
-    callbacks: list[pl.Callback] = [TrainLossLogger(), LatentX0MAE()]
-    # val/x0_mae is globally reduced under DDP (LatentX0MAE logs a sample-weighted
-    # MeanMetric), so the monitored checkpoint stays on under multi-GPU (issue #146)
-    # — no save_top_k=1 degradation.
-    ckpt = _ckpt(
-        model_dir,
-        monitor_metric="val/x0_mae",
-        save_top_k=save_top_k,
-    )
-    callbacks.append(ckpt)
     if inputs.warm_fn is not None:
         # Cold path (issue #145 / ADR-0017): defer the paired latent-cache warm into
         # DataModule.setup() so it runs per-rank after DDP spawn (the warm_cache
@@ -158,16 +138,48 @@ def run_controlnet_training(
             val_dataset=inputs.val_ds,
             num_workers=num_workers,
         )
-    trainer = build_trainer(
+    cfg_built: dict[str, dict] = {
+        "checkpoint": {
+            "monitor_metric": "val/x0_mae",
+            "mode": "min",
+            "save_top_k": save_top_k,
+        }
+    }
+    for name, knobs in (callback_cfg or {}).items():
+        cfg_built.setdefault(name, {}).update(knobs)
+    effective_monitor = cfg_built["checkpoint"]["monitor_metric"]
+    if cfg_built["checkpoint"].get("filename") is None:
+        cfg_built["checkpoint"]["filename"] = (
+            f"controlnet-{{epoch:03d}}-{{{effective_monitor}:.3f}}"
+            if effective_monitor is not None
+            else "controlnet-{epoch:03d}"
+        )
+    spine = TrainingSpine()
+    spine.registry.register("train_loss", TrainLossSpec)
+    spine.registry.register("checkpoint", CheckpointSpec)
+    ctx = CallbackContext(
+        module=module,
+        vae=inputs.vae,
+        datamodule=datamodule,
+        inference_recipe=None,
+        model_dir=model_dir,
+        seed=seed,
+    )
+    return spine.run(
+        module=module,
+        datamodule=datamodule,
+        ctx=ctx,
+        default_names=["train_loss", "checkpoint"],
         max_epochs=max_epochs,
-        callbacks=callbacks,
         model_dir=model_dir,
         devices=devices,
         accelerator=accelerator,
         limit_val_batches=limit_val_batches,
+        ckpt_path=ckpt_path,
+        callback_cfg=cfg_built,
+        callback_names_override=callback_names,
+        extra_callbacks=[LatentX0MAE()],
     )
-    trainer.fit(module, datamodule=datamodule, ckpt_path=ckpt_path)
-    return trainer, ckpt
 
 
 # -- console entry -----------------------------------------------------------
@@ -207,6 +219,11 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--resume", default=None, help="resume a Lightning .ckpt (trainer.fit(ckpt_path=...))."
+    )
+    parser.add_argument(
+        "--callbacks",
+        default=None,
+        help="comma-separated callback names; REPLACES the YAML callbacks: list (ADR-0032).",
     )
     parser.add_argument("overrides", nargs="*", help="Hydra-style dotlist overrides.")
     return parser.parse_args(argv)
@@ -276,6 +293,9 @@ def main(argv: list[str] | None = None, *, data_provider=None) -> int:
         n_epochs=int(args.max_epochs or train_cfg.n_epochs),
     )
 
+    callback_names = resolve_callback_names(args.callbacks, cfg)
+    callback_cfg = {"checkpoint": dict(opt(cfg, "checkpoint", {}))}
+
     run_controlnet_training(
         module=module,
         inputs=inputs,
@@ -286,6 +306,8 @@ def main(argv: list[str] | None = None, *, data_provider=None) -> int:
         save_top_k=int(opt(cfg, "checkpoint.save_top_k", 3)),
         seed=seed,
         ckpt_path=args.resume,
+        callback_names=callback_names,
+        callback_cfg=callback_cfg,
     )
     print(f"[manifold-train-controlnet] done; checkpoints under {cfg.model_dir}")
     return 0

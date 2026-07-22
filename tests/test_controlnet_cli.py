@@ -10,6 +10,7 @@ are pinned too.
 from __future__ import annotations
 
 from pathlib import Path
+from unittest.mock import MagicMock, call
 
 import pytest
 import torch
@@ -21,7 +22,13 @@ from manifold import (
     FlowMatchHeunDiscreteScheduler,
     UNet3DConditionModel,
 )
-from manifold.training.controlnet_cli import ControlNetInputs, main as controlnet_main
+from manifold.training.callbacks import CheckpointSpec, TrainLossSpec
+from manifold.training.controlnet_cli import (
+    ControlNetInputs,
+    main as controlnet_main,
+    run_controlnet_training,
+)
+from manifold.training.metrics import LatentX0MAE
 
 
 def _frozen_base() -> UNet3DConditionModel:
@@ -87,6 +94,173 @@ def _write_tiny_configs(tmp_path: Path) -> tuple[str, str, str]:
         "checkpoint: {save_top_k: 1}\n"
     )
     return str(env), str(train), str(net)
+
+
+def test_run_controlnet_training_delegates_to_training_spine(tmp_path, monkeypatch):
+    """The ControlNet shell preserves its defaults while delegating orchestration."""
+    captured = {}
+    trainer_sentinel = object()
+    checkpoint_sentinel = object()
+    spine = MagicMock()
+    spine.run.side_effect = lambda **kwargs: (
+        captured.update(kwargs) or (trainer_sentinel, checkpoint_sentinel)
+    )
+    monkeypatch.setattr(
+        "manifold.training.controlnet_cli.TrainingSpine", MagicMock(return_value=spine)
+    )
+
+    vae = object()
+    inputs = ControlNetInputs(
+        unet=object(),
+        controlnet=object(),
+        scheduler=object(),
+        train_ds=_ToyPairedDS(),
+        val_ds=_ToyPairedDS(),
+        vae=vae,
+    )
+    module = object()
+    result = run_controlnet_training(
+        module=module,
+        inputs=inputs,
+        model_dir=str(tmp_path),
+        max_epochs=2,
+        devices=1,
+        accelerator="cpu",
+        batch_size=2,
+        save_top_k=2,
+        seed=9,
+        ckpt_path="resume.ckpt",
+        limit_val_batches=0.25,
+    )
+
+    assert result == (trainer_sentinel, checkpoint_sentinel)
+    assert spine.registry.register.call_args_list == [
+        call("train_loss", TrainLossSpec),
+        call("checkpoint", CheckpointSpec),
+    ]
+    assert captured["default_names"] == ["train_loss", "checkpoint"]
+    assert captured["callback_names_override"] is None
+    assert len(captured["extra_callbacks"]) == 1
+    assert isinstance(captured["extra_callbacks"][0], LatentX0MAE)
+    assert captured["module"] is module
+    assert captured["datamodule"] is captured["ctx"].datamodule
+    assert captured["ctx"].module is module
+    assert captured["ctx"].vae is vae
+    assert captured["ctx"].model_dir == str(tmp_path)
+    assert captured["ctx"].seed == 9
+    assert captured["callback_cfg"] == {
+        "checkpoint": {
+            "monitor_metric": "val/x0_mae",
+            "mode": "min",
+            "save_top_k": 2,
+            "filename": "controlnet-{epoch:03d}-{val/x0_mae:.3f}",
+        }
+    }
+    assert captured["max_epochs"] == 2
+    assert captured["devices"] == 1
+    assert captured["accelerator"] == "cpu"
+    assert captured["limit_val_batches"] == 0.25
+    assert captured["ckpt_path"] == "resume.ckpt"
+
+
+def test_run_controlnet_training_merges_callback_config(tmp_path, monkeypatch):
+    """Callback overrides win before the checkpoint filename is derived."""
+    captured = {}
+    spine = MagicMock()
+    spine.run.side_effect = lambda **kwargs: (
+        captured.update(kwargs) or (object(), object())
+    )
+    monkeypatch.setattr(
+        "manifold.training.controlnet_cli.TrainingSpine", MagicMock(return_value=spine)
+    )
+    inputs = ControlNetInputs(
+        unet=object(),
+        controlnet=object(),
+        scheduler=object(),
+        train_ds=_ToyPairedDS(),
+        val_ds=_ToyPairedDS(),
+    )
+    supplied_cfg = {
+        "checkpoint": {
+            "monitor_metric": "train/loss_epoch",
+            "save_last": False,
+        }
+    }
+
+    run_controlnet_training(
+        module=object(),
+        inputs=inputs,
+        model_dir=str(tmp_path),
+        max_epochs=1,
+        devices=1,
+        accelerator="cpu",
+        callback_names=["train_loss", "checkpoint"],
+        callback_cfg=supplied_cfg,
+    )
+
+    assert captured["callback_names_override"] == ["train_loss", "checkpoint"]
+    assert captured["callback_cfg"] == {
+        "checkpoint": {
+            "monitor_metric": "train/loss_epoch",
+            "mode": "min",
+            "save_top_k": 3,
+            "save_last": False,
+            "filename": "controlnet-{epoch:03d}-{train/loss_epoch:.3f}",
+        }
+    }
+    assert supplied_cfg == {
+        "checkpoint": {
+            "monitor_metric": "train/loss_epoch",
+            "save_last": False,
+        }
+    }
+
+
+def test_main_forwards_callback_selection_and_checkpoint_config(tmp_path, monkeypatch):
+    """CLI callback names replace YAML names while YAML knobs still reach the spine."""
+    env, train, net = _write_tiny_configs(tmp_path)
+    Path(train).write_text(
+        "diffusion_unet_train: {batch_size: 2, lr: 1.0e-3, n_epochs: 1, "
+        "lr_warmup_steps: 0, lr_ref_batch_size: 8, lr_scale_rule: sqrt}\n"
+        "formulation: {p_mean: -0.8, p_std: 0.8, t_eps: 0.05, l1_weight: 0.0}\n"
+        "callbacks: [train_loss, checkpoint]\n"
+        "checkpoint: {save_top_k: 1, save_last: false, every_n_epochs: 2}\n"
+    )
+    captured = {}
+
+    def _capture_run(**kwargs):
+        captured.update(kwargs)
+        return object(), object()
+
+    monkeypatch.setattr(
+        "manifold.training.controlnet_cli.run_controlnet_training", _capture_run
+    )
+
+    rc = controlnet_main(
+        [
+            "-e",
+            env,
+            "-c",
+            train,
+            "-t",
+            net,
+            "-g",
+            "1",
+            "--callbacks",
+            "checkpoint",
+        ],
+        data_provider=_provider,
+    )
+
+    assert rc == 0
+    assert captured["callback_names"] == ["checkpoint"]
+    assert captured["callback_cfg"] == {
+        "checkpoint": {
+            "save_top_k": 1,
+            "save_last": False,
+            "every_n_epochs": 2,
+        }
+    }
 
 
 def test_main_runs_end_to_end_with_fake_data(tmp_path):
