@@ -1617,7 +1617,8 @@ def test_real_inputs_mode2_loads_controlnet_and_builds_paired_conditioning(tmp_p
 
     from manifold.data import paired_brats as pb
     from manifold.data import paired_latent_dataset as pld_mod
-    from manifold.training import grpo_cli, paired_reward_cli
+    from manifold.data import paired_manifests
+    from manifold.training import grpo_cli
 
     _save_controlnet_export(tmp_path / "native")
     _save_mode2_reward_ckpt(tmp_path / "reward.ckpt", in_channels=4)
@@ -1625,7 +1626,7 @@ def test_real_inputs_mode2_loads_controlnet_and_builds_paired_conditioning(tmp_p
     train_manifest, val_manifest = _fake_mode2_manifests()
     monkeypatch.setattr(pb, "build_brats_pair_manifest", lambda *a, **k: train_manifest + val_manifest)
     monkeypatch.setattr(
-        paired_reward_cli, "_train_val_manifests", lambda cfg, manifest: (train_manifest, val_manifest)
+        paired_manifests, "_train_val_manifests", lambda cfg, manifest: (train_manifest, val_manifest)
     )
 
     # Fake the warmed paired cache: two instances (train then val), pre-warmed.
@@ -1692,7 +1693,8 @@ def test_real_inputs_mode2_raises_on_no_val_split(tmp_path, monkeypatch):
     from tests.test_paired_reward_real import _save_controlnet_export
 
     from manifold.data import paired_brats as pb
-    from manifold.training import grpo_cli, paired_reward_cli
+    from manifold.data import paired_manifests
+    from manifold.training import grpo_cli
 
     _save_controlnet_export(tmp_path / "native")
     _save_mode2_reward_ckpt(tmp_path / "reward.ckpt", in_channels=4)
@@ -1700,7 +1702,7 @@ def test_real_inputs_mode2_raises_on_no_val_split(tmp_path, monkeypatch):
     train_manifest, _ = _fake_mode2_manifests()
     monkeypatch.setattr(pb, "build_brats_pair_manifest", lambda *a, **k: train_manifest)
     monkeypatch.setattr(
-        paired_reward_cli, "_train_val_manifests", lambda cfg, manifest: (train_manifest, [])
+        paired_manifests, "_train_val_manifests", lambda cfg, manifest: (train_manifest, [])
     )
 
     cfg = _mode2_cfg(tmp_path)
@@ -1723,7 +1725,8 @@ def test_real_inputs_mode2_rejects_condition_aware_reward_ckpt(tmp_path, monkeyp
     from tests.test_paired_reward_real import _save_controlnet_export
 
     from manifold.data import paired_brats as pb
-    from manifold.training import grpo_cli, paired_reward_cli
+    from manifold.data import paired_manifests
+    from manifold.training import grpo_cli
 
     _save_controlnet_export(tmp_path / "native")
     # 2·C condition-aware ckpt: in_channels = 8 = 2 * C_latent(4).
@@ -1732,7 +1735,7 @@ def test_real_inputs_mode2_rejects_condition_aware_reward_ckpt(tmp_path, monkeyp
     train_manifest, val_manifest = _fake_mode2_manifests()
     monkeypatch.setattr(pb, "build_brats_pair_manifest", lambda *a, **k: train_manifest + val_manifest)
     monkeypatch.setattr(
-        paired_reward_cli, "_train_val_manifests", lambda cfg, manifest: (train_manifest, val_manifest)
+        paired_manifests, "_train_val_manifests", lambda cfg, manifest: (train_manifest, val_manifest)
     )
 
     cfg = _mode2_cfg(tmp_path)
@@ -1753,7 +1756,8 @@ def test_main_mode2_real_path_dispatches_and_builds_controlnet_module(tmp_path, 
 
     from manifold.data import paired_brats as pb
     from manifold.data import paired_latent_dataset as pld_mod
-    from manifold.training import grpo_cli, paired_reward_cli
+    from manifold.data import paired_manifests
+    from manifold.training import grpo_cli
 
     env, train, net = _write_tiny_configs(tmp_path)
     # Mode-2 requires data_base_dir + the paired/reward config blocks; the tiny configs
@@ -1781,7 +1785,7 @@ def test_main_mode2_real_path_dispatches_and_builds_controlnet_module(tmp_path, 
     train_manifest, val_manifest = _fake_mode2_manifests()
     monkeypatch.setattr(pb, "build_brats_pair_manifest", lambda *a, **k: train_manifest + val_manifest)
     monkeypatch.setattr(
-        paired_reward_cli, "_train_val_manifests", lambda cfg, manifest: (train_manifest, val_manifest)
+        paired_manifests, "_train_val_manifests", lambda cfg, manifest: (train_manifest, val_manifest)
     )
     fake_train, fake_val = _FakeMode2PairedDS(4), _FakeMode2PairedDS(2)
     _queue = [fake_val, fake_train]
@@ -1845,7 +1849,8 @@ def test_real_inputs_mode2_rejects_stale_cache_shape(tmp_path, monkeypatch):
 
     from manifold.data import paired_brats as pb
     from manifold.data import paired_latent_dataset as pld_mod
-    from manifold.training import grpo_cli, paired_reward_cli
+    from manifold.data import paired_manifests
+    from manifold.training import grpo_cli
 
     _save_controlnet_export(tmp_path / "native")
     _save_mode2_reward_ckpt(tmp_path / "reward.ckpt", in_channels=4)
@@ -1853,7 +1858,7 @@ def test_real_inputs_mode2_rejects_stale_cache_shape(tmp_path, monkeypatch):
     train_manifest, val_manifest = _fake_mode2_manifests()
     monkeypatch.setattr(pb, "build_brats_pair_manifest", lambda *a, **k: train_manifest + val_manifest)
     monkeypatch.setattr(
-        paired_reward_cli, "_train_val_manifests", lambda cfg, manifest: (train_manifest, val_manifest)
+        paired_manifests, "_train_val_manifests", lambda cfg, manifest: (train_manifest, val_manifest)
     )
 
     # A fake PairedLatentDataset exposing the real cache interface (source + raw_latent)

@@ -33,6 +33,7 @@ from .paired_latent_dataset import (
     PairedLatentDataset,
     estimate_paired_scale_factor,
 )
+from .paired_manifests import _train_val_manifests
 from .paired_reward_pairs import (
     build_paired_reward_pairs,
     build_paired_reward_probe,
@@ -66,6 +67,7 @@ __all__ = [
     "PairedNiftiVolumeDataset",
     "RewardPairDataset",
     "SampleDict",
+    "_train_val_manifests",
     "build_brats_pair_manifest",
     "build_datamodule",
     "build_encode_pipeline",
