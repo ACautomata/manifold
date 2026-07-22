@@ -659,3 +659,55 @@ def test_run_paired_reward_training_fails_fast_without_probe(tmp_path):
             batch_size=2,
             limit_val_batches=1.0,
         )
+
+
+def test_paired_reward_module_declares_all_validation_metrics():
+    """codex #183 P2: PairedRewardModule declares every validation metric it logs
+    so any of them resolves as a checkpoint monitor through the registry's union rule."""
+    from manifold.modules import PairedRewardModule
+
+    assert {
+        "val/gen_pair_acc",
+        "val/pair_acc",
+        "val/roc_auc",
+    } <= PairedRewardModule.logged_metrics
+
+
+def test_run_paired_reward_training_probe_guard_uses_effective_monitor(tmp_path, monkeypatch):
+    """codex #183 P2: the mandatory-probe guard checks the EFFECTIVE (post-merge)
+    monitor, not the function default — so a YAML ``checkpoint.monitor_metric``
+    override to a non-probe metric opts out of the probe requirement instead of
+    raising before the override takes effect.
+    """
+    from unittest.mock import MagicMock
+
+    from manifold.training import run_paired_reward_training
+    from manifold.training.paired_reward_cli import PairedRewardInputs
+
+    captured = {}
+
+    class _FakeSpine:
+        def __init__(self):
+            self.registry = MagicMock()
+
+        def run(self, **kw):
+            captured.update(kw)
+            return MagicMock(), MagicMock()
+
+    monkeypatch.setattr("manifold.training.paired_reward_cli.TrainingSpine", _FakeSpine)
+
+    ds = _ToyPairedPairDS(n=4)
+    inputs = PairedRewardInputs(train_pair_ds=ds, val_pair_ds=ds, val_probe=None)
+    # No probe, but the effective monitor is overridden away from val/gen_pair_acc
+    # -> the guard must NOT raise.
+    run_paired_reward_training(
+        module=_module(),
+        inputs=inputs,
+        model_dir=str(tmp_path),
+        max_epochs=1,
+        devices=1,
+        accelerator="cpu",
+        batch_size=2,
+        callback_cfg={"checkpoint": {"monitor_metric": "val/pair_acc"}},
+    )
+    assert captured["callback_cfg"]["checkpoint"]["monitor_metric"] == "val/pair_acc"

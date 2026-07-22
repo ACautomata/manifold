@@ -150,10 +150,10 @@ def run_grpo_training(
         fid_active = False
     if monitor_metric is None:
         monitor_metric = "val/fid" if fid_active else "val/mean_reward"
-    if mode is None:
-        # Derive from the FINAL metric (not fid_active): a caller who overrides
-        # monitor_metric back to val/mean_reward must get mode=max, not the FID min.
-        mode = "min" if monitor_metric == "val/fid" else "max"
+    # mode is derived from the FINAL (post-merge) monitor below, unless the caller
+    # (or a YAML checkpoint.mode knob) supplies it explicitly — so a YAML
+    # ``checkpoint.monitor_metric=val/mean_reward`` override without a ``mode``
+    # does not keep the shell's ``val/fid``-derived ``min`` (codex #183 P1).
 
     datamodule = build_datamodule(
         inputs.train_ds, batch_size=batch_size, val_dataset=inputs.val_ds, num_workers=num_workers
@@ -163,11 +163,11 @@ def run_grpo_training(
     cfg_built: dict[str, dict] = {
         "checkpoint": {
             "monitor_metric": monitor_metric,
-            "mode": mode,
             "save_top_k": save_top_k,
-            "filename": f"grpo-{{epoch:03d}}-{{{monitor_metric}:.3f}}",
         }
     }
+    if mode is not None:
+        cfg_built["checkpoint"]["mode"] = mode
     default_names = ["checkpoint"]
     if fid_active:
         default_names.append("fid")
@@ -178,6 +178,21 @@ def run_grpo_training(
         }
     for name, knobs in (callback_cfg or {}).items():
         cfg_built.setdefault(name, {}).update(knobs)
+
+    # Derive mode + filename from the FINAL (post-merge) monitor unless the merged
+    # cfg supplied them explicitly. ``val/fid`` is min; every other GRPO monitor
+    # (val/mean_reward, or a YAML override) is max. An unmonitored checkpoint keeps
+    # the plain prefix.
+    ckpt_cfg = cfg_built["checkpoint"]
+    final_monitor = ckpt_cfg.get("monitor_metric")
+    if ckpt_cfg.get("mode") is None:
+        ckpt_cfg["mode"] = "min" if final_monitor == "val/fid" else "max"
+    if ckpt_cfg.get("filename") is None:
+        ckpt_cfg["filename"] = (
+            f"grpo-{{epoch:03d}}-{{{final_monitor}:.3f}}"
+            if final_monitor is not None
+            else "grpo-{epoch:03d}"
+        )
 
     # GRPO's FID reference is the held real_latents (ADR-0032) — its conditioning
     # datamodule carries no val_latents, so real_latents is passed explicitly and

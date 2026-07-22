@@ -257,6 +257,17 @@ def test_module_combined_batch_threads_duplicated_conditioning():
     assert any(torch.allclose(s, torch.tensor([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]] * 2)) for s in rec.seen_spacing)
 
 
+def test_reward_module_declares_all_validation_metrics():
+    """codex #183 P2: RewardModule declares every validation metric it logs
+    (val/gen_pair_acc + the within-fake-ranking val/pair_acc / val/roc_auc) so any
+    of them resolves as a checkpoint monitor through the registry's union rule."""
+    assert {
+        "val/gen_pair_acc",
+        "val/pair_acc",
+        "val/roc_auc",
+    } <= RewardModule.logged_metrics
+
+
 # -- CLI smoke (the end-to-end seam) ----------------------------------------
 
 

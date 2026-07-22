@@ -103,14 +103,39 @@ def run_paired_reward_training(
     # runs; ``main`` also seeds, harmlessly, before building the module.
     pl.seed_everything(seed, workers=True)
     multi_gpu = is_multi_gpu(devices)
-    # The generated-end probe is mandatory (ADR-0023): ``val/gen_pair_acc`` is the
-    # load-bearing monitor, and ``PairedRewardModule`` only logs it when a probe is
-    # attached. Under single-GPU the checkpoint monitors the metric, so a missing
-    # probe would crash Lightning's ``ModelCheckpoint`` (monitor key never seen).
-    # Fail fast with a clear error rather than a MisconfigurationException at fit.
-    # DDP drops the monitor (rank-local selection is unreliable), so no probe is
-    # needed there.
-    if not multi_gpu and monitor_metric == "val/gen_pair_acc" and inputs.val_probe is None:
+
+    # Shell-derived checkpoint knobs, then the YAML/CLI callback_cfg override wins,
+    # then the DDP monitor=None fallback is re-asserted POST-merge so a YAML
+    # monitor_metric cannot restore a rank-local metric under DDP.
+    ckpt_monitor = monitor_metric if not multi_gpu else None
+    cfg_built: dict[str, dict] = {
+        "checkpoint": {
+            "monitor_metric": ckpt_monitor,
+            "mode": mode,
+            "save_top_k": save_top_k,
+        }
+    }
+    for name, knobs in (callback_cfg or {}).items():
+        cfg_built.setdefault(name, {}).update(knobs)
+    if multi_gpu:
+        cfg_built["checkpoint"]["monitor_metric"] = None
+    effective_monitor = cfg_built["checkpoint"]["monitor_metric"]
+    # Derive the filename from the EFFECTIVE (post-merge) monitor unless supplied.
+    if cfg_built["checkpoint"].get("filename") is None:
+        cfg_built["checkpoint"]["filename"] = (
+            f"reward-{{epoch:03d}}-{{{effective_monitor}:.3f}}"
+            if effective_monitor is not None
+            else "reward-{epoch:03d}"
+        )
+
+    # The generated-end probe is mandatory (ADR-0023) only when the EFFECTIVE
+    # monitor is ``val/gen_pair_acc`` — the metric the Module logs solely from the
+    # probe. A YAML override to a non-probe metric (or ``null``) legitimately opts
+    # out of the probe requirement (codex #183 P2). Under single-GPU the monitored
+    # checkpoint would crash Lightning if the probe metric never appears; under DDP
+    # the monitor is dropped (rank-local selection is unreliable), so no probe is
+    # needed there (effective_monitor is None).
+    if effective_monitor == "val/gen_pair_acc" and inputs.val_probe is None:
         raise ValueError(
             "Paired reward training monitors val/gen_pair_acc, but no generated-end "
             "probe was provided (inputs.val_probe is None). The probe is mandatory "
@@ -128,28 +153,6 @@ def run_paired_reward_training(
         val_dataset=inputs.val_pair_ds,
         num_workers=num_workers,
     )
-
-    # Shell-derived checkpoint knobs, then the YAML/CLI callback_cfg override
-    # wins, then the DDP monitor=None fallback is re-asserted POST-merge so a
-    # YAML monitor_metric cannot restore a rank-local metric under DDP.
-    ckpt_monitor = monitor_metric if not multi_gpu else None
-    ckpt_filename = (
-        f"reward-{{epoch:03d}}-{{{monitor_metric}:.3f}}"
-        if ckpt_monitor is not None
-        else "reward-{epoch:03d}"
-    )
-    cfg_built: dict[str, dict] = {
-        "checkpoint": {
-            "monitor_metric": ckpt_monitor,
-            "mode": mode,
-            "save_top_k": save_top_k,
-            "filename": ckpt_filename,
-        }
-    }
-    for name, knobs in (callback_cfg or {}).items():
-        cfg_built.setdefault(name, {}).update(knobs)
-    if multi_gpu:
-        cfg_built["checkpoint"]["monitor_metric"] = None
 
     spine = TrainingSpine()
     spine.registry.register("checkpoint", CheckpointSpec)

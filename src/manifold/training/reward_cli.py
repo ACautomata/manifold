@@ -147,23 +147,26 @@ def run_reward_training(
     # wins, then the DDP monitor=None fallback is re-asserted POST-merge so a
     # YAML monitor_metric cannot restore a rank-local metric under DDP.
     ckpt_monitor = monitor_metric if not multi_gpu else None
-    ckpt_filename = (
-        f"reward-{{epoch:03d}}-{{{monitor_metric}:.3f}}"
-        if ckpt_monitor is not None
-        else "reward-{epoch:03d}"
-    )
     cfg_built: dict[str, dict] = {
         "checkpoint": {
             "monitor_metric": ckpt_monitor,
             "mode": mode,
             "save_top_k": save_top_k,
-            "filename": ckpt_filename,
         }
     }
     for name, knobs in (callback_cfg or {}).items():
         cfg_built.setdefault(name, {}).update(knobs)
     if multi_gpu:
         cfg_built["checkpoint"]["monitor_metric"] = None
+    effective_monitor = cfg_built["checkpoint"]["monitor_metric"]
+    # Derive the filename from the EFFECTIVE (post-merge) monitor unless supplied,
+    # so a YAML monitor_metric override does not leave a stale filename template.
+    if cfg_built["checkpoint"].get("filename") is None:
+        cfg_built["checkpoint"]["filename"] = (
+            f"reward-{{epoch:03d}}-{{{effective_monitor}:.3f}}"
+            if effective_monitor is not None
+            else "reward-{epoch:03d}"
+        )
 
     spine = TrainingSpine()
     spine.registry.register("checkpoint", CheckpointSpec)
