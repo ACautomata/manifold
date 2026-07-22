@@ -38,7 +38,7 @@ from ..config import opt
 from ..data.datamodule import build_datamodule
 from ..modules.grpo import GRPOModule
 from ..schedulers.scheduling_flow_match_grpo import FlowMatchGRPOScheduler
-from manifold.training.callbacks import CallbackContext, CheckpointSpec, FIDSpec
+from manifold.training.callbacks import CallbackContext, CheckpointSpec, FIDSpec, TrainLossSpec
 from manifold.training.core import TrainingSpine
 
 
@@ -231,6 +231,7 @@ def run_grpo_training(
         forbidden_monitors = {"val/fid": reason}
 
     spine = TrainingSpine()
+    spine.registry.register("train_loss", TrainLossSpec)
     spine.registry.register("fid", FIDSpec)
     spine.registry.register("checkpoint", CheckpointSpec)
     return spine.run(

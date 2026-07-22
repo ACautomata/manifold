@@ -41,7 +41,7 @@ from ..config import opt
 from ..data.datamodule import build_datamodule
 from ..models.reward_model import RewardModel
 from ..modules.reward import RewardModule
-from manifold.training.callbacks import CallbackContext, CheckpointSpec
+from manifold.training.callbacks import CallbackContext, CheckpointSpec, TrainLossSpec
 from manifold.training.core import TrainingSpine
 from .trainer import is_multi_gpu
 
@@ -169,6 +169,7 @@ def run_reward_training(
         )
 
     spine = TrainingSpine()
+    spine.registry.register("train_loss", TrainLossSpec)
     spine.registry.register("checkpoint", CheckpointSpec)
     ctx = CallbackContext(
         module=module,
