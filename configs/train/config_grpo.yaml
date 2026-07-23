@@ -1,17 +1,23 @@
-# GRPO recipe preset — Granular-GRPO policy post-training of the JiT x0-denoiser
-# (ADR-0011 / ADR-0012 / issues #55/#56). Composed with a BraTS2023 env + the network
-# config (latent metadata). The train/val sets carry manifold conditioning (spacing +
-# label); the policy rollout samples the group noise (GRPO is generative — there is no
-# clean-latent target).
+# GRPO recipe preset — Granular-GRPO policy post-training (ADR-0011 / ADR-0012 /
+# ADR-0015 / issues #55/#56). ONE recipe trains EITHER policy (ADR-0034 / issue #180):
+# the policy is inferred from the native artifact under --native-dir, not a mode flag.
+# Point --native-dir at a raw JiT export to train the UNet x0-denoiser, or at a
+# supervised ControlNet export (frozen base + ControlNet) to refine the ControlNet
+# residuals — the input builder (_detect_controlnet_export) routes on the export's
+# model_index.json, not a separate preset. Composed with a BraTS2023 env + the network
+# config (latent metadata). The UNet path's train/val sets carry manifold conditioning
+# (spacing + label); the ControlNet path's carry PAIRED conditioning (src_latent /
+# src_label / tgt_label). GRPO is generative — the rollout samples the group noise
+# (there is no clean-latent target).
 #
 # Consumed by manifold-train-grpo. The GRPO job needs no VAE / image data — the
 # reward scores the terminal latent (no VAE decode per branch). The real-data launch
-# (raw JiT arm + trained reward) is gated on the reward model clearing
-# val/gen_pair_acc > 0.8 + a tiny-config measurement (#59).
+# (raw JiT arm + trained reward, or frozen base + ControlNet) is gated on the reward
+# model clearing val/gen_pair_acc > 0.8 + a tiny-config measurement (#59).
 
 grpo_train:
   batch_size: 2
-  lr: 1.0e-6
+  lr: 1.0e-6            # the from-scratch UNet-policy LR (the default policy path).
   n_epochs: 50
   # The anchor grid resolution (two-eval Heun steps over t: 0 → 1). Default 15 matches
   # the JiT denoiser's production inference count, so the rollout samples the policy at
@@ -37,27 +43,56 @@ grpo_train:
   # unbounded raw logit and the policy had no anchor. Calibration scored REAL val/train
   # latents at −9.7~−11.2 ±8 (range [−21, +26]), so the policy's 3370 was a ~130× OOD
   # exploit. Both knobs default-off in code (kl_coef=0 / reward_bound=none ⇒ v1); this
-  # recipe commits the fix.
-  # kl_coef: β for the equal-variance KL-to-pretrained-policy anchor (ADR-0015).
+  # recipe commits the fix. Shared by both policy paths — the reward scores the terminal
+  # latent z_K unconditionally (ADR-0034).
+  # kl_coef: β for the equal-variance KL-to-pretrained-policy anchor (ADR-0015). On the
+  #   ControlNet path the anchor is the (base, controlnet) pair (ADR-0028).
   # reward_bound: "tanh" caps the raw logit into (−1, 1) — monotone, so sibling rewards
   #   stay distinct; reward_temp ≈ the real-data reward std (~8 from calibration).
   kl_coef: 0.1
   reward_bound: "tanh"
   reward_temp: 8.0
 
-# Real-data wiring (the #59 launch). The raw-arm JiT policy loads from --native-dir
-# (ADR-0006); the trained RewardModel from --reward-path; the conditioning + the FID
-# real reference from --latents-dir. The RewardModel architecture (``reward_model``
-# block) comes from the network config (``-t``) — it is NOT repeated here: load_config
-# merges env → train → network, so a network file's ``reward_model`` would overwrite
-# one placed here (config_network.yaml defines it).
+# Optional ControlNet block (ADR-0034 / issue #180): carried for the ControlNet policy
+# path. The ControlNet is warm-started from the supervised stage (ADR-0027), so GRPO
+# refines it at a smaller LR than the from-scratch UNet. main() applies this override
+# only on the ControlNet path (inputs.controlnet is not None); the UNet path uses
+# grpo_train.lr above. The policy itself is inferred from --native-dir, not this block.
+controlnet:
+  lr: 1.0e-7            # the warm-started ControlNet refines at a smaller LR than the UNet.
+
+# Real-data wiring (the #59 launch). Both paths load the trained RewardModel from
+# --reward-path; the conditioning + the FID real reference come from --latents-dir.
+# The RewardModel architecture (``reward_model`` block) comes from the network config
+# (``-t``) — it is NOT repeated here: load_config merges env → train → network, so a
+# network file's ``reward_model`` would overwrite one placed here (config_network.yaml
+# defines it). The raw-arm JiT policy loads from --native-dir (ADR-0006); the frozen
+# base + ControlNet warm-start also load from --native-dir (the supervised export).
 grpo:
   val_fraction: 0.2  # held-out subject fraction (val conditioning + FID real reference).
   modality: 1  # the FID generation recipe's class label (single-modality v1).
   spacing: [1.0, 1.0, 1.0]  # the FID generation recipe's voxel spacing.
 
+# The paired latent target shape + voxel spacing (the BraTS volume the VAE encodes each
+# unique contrast of). Carried for the ControlNet policy path: _controlnet_real_inputs
+# reads ``dim`` for the paired cache's target_dim / divisor geometry (it must match the
+# cache the supervised stage warmed, ADR-0021/0022); without it the ControlNet-path
+# launch raises ConfigAttributeError before loading the cache (codex #151). Harmless on
+# the UNet path — _unet_real_inputs does not read this block.
+diffusion_unet_inference:
+  dim: [256, 256, 128]          # volume target shape [D, H, W] (the VAE encodes to latent // divisor)
+  spacing: [1.7, 1.7, 2]
+  top_region_index: [0, 1, 0, 0]
+  bottom_region_index: [0, 0, 1, 0]
+  random_seed: 0
+  num_inference_steps: 15
+  modality: 1
+  cfg_guidance_scale: 1.5
+
 # Stock Lightning ModelCheckpoint: monitor val/mean_reward (the progress signal, max)
-# in #56; #58 switches selection to val/fid (min, the anti-reward-hacking screen).
-# Under DDP the rank-local monitor is dropped (save_last + save_top_k=1 keep the latest).
+# in #56; #58 switches selection to val/fid (min, the anti-reward-hacking screen) for
+# the UNet path. The ControlNet path skips the unconditional FID (a constant frozen-base
+# metric) and selects on val/mean_reward (run_grpo_training). Under DDP the rank-local
+# monitor is dropped (save_last + save_top_k=1 keep the latest).
 checkpoint:
   save_top_k: 1

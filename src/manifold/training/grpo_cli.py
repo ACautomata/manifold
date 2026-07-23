@@ -318,6 +318,21 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+def _resolve_grpo_lr(cfg, controlnet_present: bool) -> float:
+    """The effective GRPO LR (ADR-0034 / issue #180).
+
+    ``grpo_train.lr`` is the from-scratch UNet-policy default. The optional ``controlnet``
+    block carries a smaller warm-start LR for the ControlNet policy (refined from the
+    supervised stage, ADR-0027); it applies ONLY on the ControlNet path
+    (``controlnet_present`` — the policy was inferred from a ControlNet export under
+    ``--native-dir``), falling back to ``grpo_train.lr`` when the block (or its ``lr``
+    key) is absent. The UNet path always uses ``grpo_train.lr``.
+    """
+    if controlnet_present:
+        return float(opt(cfg, "controlnet.lr", cfg.grpo_train.lr))
+    return float(cfg.grpo_train.lr)
+
+
 def main(argv: list[str] | None = None, *, data_provider=None) -> int:
     """Console entry: compose config → build → ``run_grpo_training``.
 
@@ -388,7 +403,7 @@ def main(argv: list[str] | None = None, *, data_provider=None) -> int:
         G=int(opt(gcfg, "G", 8)),
         eta_step_list=list(opt(gcfg, "eta_step_list", [0, 1, 2, 3, 4, 5, 6, 7])),
         clip_range=float(opt(gcfg, "clip_range", 1e-4)),
-        lr=float(gcfg.lr),
+        lr=_resolve_grpo_lr(cfg, inputs.controlnet is not None),
         adv_clip_max=float(opt(gcfg, "adv_clip_max", 5.0)),
         num_steps=int(opt(gcfg, "num_steps", 15)),
         latent_shape=latent_shape,
