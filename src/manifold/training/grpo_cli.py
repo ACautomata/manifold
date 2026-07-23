@@ -591,17 +591,17 @@ def _load_frozen_reward(cfg, reward_path: str, device: torch.device, *, in_chann
     if latent_c is not None:
         # Fail fast on a channel mismatch BEFORE load_state_dict's cryptic shape error:
         # the z_K reward is scored unconditionally (in_channels = C_latent), so a 2·C
-        # condition-aware paired-reward ckpt (from manifold-train-paired-reward) is
-        # incompatible. Detect via the first conv's input-channel dim (shape [out, in, ...]).
+        # condition-aware paired-reward ckpt (from the deleted paired-reward pipeline,
+        # ADR-0034) is incompatible. Detect via the first conv's input-channel dim (shape [out, in, ...]).
         first_conv = reward_sd.get("discriminator.initial_conv.conv.weight")
         if first_conv is not None and int(first_conv.shape[1]) != latent_c:
             raise ValueError(
                 f"Reward checkpoint {reward_path} has in_channels={int(first_conv.shape[1])}, "
                 f"but the z_K reward is scored unconditionally and needs a single-latent reward "
                 f"(in_channels={latent_c}). This looks like a 2·C condition-aware paired-reward "
-                "ckpt (manifold-train-paired-reward); the ControlNet policy does NOT concat x_src "
-                "into the reward (the policy x0 sees x_src instead). Point --reward-path at a "
-                "single-latent RewardModule checkpoint."
+                "ckpt (from the deleted paired-reward training, ADR-0034); the ControlNet policy "
+                "does NOT concat x_src into the reward (the policy x0 sees x_src instead). Point "
+                "--reward-path at a single-latent RewardModule checkpoint."
             )
     reward_model.load_state_dict(reward_sd, strict=True)
     reward_model.eval().to(device)
@@ -851,8 +851,8 @@ def _controlnet_real_inputs(
     # The paired cache is keyed by sample_id + cache_tag (NOT target_dim), so a
     # --latents-dir pointing at a cache warmed at a DIFFERENT target_dim silently
     # reuses wrong-shape src latents — the ControlNet then fails at the first
-    # forward (its sampled rollout shape != the cached src shape). Mirror the
-    # every-entry shape check paired_reward_cli._real_inputs uses (codex #151 P2):
+    # forward (its sampled rollout shape != the cached src shape). The
+    # every-entry shape check (codex #151 P2):
     # validate EVERY unique latent's spatial shape (both splits) against this
     # recipe's target_dim / divisor and fail fast. CEIL division (the volume dataset
     # zero-pads each dim up to a divisor multiple before encoding, so the latent

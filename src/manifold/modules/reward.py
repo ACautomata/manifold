@@ -117,10 +117,7 @@ def _score_pair(reward_model, winner: Tensor, loser: Tensor) -> tuple[Tensor, Te
 
     Concatenating ``[winner, loser]`` runs a single discriminator forward (and lets
     BatchNorm see both halves together); the per-sample rewards are then split back
-    into the winner / loser halves. Shared by :class:`RewardModule` (the JiT reward)
-    and :class:`~manifold.modules.paired_reward.PairedRewardModule` (the paired
-    reward) - the condition-aware paired module passes already-concatenated
-    ``[2·C]`` pairs, so the same scorer applies verbatim (ADR-0019).
+    into the winner / loser halves. Used by :class:`RewardModule` (the JiT reward).
     """
     batch_size = winner.shape[0]
     rewards = reward_model(torch.cat([winner, loser], dim=0))  # [2B]
@@ -247,7 +244,7 @@ class RewardModule(spt.Module):
         Concatenating ``[winner, loser]`` runs a single discriminator forward
         (and lets BatchNorm see both halves together); the per-sample rewards are
         then split back into the winner / loser halves. Thin delegate over the
-        module-level :func:`_score_pair` (shared with the paired reward module).
+        module-level :func:`_score_pair`.
         """
         return _score_pair(self.reward_model, winner, loser)
 

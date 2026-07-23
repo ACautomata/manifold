@@ -1522,7 +1522,7 @@ def test_run_grpo_training_controlnet_callback_override_drops_fid(tmp_path, monk
 def _save_jit_export(native_dir) -> None:
     """Write a minimal raw-JiT native export (UNet + VAE + scheduler).
 
-    The ControlNet-less counterpart of ``_save_controlnet_export``: the layout
+    The ControlNet-less counterpart of ``save_controlnet_export``: the layout
     ``LatentFlowPipeline.save_pretrained`` writes (model_index.json with no
     ``controlnet`` component, no ``controlnet/`` subdir).
     """
@@ -1542,11 +1542,11 @@ def _save_jit_export(native_dir) -> None:
 
 def test_detect_controlnet_export_true_for_controlnet_export(tmp_path):
     """A ControlNet export (controlnet component declared + subdir) is detected."""
-    from tests.test_paired_reward_real import _save_controlnet_export
+    from tests._native_exports import save_controlnet_export
 
     from manifold.training.grpo_cli import _detect_controlnet_export
 
-    _save_controlnet_export(tmp_path / "native")
+    save_controlnet_export(tmp_path / "native")
     assert _detect_controlnet_export(str(tmp_path / "native")) is True
 
 
@@ -1604,8 +1604,7 @@ def test_detect_controlnet_export_fails_fast_when_controlnet_subdir_missing(tmp_
 # --native-dir: a ControlNet export (controlnet component) builds the frozen-base +
 # trainable-ControlNet path with paired conditioning; a raw JiT export builds the
 # trainable-UNet path. The real BraTS + VAE path is cluster-only; these tests fake
-# the manifest / split / warmed cache / reward ckpt (the same seam
-# paired_reward_cli's real-inputs test uses).
+# the manifest / split / warmed cache / reward ckpt (a fake-seam smoke).
 
 
 def _save_mode2_reward_ckpt(path, *, in_channels=4) -> None:
@@ -1689,14 +1688,14 @@ def test_real_inputs_loads_controlnet_for_controlnet_export(tmp_path, monkeypatc
     split, and returns GRPOInputs.controlnet set — so the ControlNet policy is
     trained with no ``--grpo-mode`` flag.
     """
-    from tests.test_paired_reward_real import _save_controlnet_export
+    from tests._native_exports import save_controlnet_export
 
     from manifold.data import paired_brats as pb
     from manifold.data import paired_latent_dataset as pld_mod
     from manifold.data import paired_manifests
     from manifold.training import grpo_cli
 
-    _save_controlnet_export(tmp_path / "native")
+    save_controlnet_export(tmp_path / "native")
     _save_mode2_reward_ckpt(tmp_path / "reward.ckpt", in_channels=4)
 
     train_manifest, val_manifest = _fake_mode2_manifests()
@@ -1825,13 +1824,13 @@ def test_real_inputs_routes_raw_jit_export_to_unet_path(tmp_path, monkeypatch):
 
 def test_real_inputs_raises_on_no_val_split_controlnet_export(tmp_path, monkeypatch):
     """ControlNet export, no held-out val split -> clear ValueError (train never reused as val)."""
-    from tests.test_paired_reward_real import _save_controlnet_export
+    from tests._native_exports import save_controlnet_export
 
     from manifold.data import paired_brats as pb
     from manifold.data import paired_manifests
     from manifold.training import grpo_cli
 
-    _save_controlnet_export(tmp_path / "native")
+    save_controlnet_export(tmp_path / "native")
     _save_mode2_reward_ckpt(tmp_path / "reward.ckpt", in_channels=4)
 
     train_manifest, _ = _fake_mode2_manifests()
@@ -1852,19 +1851,19 @@ def test_real_inputs_rejects_condition_aware_reward_ckpt(tmp_path, monkeypatch):
     """A 2·C condition-aware paired-reward ckpt fails fast with a readable error.
 
     The ControlNet policy scores z_K unconditionally (in_channels = C_latent = 4).
-    Passing a 2·C paired-reward ckpt (in_channels = 8, from
-    manifold-train-paired-reward) must raise a clear ValueError BEFORE
+    Passing a 2·C paired-reward ckpt (in_channels = 8, from the deleted
+    paired-reward training) must raise a clear ValueError BEFORE
     load_state_dict's cryptic shape error (codex #151: the z_K-only reward is an
     intentional design decision; the check turns the real 2·C-ckpt incompatibility
     into an actionable message).
     """
-    from tests.test_paired_reward_real import _save_controlnet_export
+    from tests._native_exports import save_controlnet_export
 
     from manifold.data import paired_brats as pb
     from manifold.data import paired_manifests
     from manifold.training import grpo_cli
 
-    _save_controlnet_export(tmp_path / "native")
+    save_controlnet_export(tmp_path / "native")
     # 2·C condition-aware ckpt: in_channels = 8 = 2 * C_latent(4).
     _save_mode2_reward_ckpt(tmp_path / "reward.ckpt", in_channels=8)
 
@@ -1890,7 +1889,7 @@ def test_main_real_path_builds_controlnet_module_when_native_is_controlnet_expor
     ControlNet path, and main wires ``controlnet`` / ``freeze_unet`` into GRPOModule →
     run_grpo_training. The paired cache is faked (the real BraTS path is cluster-only).
     """
-    from tests.test_paired_reward_real import _save_controlnet_export
+    from tests._native_exports import save_controlnet_export
 
     from manifold.data import paired_brats as pb
     from manifold.data import paired_latent_dataset as pld_mod
@@ -1917,7 +1916,7 @@ def test_main_real_path_builds_controlnet_module_when_native_is_controlnet_expor
     net_cfg = omegaconf.OmegaConf.merge(omegaconf.OmegaConf.load(net), extra_net)
     omegaconf.OmegaConf.save(net_cfg, net)
 
-    _save_controlnet_export(tmp_path / "native")
+    save_controlnet_export(tmp_path / "native")
     _save_mode2_reward_ckpt(tmp_path / "reward.ckpt", in_channels=4)
 
     train_manifest, val_manifest = _fake_mode2_manifests()
@@ -1983,14 +1982,14 @@ def test_real_inputs_rejects_stale_cache_shape(tmp_path, monkeypatch):
     reuses wrong-shape src latents. _real_inputs (ControlNet path) validates every
     unique latent's spatial shape against the recipe's target_dim / divisor and raises.
     """
-    from tests.test_paired_reward_real import _save_controlnet_export
+    from tests._native_exports import save_controlnet_export
 
     from manifold.data import paired_brats as pb
     from manifold.data import paired_latent_dataset as pld_mod
     from manifold.data import paired_manifests
     from manifold.training import grpo_cli
 
-    _save_controlnet_export(tmp_path / "native")
+    save_controlnet_export(tmp_path / "native")
     _save_mode2_reward_ckpt(tmp_path / "reward.ckpt", in_channels=4)
 
     train_manifest, val_manifest = _fake_mode2_manifests()
