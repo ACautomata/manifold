@@ -44,6 +44,12 @@ dependencies = [
     # metrics.csv to a PNG under model_dir. Pure-CPU (no DCU/CUDA kernel), so a
     # plain wheel installs on the sugon cluster too.
     "matplotlib",
+    # The training loggers: Lightning's TensorBoardLogger and WandbLogger both
+    # write under model_dir. Hard deps — manifold.training.trainer imports
+    # tensorboard/wandb at module top so a missing install fails fast (no
+    # try/except), per the repo Python rules §4.
+    "tensorboard",
+    "wandb",
 ]
 
 [project.optional-dependencies]

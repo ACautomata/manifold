@@ -5,7 +5,7 @@ AMP via ``precision`` (``16-mixed`` on CUDA else ``32-true``), DDP with
 ``find_unused_parameters=True`` (the class-embedding row may be untouched when
 labels are dropped), the spt :class:`~stable_pretraining.callbacks.ModuleRegistryCallback`
 appended **once** so spt-side ``log()`` reaches the logger, and CSV +
-TensorBoard loggers under the model dir.
+TensorBoard + Weights & Biases loggers under the model dir.
 
 The callbacks the trainer needs beyond spt's own (the
 train-metrics callbacks) are passed in by the caller; :func:`build_trainer` only
@@ -14,23 +14,16 @@ owns the invariant wiring (precision, strategy, registry callback, loggers).
 
 from __future__ import annotations
 
+import os
+
 import lightning.pytorch as pl
 import stable_pretraining as spt
+import tensorboard  # noqa: F401  (TensorBoardLogger writes via this runtime dep)
+import wandb  # noqa: F401  (WandbLogger's runtime dep; top-level import = fail-fast if missing)
 from lightning.pytorch import Trainer
-from lightning.pytorch.loggers import CSVLogger
+from lightning.pytorch.loggers import CSVLogger, TensorBoardLogger, WandbLogger
 
 from ..metrics.metric_plot_callback import MetricsPlotCallback
-
-try:  # TensorBoard is optional — only added when the package is importable.
-    from lightning.pytorch.loggers import TensorBoardLogger
-
-    import tensorboard  # noqa: F401  (probes the runtime dep the logger needs)
-except ImportError:  # pragma: no cover — TB absent on CPU CI / minimal installs
-    TensorBoardLogger = None  # type: ignore[assignment]
-
-
-def _tensorboard_available() -> bool:
-    return TensorBoardLogger is not None
 
 
 def _have_registry(callbacks) -> bool:
@@ -60,7 +53,7 @@ def build_trainer(
         callbacks: project callbacks (train-metrics, FID, ModelCheckpoint).
             The spt ``ModuleRegistryCallback`` is appended once if absent so
             spt-side ``log()`` reaches the logger.
-        model_dir: checkpoint / log output dir; CSV + TensorBoard log under it.
+        model_dir: checkpoint / log output dir; CSV + TensorBoard + W&B log under it.
         devices / accelerator: Lightning device selection (default ``"auto"``).
         precision: ``None`` → ``"16-mixed"`` on CUDA else ``"32-true"``.
         limit_val_batches: cap on validation batches (bounds the cheap x0-MAE
@@ -90,9 +83,20 @@ def build_trainer(
     else:
         strategy = "auto"
 
-    logger: list = [CSVLogger(save_dir=model_dir, name="csv")]
-    if _tensorboard_available():
-        logger.append(TensorBoardLogger(save_dir=model_dir, name="tb"))
+    # CSV + TensorBoard + Weights & Biases, all under model_dir. tensorboard and
+    # wandb are hard deps (imported at module top — fail-fast if missing). W&B
+    # defaults to offline so CPU tests / the air-gapped sugon DCU cluster need no
+    # WANDB_API_KEY or network; export WANDB_MODE=online to stream live.
+    logger: list = [
+        CSVLogger(save_dir=model_dir, name="csv"),
+        TensorBoardLogger(save_dir=model_dir, name="tb"),
+        WandbLogger(
+            save_dir=model_dir,
+            project="manifold",
+            name=os.path.basename(os.path.normpath(model_dir)),
+            mode=os.environ.get("WANDB_MODE", "offline"),
+        ),
+    ]
 
     kwargs: dict = dict(
         max_epochs=max_epochs,
