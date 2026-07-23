@@ -362,8 +362,8 @@ def _real_inputs(
         )
     # Mirror the recipe's controlnet.val_fraction to the root val_fraction read by
     # _train_val_manifests, ONLY when the native-split DIRECTORY path is not taken
-    # and the root key is unset (an explicit root override wins) — mirrors
-    # paired_reward_cli._real_inputs (codex #99/#100).
+    # and the root key is unset (an explicit root override wins) — the codex
+    # #99/#100 val-fraction mirror.
     val_dir = opt(cfg, "val_data_base_dir", None)
     if not (val_dir and os.path.isdir(str(val_dir))):
         from omegaconf import OmegaConf

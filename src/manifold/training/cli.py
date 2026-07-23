@@ -519,7 +519,7 @@ def _warm_data(cfg, device) -> tuple[_DataBundle, int]:
     divisor = autoencoder_divisor(cfg)
 
     # Held-out val volumes (the FID real set + the val/x0_mae loader). Only a BraTS
-    # *directory* is usable (mirrors paired_reward_cli._train_val_manifests); the
+    # *directory* is usable (mirrors data.paired_manifests._train_val_manifests); the
     # organizer ship split is disjoint by subject, so there is no train/val leakage.
     val_dir = opt(cfg, "val_data_base_dir", None)
     has_val = bool(val_dir and os.path.isdir(str(val_dir)))

@@ -60,11 +60,6 @@ manifold-train-reward = "manifold.training.reward_cli:main"
 # The GRPO policy-post-training launcher (issue #55/#56): the frozen reward steers a
 # Granular-GRPO singular-branch update of the raw-arm JiT x0-denoiser (the policy).
 manifold-train-grpo = "manifold.training.grpo_cli:main"
-# The Paired-JiT reward model launcher (issue #93): real-vs-fake, condition-aware
-# PatchGAN reward (in_channels = 2·C_latent), offline-precomputed pairs -> fit.
-# The frozen ControlNet generator loads from --native-dir (the supervised
-# ControlNet's noise→data export, ADR-0027/T7).
-manifold-train-paired-reward = "manifold.training.paired_reward_cli:main"
 # The ControlNet supervised launcher (issue #141 / ADR-0027 stage 1): a frozen JiT
 # base UNet + a trainable ControlNet over the paired MRI latent cache -> fit. The
 # frozen base loads from --native-dir (a JiT native export); the paired cache from

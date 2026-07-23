@@ -1,10 +1,10 @@
 """ControlNet paired-cache warm deferred into ``DataModule.setup()`` (issue #145).
 
-Both ``controlnet_cli._real_inputs`` and ``paired_reward_cli`` used to warm the paired
-latent cache in the CLI before ``Trainer.fit`` — i.e. before Lightning spawns DDP
-workers, so every rank re-warmed (or raced on) the same cache on the parent's view.
-The ControlNet path now defers the warm into ``DataModule.setup()`` (ADR-0017), so each
-DDP rank warms its own shard after process spawn — matching ``paired_reward_cli``.
+``controlnet_cli._real_inputs`` used to warm the paired latent cache in the CLI
+before ``Trainer.fit`` — i.e. before Lightning spawns DDP workers, so every rank
+re-warmed (or raced on) the same cache on the parent's view. The ControlNet path now
+defers the warm into ``DataModule.setup()`` (ADR-0017), so each DDP rank warms its own
+shard after process spawn.
 
 Gates:
 - **single-GPU**: the cold path (``warm_fn`` set) warms exactly once inside
