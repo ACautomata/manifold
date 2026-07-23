@@ -1999,17 +1999,18 @@ def test_main_real_path_builds_controlnet_module_when_native_is_controlnet_expor
 
 
 def test_controlnet_policy_recipe_resolves_inference_dim():
-    """The committed ControlNet recipe defines diffusion_unet_inference.dim (codex #151 P1).
+    """The unified GRPO recipe defines diffusion_unet_inference.dim (codex #151 P1).
 
     _controlnet_real_inputs reads cfg.diffusion_unet_inference.dim directly (load-bearing
     for the paired cache's target_dim / divisor); the recipe must define it so the
-    documented launch does not raise ConfigAttributeError.
+    documented ControlNet-path launch does not raise ConfigAttributeError. The merged
+    recipe (issue #180) carries the block for the ControlNet path.
     """
     from manifold.config import load_config
 
     cfg = load_config(
         "configs/env/environment.yaml",
-        "configs/train/config_controlnet_grpo.yaml",
+        "configs/train/config_grpo.yaml",
         "configs/network/config_network.yaml",
     )
     assert tuple(int(d) for d in cfg.diffusion_unet_inference.dim) == (256, 256, 128)
@@ -2067,3 +2068,50 @@ def test_real_inputs_rejects_stale_cache_shape(tmp_path, monkeypatch):
             cfg, str(tmp_path / "native"), str(tmp_path / "reward.ckpt"),
             str(tmp_path / "cache"), torch.device("cpu"),
         )
+
+
+# -- unified GRPO recipe LR resolution (issue #180 / ADR-0034) -------------------
+
+
+def test_resolve_grpo_lr_uses_controlnet_override_on_controlnet_path():
+    """On the ControlNet path the optional ``controlnet.lr`` overrides ``grpo_train.lr``.
+
+    The ControlNet is warm-started from the supervised stage, so it refines at a smaller
+    LR than the from-scratch UNet; the effective LR must read the override when the policy
+    was inferred from a ControlNet export (``inputs.controlnet is not None``).
+    """
+    import omegaconf
+
+    from manifold.training.grpo_cli import _resolve_grpo_lr
+
+    cfg = omegaconf.OmegaConf.create(
+        {"grpo_train": {"lr": 1.0e-6}, "controlnet": {"lr": 1.0e-7}}
+    )
+    assert _resolve_grpo_lr(cfg, controlnet_present=True) == 1.0e-7
+
+
+def test_resolve_grpo_lr_uses_grpo_train_lr_on_unet_path():
+    """On the UNet path ``grpo_train.lr`` is the effective LR (no controlnet override)."""
+    import omegaconf
+
+    from manifold.training.grpo_cli import _resolve_grpo_lr
+
+    cfg = omegaconf.OmegaConf.create(
+        {"grpo_train": {"lr": 1.0e-6}, "controlnet": {"lr": 1.0e-7}}
+    )
+    assert _resolve_grpo_lr(cfg, controlnet_present=False) == 1.0e-6
+
+
+def test_resolve_grpo_lr_falls_back_when_controlnet_block_absent():
+    """A ControlNet path with no ``controlnet`` block falls back to ``grpo_train.lr``.
+
+    The override is optional, so a UNet-style config still launches the ControlNet path
+    at the ``grpo_train`` LR rather than raising (the policy is inferred from
+    ``--native-dir``, independent of the block's presence).
+    """
+    import omegaconf
+
+    from manifold.training.grpo_cli import _resolve_grpo_lr
+
+    cfg = omegaconf.OmegaConf.create({"grpo_train": {"lr": 1.0e-6}})  # no controlnet block
+    assert _resolve_grpo_lr(cfg, controlnet_present=True) == 1.0e-6

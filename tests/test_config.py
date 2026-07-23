@@ -354,17 +354,36 @@ def test_controlnet_supervised_recipe_loads() -> None:
     assert cfg.controlnet.num_inference_steps == 15  # validation rollout resolution
 
 
-def test_controlnet_grpo_recipe_loads() -> None:
-    """The ControlNet GRPO recipe (Mode-2) loads + carries the grpo_train block."""
+def test_unified_grpo_recipe_loads_both_policy_paths() -> None:
+    """The unified GRPO recipe (ADR-0034 / issue #180) loads + carries the GRPO train
+    block for BOTH policy paths in one config — no mode-specific preset.
+
+    The shared GRPO knobs (kl_coef / reward_bound / reward_temp / G / adv_clip_max)
+    carry over unchanged. The ControlNet path is driven by the native artifact under
+    --native-dir (ADR-0034, no preset), and its warm-start LR lives in the optional
+    ``controlnet`` block (1.0e-7 vs the UNet's ``grpo_train.lr`` 1.0e-6). The
+    ControlNet path's paired geometry (``diffusion_unet_inference.dim``) rides here too
+    (harmless on the UNet path — ``_unet_real_inputs`` does not read it).
+    """
     cfg = load_config(
         str(_REPOS / "configs/env/environment_brats2023.yaml"),
-        str(_REPOS / "configs/train/config_controlnet_grpo.yaml"),
+        str(_REPOS / "configs/train/config_grpo.yaml"),
         str(_REPOS / "configs/network/config_network.yaml"),
     )
-    # Smaller LR than the UNet policy recipe (warm-started from the supervised stage).
-    assert cfg.grpo_train.lr == 1.0e-7
+    # The shared GRPO knobs — carry over unchanged.
+    assert cfg.grpo_train.G == 8
+    assert cfg.grpo_train.adv_clip_max == 5.0
+    assert cfg.grpo_train.kl_coef == 0.1
+    assert cfg.grpo_train.reward_bound == "tanh"
+    assert cfg.grpo_train.reward_temp == 8.0
     assert list(cfg.grpo_train.eta_step_list) == [0, 1, 2, 3, 4, 5, 6, 7]
+    # The UNet-policy LR (the from-scratch default).
+    assert cfg.grpo_train.lr == 1.0e-6
     assert cfg.checkpoint.save_top_k == 1
+    # The ControlNet-path warm-start LR override (the optional ``controlnet`` block).
+    assert cfg.controlnet.lr == 1.0e-7
+    # The ControlNet path's paired geometry (_controlnet_real_inputs reads ``dim``).
+    assert tuple(int(d) for d in cfg.diffusion_unet_inference.dim) == (256, 256, 128)
 
 
 def test_build_controlnet_maps_diffusion_unet_block(tmp_path: Path) -> None:
@@ -443,3 +462,26 @@ def test_env_configs_are_tracked_in_repo() -> None:
         f"Tracked: {sorted(tracked)}"
     )
     assert "environment_brats2023.yaml" in tracked
+
+
+def test_no_mode_specific_grpo_preset_remains() -> None:
+    """Regression (issue #180 / ADR-0034): the two GRPO mode-specific presets are merged
+    into one ``config_grpo.yaml``. A mode-split preset (``config_controlnet_grpo.yaml``)
+    must not reappear — the ControlNet path is driven by the native artifact under
+    ``--native-dir`` + the optional ``controlnet`` block, not a separate preset. Fails
+    loudly if the mode-specific YAML is tracked again.
+    """
+    import subprocess
+
+    out = subprocess.run(
+        ["git", "ls-files", "configs/train/"],
+        check=True,
+        capture_output=True,
+        text=True,
+        cwd=_REPOS,
+    ).stdout
+    tracked = {Path(p) for p in out.split() if p}
+    assert Path("configs/train/config_controlnet_grpo.yaml") not in tracked, (
+        f"config_controlnet_grpo.yaml is still tracked — the GRPO mode-split preset was "
+        f"not merged (issue #180). Tracked train configs: {sorted(p.name for p in tracked)}"
+    )
