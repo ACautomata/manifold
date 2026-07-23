@@ -397,7 +397,6 @@ def main(argv: list[str] | None = None, *, data_provider=None) -> int:
         reward_bound=str(opt(gcfg, "reward_bound", "none")),
         reward_temp=float(opt(gcfg, "reward_temp", 8.0)),
         controlnet=inputs.controlnet,
-        freeze_unet=inputs.controlnet is not None,
     )
 
     if args.measure:

@@ -378,7 +378,7 @@ def test_frozen_arms_registered_but_dual_excluded():
         G=2, eta_step_list=(0,), num_steps=3, latent_shape=_LAT, lr=1e-3,
         reference_policy=reference, kl_coef=0.1,
     )
-    # The declared frozen set: reward + reference (Mode-1 unet is the trainable policy).
+    # The declared frozen set: reward + reference (the UNet policy's unet is trainable).
     assert mod._frozen_arm_names == frozenset({"reward_model", "reference_unet"})
 
     module_param_ids = {id(p) for p in mod.parameters()}
@@ -414,7 +414,7 @@ def test_state_dict_strips_frozen_arms_through_wrapper_prefix():
     Otherwise the multi-gigabyte frozen reward / reference / base arms leak into the
     checkpoint (the ADR-0031 off-checkpoint invariant breaks under wrapping).
     """
-    mod = _module()  # Mode-1: frozen reward_model, trainable unet
+    mod = _module()  # UNet policy: frozen reward_model, trainable unet
     assert "reward_model" in mod._frozen_arm_names
 
     # A minimal outer module mirrors how DDP / a wrapper nests the learner (the real
@@ -1107,20 +1107,20 @@ def test_codex116_padding_mask_uses_global_sum_count():
 
 
 # ============================================================================
-# Mode-2 (ControlNet on the frozen base) — ADR-0028 / issue #138
+# The ControlNet policy (ControlNet on the frozen base) — ADR-0028 / issue #138
 # ============================================================================
 #
-# The two-mode unification: Mode-2 freezes the base UNet, trains the ControlNet
-# against the frozen reward on z_K (unconditional — the ControlNet's conditional
-# fidelity is driven by the policy x0, not the reward input), and reuses the SAME
-# spine (transition log-prob / KL anchor / advantage / clipped surrogate /
+# The two-policy unification: the ControlNet policy freezes the base UNet, trains the
+# ControlNet against the frozen reward on z_K (unconditional — the ControlNet's
+# conditional fidelity is driven by the policy x0, not the reward input), and reuses
+# the SAME spine (transition log-prob / KL anchor / advantage / clipped surrogate /
 # singular-branch rollout).
-# The Mode-2 perturbed-step backward is autograd-safe ONLY because the base
-# wrapper's out-of-place residual forward (ADR-0026 corrected hazard) neutralizes
+# The ControlNet-policy perturbed-step backward is autograd-safe ONLY because the
+# base wrapper's out-of-place residual forward (ADR-0026 corrected hazard) neutralizes
 # MONAI's in-place residual adds — these tests pin that contract.
 
 
-def _mode2_base() -> UNet3DConditionModel:
+def _controlnet_base() -> UNet3DConditionModel:
     """A tiny base UNet with the zero-init output conv re-initialized.
 
     MONAI MAISI zero-initializes the final output projection, so at init the base
@@ -1136,24 +1136,24 @@ def _mode2_base() -> UNet3DConditionModel:
     return base
 
 
-def _mode2_controlnet(base) -> ControlNet3DConditionModel:
+def _controlnet_arm(base) -> ControlNet3DConditionModel:
     torch.manual_seed(1)
     cn = ControlNet3DConditionModel(num_class_embeds=4, include_spacing_input=True)
     cn.load_base_encoder_weights(base)
     return cn
 
 
-def _mode2_reward() -> RewardModel:
+def _controlnet_reward() -> RewardModel:
     """Single-latent reward (in_channels = C_latent) scoring z_K unconditionally.
 
-    Mode-2 scores the terminal latent ``z_K`` only (``reward(z_K)``) — the same
-    single-latent reward Mode-1 uses, NOT a 2·C condition-aware concat.
+    The ControlNet policy scores the terminal latent ``z_K`` only (``reward(z_K)``) —
+    the same single-latent reward the UNet policy uses, NOT a 2·C condition-aware concat.
     """
     torch.manual_seed(0)
     return RewardModel(spatial_dims=3, in_channels=4, channels=8, num_layers_d=1)
 
 
-def _mode2_batch() -> dict:
+def _controlnet_batch() -> dict:
     return {
         "src_latent": torch.randn(2, 4, 16, 16, 8),
         "spacing": torch.tensor([1.0, 1.0, 1.0]),
@@ -1162,7 +1162,7 @@ def _mode2_batch() -> dict:
     }
 
 
-def _mode2_module(base, controlnet, reward, *, reference=None, kl_coef=0.0, G=4):
+def _controlnet_module(base, controlnet, reward, *, reference=None, kl_coef=0.0, G=4):
     return GRPOModule(
         base,
         reward,
@@ -1174,7 +1174,6 @@ def _mode2_module(base, controlnet, reward, *, reference=None, kl_coef=0.0, G=4)
         reference_policy=reference,
         kl_coef=kl_coef,
         controlnet=controlnet,
-        freeze_unet=True,
         lr=1e-5,
     )
 
@@ -1197,22 +1196,63 @@ def _run_manual_training_step(module, batch):
     return module.training_step(dict(batch), 0), opt
 
 
-def test_mode2_requires_freeze_unet():
-    """Mode-2 (controlnet set) without freeze_unet=True is a construction error."""
-    base = _mode2_base()
-    cn = _mode2_controlnet(base)
-    with pytest.raises(ValueError, match="freeze_unet"):
-        GRPOModule(
-            base, _mode2_reward(), FlowMatchGRPOScheduler(eta=0.5),
-            controlnet=cn, freeze_unet=False, latent_shape=(4, 16, 16, 8),
-        )
+# -- issue #179: freeze_unet derived internally + a single z_K reward path -------
+#
+# `freeze_unet` is no longer a constructor argument: it is provably equal to
+# ``controlnet is not None`` (the old guard), so the module derives it internally
+# and the guard becomes a construction invariant. The ControlNet policy's
+# ``reward_fn(z_K)`` override and the UNet policy's ``reward_model(z_K)`` path did the
+# SAME thing (both call ``reward_model(z_K)``), so they collapse into one unconditional
+# scoring call.
 
 
-def test_mode2_freezes_base_and_optimizes_controlnet_only():
-    """Mode-2: base frozen + registered (dual-excluded); optimizer wires ControlNet only."""
-    base = _mode2_base()
-    cn = _mode2_controlnet(base)
-    module = _mode2_module(base, cn, _mode2_reward())
+def test_controlnet_policy_freezes_base_without_freeze_unet_arg():
+    """Setting ``controlnet`` (no ``freeze_unet`` arg) freezes the base — derived.
+
+    Issue #179: ``freeze_unet`` is derived internally from ControlNet presence, so the
+    ControlNet policy is constructed with NO ``freeze_unet`` argument; the base UNet is
+    frozen automatically (the old ``freeze_unet=True`` guard became a construction
+    invariant) and the ControlNet is the only trainable arm.
+    """
+    base = _controlnet_base()
+    cn = _controlnet_arm(base)
+    GRPOModule(
+        base, _controlnet_reward(), FlowMatchGRPOScheduler(eta=0.5),
+        G=4, eta_step_list=[0, 1], num_steps=4, latent_shape=(4, 16, 16, 8),
+        controlnet=cn, lr=1e-5,
+    )
+    # The base is frozen (the invariant the old `freeze_unet=True` guard enforced).
+    assert not any(p.requires_grad for p in base.parameters())
+    # The ControlNet is the only trainable arm.
+    assert any(p.requires_grad for p in cn.parameters())
+
+
+def test_init_signature_has_no_freeze_unet():
+    """``freeze_unet`` is no longer a constructor argument (issue #179)."""
+    import inspect
+
+    params = inspect.signature(GRPOModule.__init__).parameters
+    assert "freeze_unet" not in params
+
+
+def test_rollout_signature_has_single_reward_path():
+    """``singular_branch_rollout`` scores ``z_K`` via ``reward_model`` only (issue #179).
+
+    The ``reward_fn`` override collapsed into the one unconditional ``reward_model(z_K)``
+    call — both policies score the terminal latent with the shared realism reward, so the
+    branch is gone from the signature.
+    """
+    import inspect
+
+    params = inspect.signature(singular_branch_rollout).parameters
+    assert "reward_fn" not in params
+
+
+def test_controlnet_policy_freezes_base_and_optimizes_controlnet_only():
+    """ControlNet policy: base frozen + registered (dual-excluded); optimizer wires ControlNet only."""
+    base = _controlnet_base()
+    cn = _controlnet_arm(base)
+    module = _controlnet_module(base, cn, _controlnet_reward())
 
     # Base frozen + registered + dual-excluded (ADR-0031): present in parameters() but
     # requires_grad=False, off the optimizer, off state_dict() (the dual-exclude invariant
@@ -1232,18 +1272,18 @@ def test_mode2_freezes_base_and_optimizes_controlnet_only():
     # Mode-management (ADR-0031): module.train() recurses into the registered frozen base
     # — the train() override re-freezes it to eval so its BatchNorm stats cannot drift.
     module.train(True)
-    assert not module.unet.training, "Mode-2 frozen base must stay eval after module.train()"
+    assert not module.unet.training, "ControlNet-policy frozen base must stay eval after module.train()"
     assert module.controlnet.training, "trainable ControlNet follows the module mode"
 
 
-def test_mode2_kl_anchor_is_base_plus_controlnet_pair():
-    """Mode-2 reference_policy is a (base, controlnet) pair (ADR-0015 anchor)."""
+def test_controlnet_policy_kl_anchor_is_base_plus_controlnet_pair():
+    """ControlNet-policy reference_policy is a (base, controlnet) pair (ADR-0015 anchor)."""
     import copy
 
-    base = _mode2_base()
-    cn = _mode2_controlnet(base)
+    base = _controlnet_base()
+    cn = _controlnet_arm(base)
     ref = (copy.deepcopy(base), copy.deepcopy(cn))
-    module = _mode2_module(base, cn, _mode2_reward(), reference=ref, kl_coef=0.1)
+    module = _controlnet_module(base, cn, _controlnet_reward(), reference=ref, kl_coef=0.1)
     assert module.reference_unet is not None
     assert module.reference_controlnet is not None
     # Both frozen.
@@ -1251,14 +1291,14 @@ def test_mode2_kl_anchor_is_base_plus_controlnet_pair():
     assert not any(p.requires_grad for p in module.reference_controlnet.parameters())
 
 
-def test_mode2_kl_zero_at_init_when_anchor_matches_policy():
-    """The Mode-2 KL term is ~0 at init when the anchor is a deepcopy of the policy."""
+def test_controlnet_policy_kl_zero_at_init_when_anchor_matches_policy():
+    """The ControlNet-policy KL term is ~0 at init when the anchor is a deepcopy of the policy."""
     import copy
 
-    base = _mode2_base()
-    cn = _mode2_controlnet(base)
+    base = _controlnet_base()
+    cn = _controlnet_arm(base)
     ref = (copy.deepcopy(base), copy.deepcopy(cn))
-    module = _mode2_module(base, cn, _mode2_reward(), reference=ref, kl_coef=0.1)
+    module = _controlnet_module(base, cn, _controlnet_reward(), reference=ref, kl_coef=0.1)
 
     # A stored-step dict mimicking the rollout buffer at one perturbed step.
     module.scheduler.set_timesteps(4, device="cpu")  # sde_step_mean needs the grid
@@ -1279,10 +1319,10 @@ def test_mode2_kl_zero_at_init_when_anchor_matches_policy():
     assert torch.allclose(kl, torch.zeros_like(kl), atol=1e-5)
 
 
-def test_mode2_training_step_backward_through_perturbed_step():
-    """The Mode-2 inner-loop backward flows base-output→ControlNet (hazard neutralized).
+def test_controlnet_policy_training_step_backward_through_perturbed_step():
+    """The ControlNet-policy inner-loop backward flows base-output→ControlNet (hazard neutralized).
 
-    This is the load-bearing Mode-2 test: the perturbed-step grad re-eval runs the
+    This is the load-bearing ControlNet-policy test: the perturbed-step grad re-eval runs the
     frozen base forward WITH ControlNet residuals injected; the backward must reach
     the ControlNet WITHOUT the MONAI in-place-residual autograd error (the base
     wrapper's out-of-place ``_forward_with_residuals`` is what makes this safe), and
@@ -1290,10 +1330,10 @@ def test_mode2_training_step_backward_through_perturbed_step():
     clip_range + zero-conv gating), so assert on grad PRESENCE for the ControlNet
     and ABSENCE for the base.
     """
-    base = _mode2_base()
-    cn = _mode2_controlnet(base)
-    module = _mode2_module(base, cn, _mode2_reward())
-    out, _ = _run_manual_training_step(module, _mode2_batch())
+    base = _controlnet_base()
+    cn = _controlnet_arm(base)
+    module = _controlnet_module(base, cn, _controlnet_reward())
+    out, _ = _run_manual_training_step(module, _controlnet_batch())
 
     assert torch.isfinite(out["loss"])
     n_cn_grad = sum(1 for p in cn.parameters() if p.grad is not None)
@@ -1302,26 +1342,26 @@ def test_mode2_training_step_backward_through_perturbed_step():
     assert all(g.abs().sum() == 0 for g in base_grads), "frozen base received grad"
 
 
-def test_mode2_optimizer_step_updates_controlnet_not_base():
+def test_controlnet_policy_optimizer_step_updates_controlnet_not_base():
     """A real opt.step() moves ControlNet params; the frozen base never moves."""
-    base = _mode2_base()
-    cn = _mode2_controlnet(base)
-    module = _mode2_module(base, cn, _mode2_reward())
+    base = _controlnet_base()
+    cn = _controlnet_arm(base)
+    module = _controlnet_module(base, cn, _controlnet_reward())
     base_before = [p.detach().clone() for p in base.parameters()]
 
-    out, _ = _run_manual_training_step(module, _mode2_batch())
+    out, _ = _run_manual_training_step(module, _controlnet_batch())
     assert torch.isfinite(out["loss"])
     # The frozen base never moved (no grad, never stepped).
     for before, after in zip(base_before, base.parameters()):
         assert torch.equal(before, after)
 
 
-def test_mode2_conditioning_reads_src_tgt_labels():
-    """Mode-2 _conditioning returns (x_src, src_labels, tgt_labels) as cond."""
-    base = _mode2_base()
-    cn = _mode2_controlnet(base)
-    module = _mode2_module(base, cn, _mode2_reward())
-    spacing_t, class_labels, B, cond = module._conditioning(_mode2_batch())
+def test_controlnet_policy_conditioning_reads_src_tgt_labels():
+    """ControlNet-policy _conditioning returns (x_src, src_labels, tgt_labels) as cond."""
+    base = _controlnet_base()
+    cn = _controlnet_arm(base)
+    module = _controlnet_module(base, cn, _controlnet_reward())
+    spacing_t, class_labels, B, cond = module._conditioning(_controlnet_batch())
     assert B == 2
     assert cond is not None
     x_src, src_labels, tgt_labels = cond
@@ -1358,15 +1398,15 @@ class _ToyPairedCondDS(Dataset):
         }
 
 
-def _mode2_inputs():
+def _controlnet_inputs():
     """ControlNet injection-seam bundle: frozen base + trainable ControlNet + reward + paired conditioning."""
     from manifold.training.grpo_cli import GRPOInputs
 
-    base = _mode2_base()
-    cn = _mode2_controlnet(base)
+    base = _controlnet_base()
+    cn = _controlnet_arm(base)
     return GRPOInputs(
         policy=base,
-        reward_model=_mode2_reward(),
+        reward_model=_controlnet_reward(),
         scheduler=FlowMatchGRPOScheduler(eta=0.5),
         train_ds=_ToyPairedCondDS(),
         val_ds=_ToyPairedCondDS(),
@@ -1389,7 +1429,7 @@ def test_main_runs_end_to_end_controlnet_policy(tmp_path):
     rc = grpo_main(
         ["-e", env, "-c", train, "-t", net, "-g", "1", "--max-epochs", "1",
          "grpo_train.latent_shape=[4,16,16,8]"],
-        data_provider=lambda cfg, device: _mode2_inputs(),
+        data_provider=lambda cfg, device: _controlnet_inputs(),
     )
     assert rc == 0
     ckpts = list(Path(str(tmp_path / "model")).glob("*.ckpt"))
@@ -1411,11 +1451,11 @@ def test_run_grpo_training_skips_unconditional_fid_when_controlnet_present(tmp_p
     class _FakeVAE:  # FID triple present — would force fid_active=True without the controlnet
         pass
 
-    base = _mode2_base()
-    cn = _mode2_controlnet(base)
+    base = _controlnet_base()
+    cn = _controlnet_arm(base)
     inputs = GRPOInputs(
         policy=base,
-        reward_model=_mode2_reward(),
+        reward_model=_controlnet_reward(),
         scheduler=FlowMatchGRPOScheduler(eta=0.5),
         train_ds=_ToyPairedCondDS(),
         val_ds=_ToyPairedCondDS(),
@@ -1428,7 +1468,7 @@ def test_run_grpo_training_skips_unconditional_fid_when_controlnet_present(tmp_p
     module = GRPOModule(
         base, inputs.reward_model, FlowMatchGRPOScheduler(eta=0.5),
         G=2, eta_step_list=[0], num_steps=3, latent_shape=(4, 16, 16, 8),
-        controlnet=cn, freeze_unet=True, lr=1e-5,
+        controlnet=cn, lr=1e-5,
     )
     trainer, ckpt = run_grpo_training(
         module=module, inputs=inputs, model_dir=str(tmp_path),
@@ -1456,11 +1496,11 @@ def test_run_grpo_training_controlnet_callback_override_drops_fid(tmp_path, monk
     class _FakeVAE:  # FID triple present — would force fid_active=True without the controlnet
         pass
 
-    base = _mode2_base()
-    cn = _mode2_controlnet(base)
+    base = _controlnet_base()
+    cn = _controlnet_arm(base)
     inputs = GRPOInputs(
         policy=base,
-        reward_model=_mode2_reward(),
+        reward_model=_controlnet_reward(),
         scheduler=FlowMatchGRPOScheduler(eta=0.5),
         train_ds=_ToyPairedCondDS(),
         val_ds=_ToyPairedCondDS(),
@@ -1473,7 +1513,7 @@ def test_run_grpo_training_controlnet_callback_override_drops_fid(tmp_path, monk
     module = GRPOModule(
         base, inputs.reward_model, FlowMatchGRPOScheduler(eta=0.5),
         G=2, eta_step_list=[0], num_steps=3, latent_shape=(4, 16, 16, 8),
-        controlnet=cn, freeze_unet=True, lr=1e-5,
+        controlnet=cn, lr=1e-5,
     )
 
     # Capture the SPINE's post-merge drop log (core.rank_zero_info); the shell's
@@ -1607,19 +1647,19 @@ def test_detect_controlnet_export_fails_fast_when_controlnet_subdir_missing(tmp_
 # the manifest / split / warmed cache / reward ckpt (a fake-seam smoke).
 
 
-def _save_mode2_reward_ckpt(path, *, in_channels=4) -> None:
+def _save_controlnet_reward_ckpt(path, *, in_channels=4) -> None:
     """Write a minimal reward ckpt (state_dict keys prefixed ``reward_model.``).
 
-    Mode-2's reward scores the terminal latent ``z_K`` unconditionally
-    (``in_channels = C_latent``, the same single-latent reward Mode-1 uses) — NOT the
-    2·C condition-aware paired reward. _real_inputs_mode2 strips the ``reward_model.``
+    The ControlNet policy's reward scores the terminal latent ``z_K`` unconditionally
+    (``in_channels = C_latent``, the same single-latent reward the UNet policy uses) —
+    NOT the 2·C condition-aware paired reward. _controlnet_real_inputs strips the ``reward_model.``
     Lightning prefix.
     """
     rm = RewardModel(spatial_dims=3, in_channels=in_channels, channels=8, num_layers_d=1)
     torch.save({"state_dict": {f"reward_model.{k}": v for k, v in rm.state_dict().items()}}, str(path))
 
 
-def _fake_mode2_manifests(n_train=4, n_val=2):
+def _fake_controlnet_manifests(n_train=4, n_val=2):
     train = [
         {"src": f"/t/s{i}-t1n.nii.gz", "tgt": f"/t/s{i}-t1c.nii.gz", "src_label": 0, "tgt_label": 1}
         for i in range(n_train)
@@ -1631,17 +1671,17 @@ def _fake_mode2_manifests(n_train=4, n_val=2):
     return train, val
 
 
-class _FakeMode2PairedDS(Dataset):
+class _FakeControlnetPairedDS(Dataset):
     """A warmed ``PairedLatentDataset`` stand-in emitting the paired conditioning keys.
 
     Serves scaled latents + labels + spacing; carries a settable ``scaling_factor``
-    sentinel so the test asserts _real_inputs_mode2 overwrote it with the export's
+    sentinel so the test asserts _controlnet_real_inputs overwrote it with the export's
     (ADR-0021 scale-consistency). ``warm_cache`` is a no-op (the fake is pre-warmed).
     """
 
     def __init__(self, n):
         self._n = n
-        self.scaling_factor = None  # sentinel: _real_inputs_mode2 must set this
+        self.scaling_factor = None  # sentinel: _controlnet_real_inputs must set this
         torch.manual_seed(0)
         self._lat = torch.randn(n, 4, 16, 16, 8)
 
@@ -1660,7 +1700,7 @@ class _FakeMode2PairedDS(Dataset):
         }
 
 
-def _mode2_cfg(tmp_path):
+def _controlnet_cfg(tmp_path):
     import omegaconf
 
     return omegaconf.OmegaConf.create(
@@ -1696,9 +1736,9 @@ def test_real_inputs_loads_controlnet_for_controlnet_export(tmp_path, monkeypatc
     from manifold.training import grpo_cli
 
     save_controlnet_export(tmp_path / "native")
-    _save_mode2_reward_ckpt(tmp_path / "reward.ckpt", in_channels=4)
+    _save_controlnet_reward_ckpt(tmp_path / "reward.ckpt", in_channels=4)
 
-    train_manifest, val_manifest = _fake_mode2_manifests()
+    train_manifest, val_manifest = _fake_controlnet_manifests()
     monkeypatch.setattr(pb, "build_brats_pair_manifest", lambda *a, **k: train_manifest + val_manifest)
     monkeypatch.setattr(
         paired_manifests, "_train_val_manifests", lambda cfg, manifest: (train_manifest, val_manifest)
@@ -1706,7 +1746,7 @@ def test_real_inputs_loads_controlnet_for_controlnet_export(tmp_path, monkeypatc
 
     # Fake the warmed paired cache: two instances (train then val), pre-warmed.
     built = []
-    fake_train, fake_val = _FakeMode2PairedDS(4), _FakeMode2PairedDS(2)
+    fake_train, fake_val = _FakeControlnetPairedDS(4), _FakeControlnetPairedDS(2)
     _queue = [fake_val, fake_train]  # first build pops train, second pops val
 
     class _FakePLD:
@@ -1726,7 +1766,7 @@ def test_real_inputs_loads_controlnet_for_controlnet_export(tmp_path, monkeypatc
 
     monkeypatch.setattr(pld_mod, "PairedLatentDataset", _FakePLD)
 
-    cfg = _mode2_cfg(tmp_path)
+    cfg = _controlnet_cfg(tmp_path)
     inputs = grpo_cli._real_inputs(
         cfg, str(tmp_path / "native"), str(tmp_path / "reward.ckpt"),
         str(tmp_path / "cache"), torch.device("cpu"),
@@ -1779,7 +1819,7 @@ def test_real_inputs_routes_raw_jit_export_to_unet_path(tmp_path, monkeypatch):
     import omegaconf
 
     _save_jit_export(tmp_path / "native")
-    _save_mode2_reward_ckpt(tmp_path / "reward.ckpt", in_channels=4)
+    _save_controlnet_reward_ckpt(tmp_path / "reward.ckpt", in_channels=4)
 
     # Fake the latent cache (the raw-JiT path reads conditioning + real-reference
     # latents from it): 4 subjects, each one latent, val_fraction splits 2 / 2.
@@ -1831,15 +1871,15 @@ def test_real_inputs_raises_on_no_val_split_controlnet_export(tmp_path, monkeypa
     from manifold.training import grpo_cli
 
     save_controlnet_export(tmp_path / "native")
-    _save_mode2_reward_ckpt(tmp_path / "reward.ckpt", in_channels=4)
+    _save_controlnet_reward_ckpt(tmp_path / "reward.ckpt", in_channels=4)
 
-    train_manifest, _ = _fake_mode2_manifests()
+    train_manifest, _ = _fake_controlnet_manifests()
     monkeypatch.setattr(pb, "build_brats_pair_manifest", lambda *a, **k: train_manifest)
     monkeypatch.setattr(
         paired_manifests, "_train_val_manifests", lambda cfg, manifest: (train_manifest, [])
     )
 
-    cfg = _mode2_cfg(tmp_path)
+    cfg = _controlnet_cfg(tmp_path)
     with pytest.raises(ValueError, match="val split"):
         grpo_cli._real_inputs(
             cfg, str(tmp_path / "native"), str(tmp_path / "reward.ckpt"),
@@ -1865,15 +1905,15 @@ def test_real_inputs_rejects_condition_aware_reward_ckpt(tmp_path, monkeypatch):
 
     save_controlnet_export(tmp_path / "native")
     # 2·C condition-aware ckpt: in_channels = 8 = 2 * C_latent(4).
-    _save_mode2_reward_ckpt(tmp_path / "reward.ckpt", in_channels=8)
+    _save_controlnet_reward_ckpt(tmp_path / "reward.ckpt", in_channels=8)
 
-    train_manifest, val_manifest = _fake_mode2_manifests()
+    train_manifest, val_manifest = _fake_controlnet_manifests()
     monkeypatch.setattr(pb, "build_brats_pair_manifest", lambda *a, **k: train_manifest + val_manifest)
     monkeypatch.setattr(
         paired_manifests, "_train_val_manifests", lambda cfg, manifest: (train_manifest, val_manifest)
     )
 
-    cfg = _mode2_cfg(tmp_path)
+    cfg = _controlnet_cfg(tmp_path)
     with pytest.raises(ValueError, match="in_channels=8"):
         grpo_cli._real_inputs(
             cfg, str(tmp_path / "native"), str(tmp_path / "reward.ckpt"),
@@ -1917,14 +1957,14 @@ def test_main_real_path_builds_controlnet_module_when_native_is_controlnet_expor
     omegaconf.OmegaConf.save(net_cfg, net)
 
     save_controlnet_export(tmp_path / "native")
-    _save_mode2_reward_ckpt(tmp_path / "reward.ckpt", in_channels=4)
+    _save_controlnet_reward_ckpt(tmp_path / "reward.ckpt", in_channels=4)
 
-    train_manifest, val_manifest = _fake_mode2_manifests()
+    train_manifest, val_manifest = _fake_controlnet_manifests()
     monkeypatch.setattr(pb, "build_brats_pair_manifest", lambda *a, **k: train_manifest + val_manifest)
     monkeypatch.setattr(
         paired_manifests, "_train_val_manifests", lambda cfg, manifest: (train_manifest, val_manifest)
     )
-    fake_train, fake_val = _FakeMode2PairedDS(4), _FakeMode2PairedDS(2)
+    fake_train, fake_val = _FakeControlnetPairedDS(4), _FakeControlnetPairedDS(2)
     _queue = [fake_val, fake_train]
 
     class _FakePLD:
@@ -1958,10 +1998,10 @@ def test_main_real_path_builds_controlnet_module_when_native_is_controlnet_expor
 # -- codex #151 regression guards ----------------------------------------------
 
 
-def test_mode2_recipe_resolves_inference_dim():
-    """The committed Mode-2 recipe defines diffusion_unet_inference.dim (codex #151 P1).
+def test_controlnet_policy_recipe_resolves_inference_dim():
+    """The committed ControlNet recipe defines diffusion_unet_inference.dim (codex #151 P1).
 
-    _real_inputs_mode2 reads cfg.diffusion_unet_inference.dim directly (load-bearing
+    _controlnet_real_inputs reads cfg.diffusion_unet_inference.dim directly (load-bearing
     for the paired cache's target_dim / divisor); the recipe must define it so the
     documented launch does not raise ConfigAttributeError.
     """
@@ -1990,9 +2030,9 @@ def test_real_inputs_rejects_stale_cache_shape(tmp_path, monkeypatch):
     from manifold.training import grpo_cli
 
     save_controlnet_export(tmp_path / "native")
-    _save_mode2_reward_ckpt(tmp_path / "reward.ckpt", in_channels=4)
+    _save_controlnet_reward_ckpt(tmp_path / "reward.ckpt", in_channels=4)
 
-    train_manifest, val_manifest = _fake_mode2_manifests()
+    train_manifest, val_manifest = _fake_controlnet_manifests()
     monkeypatch.setattr(pb, "build_brats_pair_manifest", lambda *a, **k: train_manifest + val_manifest)
     monkeypatch.setattr(
         paired_manifests, "_train_val_manifests", lambda cfg, manifest: (train_manifest, val_manifest)
@@ -2021,7 +2061,7 @@ def test_real_inputs_rejects_stale_cache_shape(tmp_path, monkeypatch):
 
     monkeypatch.setattr(pld_mod, "PairedLatentDataset", _FakePLDStale)
 
-    cfg = _mode2_cfg(tmp_path)  # dim [128,128,64]; autoencoder [8,8] -> divisor 2 -> (64,64,32)
+    cfg = _controlnet_cfg(tmp_path)  # dim [128,128,64]; autoencoder [8,8] -> divisor 2 -> (64,64,32)
     with pytest.raises(ValueError, match="Cached paired latent"):
         grpo_cli._real_inputs(
             cfg, str(tmp_path / "native"), str(tmp_path / "reward.ckpt"),

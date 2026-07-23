@@ -92,9 +92,9 @@ def _heun_one_step(
     denominator diverges) — the same convention as
     :func:`~manifold.modules.sample_latent_flow` / :func:`partial_denoise_rollout`.
 
-    ``x0_fn`` (Mode-2) overrides the x0 prediction: called as
+    ``x0_fn`` (the ControlNet policy) overrides the x0 prediction: called as
     ``x0_fn(z, t, fn_labels)`` and must return the clean-latent prediction. ``None``
-    (Mode-1) uses ``unet(sample=z, timestep=t, spacing, class_labels)`` directly.
+    (the UNet policy) uses ``unet(sample=z, timestep=t, spacing, class_labels)`` directly.
     """
     if x0_fn is None:
         def x0_fn(z_, t_, _labels):  # noqa: ANN001
@@ -118,8 +118,8 @@ def _heun_rollout(
     (``start_i=k+1``). ``nodes`` is the scheduler's batch-wide grid
     (:meth:`~manifold.FlowMatchGRPOScheduler.set_timesteps`); the steps are the
     scheduler's inherited ``euler_step`` / ``heun_correct`` (never reimplemented).
-    ``x0_fn`` / ``fn_labels`` (Mode-2) thread a ControlNet-conditioned x0 prediction
-    through every step; ``None`` (Mode-1) uses the plain UNet call.
+    ``x0_fn`` / ``fn_labels`` (the ControlNet policy) thread a ControlNet-conditioned x0
+    prediction through every step; ``None`` (the UNet policy) uses the plain UNet call.
     """
     zs = [z_start]
     z = z_start
@@ -147,7 +147,6 @@ def singular_branch_rollout(
     adv_clip_max: float = 5.0,
     reward_transform: Callable[[Tensor], Tensor] | None = None,
     x0_fn: Callable[..., Tensor] | None = None,
-    reward_fn: Callable[[Tensor], Tensor] | None = None,
     fn_labels_bg: Any = None,
 ) -> list[RolloutStep]:
     """One Granular-GRPO singular-branch rollout (no_grad) → per-step buffer.
@@ -165,7 +164,7 @@ def singular_branch_rollout(
         scheduler: a :class:`FlowMatchGRPOScheduler` (its grid + inherited Heun +
             ``sde_step_mean`` run; ``set_timesteps`` is called here).
         reward_model: the frozen :class:`~manifold.RewardModel` scoring ``z_K``
-            (Mode-1) — ignored when ``reward_fn`` is given (Mode-2).
+            (the terminal latent, unconditionally — both policies).
         noise: the pure-noise group start ``(B, C, D, H, W)`` — shared across siblings.
         spacing / modality: the manifold conditioning (voxel spacing + class label).
         G: the group size (siblings per conditioning).
@@ -175,17 +174,14 @@ def singular_branch_rollout(
         adv_clip_max: the advantage-magnitude clip.
         reward_transform: optional monotone bound applied to the raw rewards before the
             group normalization (the v2 tanh cap, ADR-0015); ``None`` ⇒ raw logit (v1).
-        x0_fn: optional Mode-2 policy x0 prediction override, called
+        x0_fn: optional ControlNet-policy x0 prediction override, called
             ``x0_fn(z, t_scalar, fn_labels_bg)`` at every eval point (anchor, perturbed,
             suffix). Must be pre-bound to the ControlNet-conditioned frozen-base
             forward and the current conditioning (``z_k``-batch for anchor/perturbed,
             ``(B·G,)`` for the suffix — the same ``fn_labels_bg`` batching). ``None``
-            (Mode-1) uses the plain ``unet(sample, timestep, spacing, class_labels)``.
-        reward_fn: optional Mode-2 reward override, called ``reward_fn(z_K_bg)`` on the
-            ``(B·G,)`` terminal latents (scores the terminal latent unconditionally,
-            like Mode-1). ``None`` (Mode-1) calls ``reward_model(z_K)``.
+            (the UNet policy) uses the plain ``unet(sample, timestep, spacing, class_labels)``.
         fn_labels_bg: the ``(B·G,)``-batched conditioning labels forwarded to
-            ``x0_fn`` (Mode-2); ignored in Mode-1.
+            ``x0_fn`` (the ControlNet policy); ignored for the UNet policy.
 
     Returns:
         One :data:`RolloutStep` per ``k`` in ``eta_step_list`` (sorted ascending).
@@ -257,10 +253,7 @@ def singular_branch_rollout(
             # float(): under cuda autocast the PatchGAN emits fp16 rewards; the
             # group-normalization (std / (r−mean)) must run in fp32 to avoid the
             # fp16 square overflowing for large rewards (mirrors validation_step).
-            if reward_fn is not None:
-                rewards = reward_fn(z_K).float().reshape(B, G)  # (B, G) — Mode-2 (z_K only)
-            else:
-                rewards = reward_model(z_K).float().reshape(B, G)  # (B, G) — Mode-1 unconditional
+            rewards = reward_model(z_K).float().reshape(B, G)  # (B, G) — unconditional
             if reward_transform is not None:  # the v2 bound (ADR-0015) — caps the raw logit
                 rewards = reward_transform(rewards)
             advantage = group_advantage(rewards, adv_clip_max=adv_clip_max)  # (B, G)
@@ -311,8 +304,8 @@ class GRPOModule(spt.Module):
     one ``opt.step`` per step so the ratio drifts off 1 and the clip **binds** (a real
     trust region — a single aggregated step would collapse it to REINFORCE).
 
-    Holds the **trainable JiT UNet** (Mode-1 policy) OR the **frozen base UNet +
-    trainable ControlNet** (Mode-2 policy), plus the **frozen**
+    Holds EITHER the **trainable JiT UNet** (the UNet policy) OR the **frozen base UNet
+    + trainable ControlNet** (the ControlNet policy), plus the **frozen**
     :class:`~manifold.RewardModel` and (optional) frozen reference policy. The frozen
     arms are **registered + dual-excluded** (ADR-0031): normal ``nn.Module`` children
     so Lightning owns their device placement, kept off the optimizer and the checkpoint
@@ -320,45 +313,47 @@ class GRPOModule(spt.Module):
     :meth:`eval` across ``module.train()`` via the :meth:`train` override. No EMA;
     resumes / selects / exports the raw arm (ADR-0006/0012).
 
-    **Two modes (ADR-0028).** The transition ``x_θ`` source is unified behind
-    :meth:`_x0_policy`: Mode-1 reads it from the trainable UNet; Mode-2 reads it from
-    the frozen base + trainable ControlNet (the base forward consumes the ControlNet's
-    residual injections through the out-of-place residual forward — ADR-0026's
-    corrected hazard, so the Mode-2 perturbed-step backward is autograd-safe). The
-    optimizer wires the UNet params (Mode-1) or the ControlNet params (Mode-2). The
-    KL anchor is ``deepcopy`` of the **policy** — Mode-2 captures base **and**
-    ControlNet, so the closed-form diagonal-Gaussian KL stays valid while the
-    ControlNet drifts (``σ`` is θ-independent ⇒ trace + log-det cancel). The spine
-    (:func:`gaussian_log_prob`, :meth:`_transition_kl`, :func:`group_advantage`,
-    :func:`clipped_surrogate_loss`, the multi-step PPO inner loop, the singular-branch
-    rollout) reuses verbatim in both modes.
+    **Two policies, one reward (ADR-0028 / ADR-0034).** The only thing that differs
+    between the two policies is the transition ``x_θ`` source: the UNet policy reads it
+    from the trainable UNet; the ControlNet policy reads it from the frozen base +
+    trainable ControlNet (the base forward consumes the ControlNet's residual injections
+    through the out-of-place residual forward — ADR-0026's corrected hazard, so the
+    ControlNet-policy perturbed-step backward is autograd-safe). Both score the terminal
+    latent ``z_K`` with the SAME shared realism ``reward_model`` (``reward(z_K)``,
+    unconditionally). The optimizer wires the UNet params (the UNet policy) or the
+    ControlNet params (the ControlNet policy). The KL anchor is ``deepcopy`` of the
+    **policy** — the ControlNet policy captures base **and** ControlNet, so the
+    closed-form diagonal-Gaussian KL stays valid while the ControlNet drifts (``σ`` is
+    θ-independent ⇒ trace + log-det cancel). The spine (:func:`gaussian_log_prob`,
+    :meth:`_transition_kl`, :func:`group_advantage`, :func:`clipped_surrogate_loss`,
+    the multi-step PPO inner loop, the singular-branch rollout) reuses verbatim for both
+    policies.
 
     Args:
-        policy: the trainable JiT x0-denoiser UNet (Mode-1 policy). In Mode-2 this is
-            the **frozen base** UNet (registered + dual-excluded — see ``controlnet``).
+        policy: the trainable JiT x0-denoiser UNet (the UNet policy). For the ControlNet
+            policy this is the **frozen base** UNet (registered + dual-excluded — the
+            base freeze is derived from ControlNet presence, not a constructor arg).
         reward_model: the frozen :class:`~manifold.RewardModel` scoring the terminal
-            latent (Mode-1 and Mode-2 both score ``z_K`` unconditionally, ``reward(z_K)``).
+            latent (both policies score ``z_K`` unconditionally, ``reward(z_K)``).
         scheduler: a stateless :class:`FlowMatchGRPOScheduler`.
         G: the group size (siblings per conditioning).
         eta_step_list: the perturbed step indices (the noisy-half, e.g. ``[0..7]``).
         clip_range: ε for the clipped surrogate (the tight PPO trust region).
-        lr: the Adam LR over the optimized params (UNet in Mode-1, ControlNet in Mode-2).
+        lr: the Adam LR over the optimized params (the UNet or the ControlNet).
         adv_clip_max: the advantage-magnitude clip.
         num_steps: the anchor grid resolution (train rollout + validation Heun steps).
         latent_shape: the rollout latent shape ``(C, D, H, W)`` (GRPO is generative —
             the Module samples the group noise of this shape).
         reference_policy: optional frozen deepcopy of the policy — the KL anchor
-            (ADR-0015). Mode-2: a ``(base, controlnet)`` pair (see
+            (ADR-0015). For the ControlNet policy: a ``(base, controlnet)`` pair (see
             :meth:`_transition_kl`). ``None`` ⇒ no KL (the v1 default).
         kl_coef: β for the KL-to-reference penalty; ``≤ 0`` disables it (v1 default 0.0).
         reward_bound: ``"none"`` (raw logit, v1) or ``"tanh"`` (soft-clip, ADR-0015).
         reward_temp: the tanh temperature (≈ the real-data reward std, ~8 from calibration).
-        controlnet: optional :class:`~manifold.ControlNet3DConditionModel`. When set
-            (with ``freeze_unet=True``) the module runs **Mode-2**: the base UNet is
-            frozen + registered (dual-excluded), the ControlNet is the only optimized
+        controlnet: optional :class:`~manifold.ControlNet3DConditionModel`. When set the
+            module runs the **ControlNet policy**: the base UNet is frozen + registered
+            (dual-excluded) as a derived invariant, the ControlNet is the only optimized
             arm, and the batch must carry ``src_latent`` / ``src_label`` / ``tgt_label``.
-        freeze_unet: freeze the base UNet (required in Mode-2; a no-op guard in
-            Mode-1). When ``controlnet`` is set this must be ``True``.
     """
 
     #: Declares the metric this Module logs so the registry's
@@ -384,37 +379,31 @@ class GRPOModule(spt.Module):
         reward_bound: str = "none",
         reward_temp: float = 8.0,
         controlnet: Any = None,
-        freeze_unet: bool = False,
     ):
         if G < 2:
             # group_advantage normalizes over the G siblings via torch.std (Bessel,
             # needs ≥2 samples); G=1 ⇒ std=NaN ⇒ NaN advantage ⇒ NaN grads destroy
             # the policy in one step. GRPO needs ≥2 siblings by definition.
             raise ValueError(f"G must be >= 2 (need >= 2 siblings per group), got {G}.")
-        if controlnet is not None and not freeze_unet:
-            raise ValueError(
-                "Mode-2 (controlnet set) requires freeze_unet=True — the base UNet must "
-                "be frozen (registered + dual-excluded) so only the ControlNet is optimized."
-            )
         # NOTE: forward is NOT passed to spt.Module — training_step is overridden
         # directly (the multi-step inner loop cannot fit the single-loss seam).
         super().__init__(hparams={"lr": lr, "G": G, "clip_range": clip_range,
-                                  "num_steps": num_steps, "adv_clip_max": adv_clip_max,
-                                  "freeze_unet": freeze_unet})
-        self.freeze_unet = bool(freeze_unet)
+                                  "num_steps": num_steps, "adv_clip_max": adv_clip_max})
         if controlnet is not None:
-            # Mode-2: the base UNet is FROZEN + registered (a normal nn.Module child
-            # so Lightning's automatic .to(device) moves it per-rank), kept off the
-            # optimizer and the checkpoint via the dual-exclude in state_dict() /
-            # load_state_dict() (ADR-0031). The ControlNet is the only optimized +
-            # checkpointed arm. (No manual on_fit_start .to(device) — Lightning owns it.)
+            # The ControlNet policy: the base UNet is FROZEN + registered (a normal
+            # nn.Module child so Lightning's automatic .to(device) moves it per-rank),
+            # kept off the optimizer and the checkpoint via the dual-exclude in
+            # state_dict() / load_state_dict() (ADR-0031). The base freeze is a derived
+            # invariant (``controlnet is not None``), not a constructor arg. The
+            # ControlNet is the only optimized + checkpointed arm. (No manual
+            # on_fit_start .to(device) — Lightning owns it.)
             policy = policy.eval()
             for p in policy.parameters():
                 p.requires_grad_(False)
             self.unet = policy
             self.controlnet = controlnet  # registered → optimized / checkpointed
         else:
-            # Mode-1: the UNet is the trainable policy (registered, optimized).
+            # The UNet policy: the UNet is the trainable policy (registered, optimized).
             self.unet = policy
             self.controlnet = None
         self.scheduler = scheduler  # carries η (the SDE exploration knob)
@@ -431,10 +420,11 @@ class GRPOModule(spt.Module):
         self.reward_model = reward_model
 
         # Frozen reference policy (the KL anchor, ADR-0015): a deepcopy of the policy,
-        # registered + dual-excluded exactly like the reward (ADR-0031). Mode-2: a
-        # ``(base, controlnet)`` pair — both frozen + registered. ``None`` ⇒ no KL (the
-        # v1 default); the None arms stay plain attributes (not submodules), so they
-        # contribute no keys to state_dict() and no params to parameters().
+        # registered + dual-excluded exactly like the reward (ADR-0031). For the
+        # ControlNet policy: a ``(base, controlnet)`` pair — both frozen + registered.
+        # ``None`` ⇒ no KL (the v1 default); the None arms stay plain attributes (not
+        # submodules), so they contribute no keys to state_dict() and no params to
+        # parameters().
         if reference_policy is not None:
             if controlnet is not None:
                 ref_base, ref_controlnet = reference_policy
@@ -470,13 +460,13 @@ class GRPOModule(spt.Module):
         self._val_reward_count = 0
 
         #: The registered submodule prefixes kept off the optimizer + checkpoint
-        #: (ADR-0031 dual-exclude). Always the frozen reward; the Mode-2 frozen base
-        #: ``unet``; and the frozen KL-anchor arms when present. The Mode-1 ``unet``
-        #: (the trainable policy) is intentionally NOT here. Declared once at init —
-        #: the arm set is fixed at construction — and shared by state_dict() (strip)
-        #: and load_state_dict() (the strict-load allow-list).
+        #: (ADR-0031 dual-exclude). Always the frozen reward; the ControlNet-policy
+        #: frozen base ``unet``; and the frozen KL-anchor arms when present. The UNet-
+        #: policy ``unet`` (the trainable policy) is intentionally NOT here. Declared
+        #: once at init — the arm set is fixed at construction — and shared by
+        #: state_dict() (strip) and load_state_dict() (the strict-load allow-list).
         frozen = {"reward_model"}
-        if self.controlnet is not None:  # Mode-2: the base UNet is the frozen arm
+        if self.controlnet is not None:  # ControlNet policy: the base UNet is the frozen arm
             frozen.add("unet")
         if self.reference_unet is not None:
             frozen.add("reference_unet")
@@ -484,10 +474,10 @@ class GRPOModule(spt.Module):
             frozen.add("reference_controlnet")
         self._frozen_arm_names: frozenset[str] = frozenset(frozen)
 
-    # -- Mode-2 (ControlNet) helpers ------------------------------------------
+    # -- ControlNet-policy helpers ---------------------------------------------
 
     def _policy_device(self) -> torch.device:
-        """Device of the optimized arm (Mode-1 UNet / Mode-2 ControlNet)."""
+        """Device of the optimized arm (the UNet, or the ControlNet when present)."""
         params_owner = self.controlnet if self.controlnet is not None else self.unet
         return next(params_owner.parameters()).device
 
@@ -496,20 +486,21 @@ class GRPOModule(spt.Module):
         return _controlnet_x0(self.unet, controlnet, z, t, x_src, spacing_t, src_labels, tgt_labels)
 
     def _reference_x0(self, z, t, spacing_t, class_labels, x_src=None, src_labels=None, tgt_labels=None):
-        """The frozen KL-anchor x0 at ``z`` (Mode-1 UNet / Mode-2 base+ControlNet)."""
+        """The frozen KL-anchor x0 at ``z`` (the UNet, or the base+ControlNet when present)."""
         if self.reference_controlnet is not None:
             return _controlnet_x0(
                 self.reference_unet, self.reference_controlnet, z, t, x_src, spacing_t, src_labels, tgt_labels
             )
         return self.reference_unet(sample=z, timestep=t, spacing=spacing_t, class_labels=class_labels)
 
-    def _mode2_rollout_fns(self, x_src, spacing_t, src_labels, tgt_labels):
-        """Build the Mode-2 ``(x0_fn, reward_fn, fn_labels_bg)`` the rollout consumes.
+    def _controlnet_rollout_fns(self, x_src, spacing_t, src_labels, tgt_labels):
+        """Build the ControlNet-policy ``(x0_fn, fn_labels_bg)`` the rollout consumes.
 
         ``x0_fn`` is the frozen-base + trainable-ControlNet x0 prediction (the unified
         ``x_θ`` source); the inner-loop grad flows into the ControlNet through the base's
-        out-of-place residual forward (ADR-0026 corrected hazard). ``reward_fn`` scores
-        the terminal latent ``z_K`` unconditionally (``reward(z_K)``) — the ControlNet's
+        out-of-place residual forward (ADR-0026 corrected hazard). The terminal latent
+        ``z_K`` is scored unconditionally by the shared ``reward_model``
+        (``reward(z_K)``) in :func:`singular_branch_rollout` — the ControlNet's
         conditional fidelity is driven by the policy x0 (which sees ``x_src``), not by
         the reward input. ``x_src`` /
         ``src_labels`` / ``tgt_labels`` are G-expanded ONCE here (flat index ``b·G+g``
@@ -539,27 +530,24 @@ class GRPOModule(spt.Module):
                 sp = sp_bg[:: self.G] if sp_bg.dim() == 2 else sp_bg
             return self._controlnet_forward(self.controlnet, z_, t_, xs, sp, sl, tl)
 
-        def reward_fn(z_K_bg):
-            return self.reward_model(z_K_bg)
-
-        return x0_fn, reward_fn, fn_labels_bg
+        return x0_fn, fn_labels_bg
 
     def _conditioning(self, batch: GRPOBatch):
         """Unified batch conditioning → ``(spacing_t, class_labels, B, cond)``.
 
-        Mode-1: ``class_labels`` is the modality label and ``cond`` is ``None``. Mode-2:
-        ``class_labels`` is the per-sample ``tgt_label`` (the base's own modality
-        embedding sees the target contrast only) and ``cond`` is
+        UNet policy: ``class_labels`` is the modality label and ``cond`` is ``None``.
+        ControlNet policy: ``class_labels`` is the per-sample ``tgt_label`` (the base's
+        own modality embedding sees the target contrast only) and ``cond`` is
         ``(x_src, src_labels, tgt_labels)`` — the ControlNet's control signal + the
-        (src, tgt) direction pair. ``B`` is the batch size (Mode-1 = #labels, Mode-2 =
-        ``x_src`` batch).
+        (src, tgt) direction pair. ``B`` is the batch size (the UNet policy = #labels,
+        the ControlNet policy = the ``x_src`` batch).
         """
         spacing_t = torch.as_tensor(batch["spacing"], device=self.device)
         if self.controlnet is not None:
             x_src = batch["src_latent"].to(device=self.device, dtype=self._policy_dtype())
             B = int(x_src.shape[0])
-            src_labels = self._mode2_labels(batch["src_label"], B)
-            tgt_labels = self._mode2_labels(batch["tgt_label"], B)
+            src_labels = self._controlnet_labels(batch["src_label"], B)
+            tgt_labels = self._controlnet_labels(batch["tgt_label"], B)
             return spacing_t, tgt_labels, B, (x_src, src_labels, tgt_labels)
         label = batch["label"]
         if isinstance(label, Tensor):
@@ -568,7 +556,7 @@ class GRPOModule(spt.Module):
             class_labels = torch.full((1,), int(label), dtype=torch.long, device=self.device)
         return spacing_t, class_labels, int(class_labels.shape[0]), None
 
-    def _mode2_labels(self, labels, B: int) -> Tensor:
+    def _controlnet_labels(self, labels, B: int) -> Tensor:
         """Coerce a (src|tgt) label to a ``(B,)`` long tensor (scalar broadcast or ``(B,)``)."""
         if isinstance(labels, Tensor):
             out = labels.to(device=self.device, dtype=torch.long)
@@ -578,11 +566,12 @@ class GRPOModule(spt.Module):
         return torch.full((B,), int(labels), dtype=torch.long, device=self.device)
 
     def _policy_and_reference_pair(self):
-        """``deepcopy`` of the policy → the Mode-aware KL-anchor ``reference_policy`` arg.
+        """``deepcopy`` of the policy → the KL-anchor ``reference_policy`` arg.
 
-        Mode-1: a plain deepcopy of the UNet. Mode-2: the ``(base, controlnet)`` pair
-        (``reference_unet`` / ``reference_controlnet``). Callers (grpo_cli) use this to
-        snapshot the anchor BEFORE any GRPO update (ADR-0015).
+        UNet policy: a plain deepcopy of the UNet. ControlNet policy: the
+        ``(base, controlnet)`` pair (``reference_unet`` / ``reference_controlnet``).
+        Callers (grpo_cli) use this to snapshot the anchor BEFORE any GRPO update
+        (ADR-0015).
         """
         import copy
 
@@ -591,12 +580,13 @@ class GRPOModule(spt.Module):
         return copy.deepcopy(self.unet)
 
     def _score_reward(self, z_K: Tensor, cond) -> Tensor:
-        """Bound the frozen reward on the terminal latent ``z_K`` (Mode-1 / Mode-2 unified).
+        """Bound the frozen reward on the terminal latent ``z_K`` (both policies).
 
-        The reward scores the generated terminal latent ``z_K`` unconditionally in both
-        modes (``reward(z_K)``) — Mode-2 does NOT concat ``x_src``. The ControlNet's
-        conditional fidelity is driven by the *policy* x0 (which sees ``x_src``), not by
-        the reward input; the reward stays a plain realism/fidelity scorer on ``z_K``.
+        The reward scores the generated terminal latent ``z_K`` unconditionally
+        (``reward(z_K)``) — the ControlNet policy does NOT concat ``x_src`` into the
+        reward. The ControlNet's conditional fidelity is driven by the *policy* x0
+        (which sees ``x_src``), not by the reward input; the reward stays a plain
+        realism/fidelity scorer on ``z_K``.
         """
         raw = self.reward_model(z_K).float()
         return self._bound_reward(raw)
@@ -623,20 +613,22 @@ class GRPOModule(spt.Module):
 
         Matched on the key's top-level segment (the prefix before the first ``.``), so
         ``reward_model.conv.weight`` matches the ``reward_model`` arm. Non-frozen keys
-        (the trainable ``unet`` in Mode-1, the trainable ``controlnet`` in Mode-2)
-        return ``False`` — they stay on the checkpoint and in the optimizer.
+        (the trainable ``unet`` for the UNet policy, the trainable ``controlnet`` for
+        the ControlNet policy) return ``False`` — they stay on the checkpoint and in the
+        optimizer.
         """
         return key.split(".", 1)[0] in self._frozen_arm_names
 
     def state_dict(self, destination=None, prefix="", keep_vars=False, **kwargs):
         """Strip the registered frozen arms — they are rebuilt fresh each launch.
 
-        The frozen reward / reference / Mode-2 base stay off the checkpoint: the reward
-        is reloaded from its own ``.ckpt``, the reference is a launch-time ``deepcopy``
-        (ADR-0028), and the Mode-2 base comes from the native export. Registering the
-        arms (so Lightning owns their device placement) would otherwise leak their
-        weights into the checkpoint; this override restores the off-checkpoint invariant
-        at the source, so direct ``mod.state_dict()`` calls see them stripped (ADR-0031).
+        The frozen reward / reference / ControlNet-policy base stay off the checkpoint:
+        the reward is reloaded from its own ``.ckpt``, the reference is a launch-time
+        ``deepcopy`` (ADR-0028), and the ControlNet-policy base comes from the native
+        export. Registering the arms (so Lightning owns their device placement) would
+        otherwise leak their weights into the checkpoint; this override restores the
+        off-checkpoint invariant at the source, so direct ``mod.state_dict()`` calls see
+        them stripped (ADR-0031).
 
         The filter mutates the shared ``destination`` IN PLACE (and matches the arms
         under the caller-supplied ``prefix``): ``super().state_dict()`` writes every
@@ -700,9 +692,9 @@ class GRPOModule(spt.Module):
     # -- optimizer ------------------------------------------------------------
 
     def configure_optimizers(self):
-        """Adam over the optimized arm only — the UNet (Mode-1) or the ControlNet (Mode-2).
+        """Adam over the optimized arm only — the UNet (UNet policy) or the ControlNet (ControlNet policy).
 
-        The frozen arms (Mode-2 base, reward, reference) are registered but
+        The frozen arms (the ControlNet-policy base, reward, reference) are registered but
         ``requires_grad=False`` and never selected here, so the optimizer never touches
         them — the off-optimizer invariant holds at the param-group level (ADR-0031)."""
         params = self.controlnet.parameters() if self.controlnet is not None else self.unet.parameters()
@@ -722,9 +714,9 @@ class GRPOModule(spt.Module):
         Re-evaluates the policy at the stored anchor node ``z_k`` (the single live grad
         eval per branch — peak autograd memory is one policy-forward) and forms the
         Gaussian transition density at the stored ``z_{k+1}``. The ``x_θ`` source is
-        unified: Mode-1 is the trainable UNet; Mode-2 is the frozen base + trainable
-        ControlNet (grad reaches the ControlNet through the base's out-of-place residual
-        forward). ``old_log_prob`` was computed at rollout time; the ratio
+        unified: the UNet policy uses the trainable UNet; the ControlNet policy uses the
+        frozen base + trainable ControlNet (grad reaches the ControlNet through the
+        base's out-of-place residual forward). ``old_log_prob`` was computed at rollout time; the ratio
         ``exp(new − old)`` is what the clip bounds. Returns ``(log_prob, mean_new,
         std_new)`` so the caller can reuse ``mean_new`` for the KL term (no second policy
         forward) — ADR-0015.
@@ -751,8 +743,9 @@ class GRPOModule(spt.Module):
         transition share **equal variance** (``σ_t = η·sqrt((1−t)/t)`` depends only on
         ``t``, not on the policy weights), so the diagonal-Gaussian KL collapses to the
         squared-mean difference over ``σ²`` (the trace / log-det terms cancel). The
-        reference mean is a frozen, no-grad forward at the stored ``z_k`` (Mode-2: the
-        frozen base + frozen ControlNet snapshot); grad flows through ``μ_θ`` only.
+        reference mean is a frozen, no-grad forward at the stored ``z_k`` (the
+        ControlNet policy: the frozen base + frozen ControlNet snapshot); grad flows
+        through ``μ_θ`` only.
         Returns ``None`` (no KL added) when the reference is absent or ``kl_coef ≤ 0`` —
         the v1 backward-compat default. ``mean_new`` / ``std_new`` are the caller's
         grad-bearing policy outputs (reused, not recomputed).
@@ -808,18 +801,18 @@ class GRPOModule(spt.Module):
         # The v2 reward bound (ADR-0015): None for the v1 raw-logit default (no-op),
         # else ``_bound_reward`` (tanh) caps the reward the rollout scores + groups.
         reward_transform = self._bound_reward if self.reward_bound != "none" else None
-        # Mode-2: inject the ControlNet-conditioned x0 prediction + the z_K reward into
-        # the shared rollout (Mode-1 leaves all three None — the plain UNet + the same
-        # unconditional reward path). The spine reuses verbatim in both modes.
-        x0_fn = reward_fn = fn_labels_bg = None
+        # ControlNet policy: inject the ControlNet-conditioned x0 prediction into the
+        # shared rollout (the UNet policy leaves both None — the plain UNet + the same
+        # unconditional reward path). The spine reuses verbatim for both policies.
+        x0_fn = fn_labels_bg = None
         if cond is not None:
             x_src, src_labels, tgt_labels = cond
-            x0_fn, reward_fn, fn_labels_bg = self._mode2_rollout_fns(x_src, spacing_t, src_labels, tgt_labels)
+            x0_fn, fn_labels_bg = self._controlnet_rollout_fns(x_src, spacing_t, src_labels, tgt_labels)
         buffer = singular_branch_rollout(
             self.unet, self.scheduler, self.reward_model, noise, spacing_t, class_labels,
             G=self.G, eta_step_list=self.eta_step_list, num_steps=self.num_steps,
             adv_clip_max=self.adv_clip_max, reward_transform=reward_transform,
-            x0_fn=x0_fn, reward_fn=reward_fn, fn_labels_bg=fn_labels_bg,
+            x0_fn=x0_fn, fn_labels_bg=fn_labels_bg,
         )
 
         opt = self.optimizers()
@@ -827,8 +820,8 @@ class GRPOModule(spt.Module):
         if not isinstance(sched, (list, tuple)) and sched is not None:
             sched = [sched]
         # Eval mode for every policy eval (rollout + inner loop) — matches the deployed
-        # sampler (deterministic; GroupNorm running stats, no dropout). Mode-2 also evals
-        # the ControlNet (the frozen base is already eval).
+        # sampler (deterministic; GroupNorm running stats, no dropout). The ControlNet
+        # policy also evals the ControlNet (the frozen base is already eval).
         self.unet.eval()
         if self.controlnet is not None:
             self.controlnet.eval()
@@ -928,16 +921,17 @@ class GRPOModule(spt.Module):
         gen.manual_seed(1234 + 1000 * rank + batch_idx)
         noise = torch.randn(B, *self.latent_shape, generator=gen, device=self.device, dtype=self._policy_dtype())
         if cond is not None:
-            # Mode-2: the deployed deterministic ControlNet noise→data rollout from the
-            # batch's own source (per-sample direction, NOT the bridge SDE), scored by the
-            # frozen reward on the terminal latent z_K (unconditional, like Mode-1).
+            # ControlNet policy: the deployed deterministic ControlNet noise→data rollout
+            # from the batch's own source (per-sample direction, NOT the bridge SDE),
+            # scored by the frozen reward on the terminal latent z_K (unconditional, like
+            # the UNet policy).
             x_src, src_labels, tgt_labels = cond
             z_K = controlnet_rollout(
                 self.unet, self.controlnet, self.scheduler, noise, x_src, spacing_t,
                 src_labels, tgt_labels, num_inference_steps=self.num_steps,
             )
         else:
-            # Mode-1: a mixed-label val batch is generated under ``label[0]``
+            # UNet policy: a mixed-label val batch is generated under ``label[0]``
             # (``sample_latent_flow`` takes a scalar modality — single-modality v1).
             z_K = sample_latent_flow(
                 self.unet, self.scheduler, noise, spacing_t, int(class_labels[0].item()),
