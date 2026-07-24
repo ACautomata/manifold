@@ -51,9 +51,9 @@ Start with:
 
 ### Reward and policy post-training
 
-`RewardModel` wraps a MONAI PatchGAN discriminator and pools its output to a scalar. Noise-to-data reward training compares generated preference pairs; paired reward is condition-aware and scores `concat([x_src, tgt])`, so it can penalize a realistic but incorrect copy of the source. GRPO modules fork individual stochastic transitions, score terminal outcomes, and optimize a clipped group-relative objective. The paired variant uses the Brownian-bridge scheduler only during training.
+`RewardModel` wraps a MONAI PatchGAN discriminator and pools its output to a scalar. Reward training learns a mode-agnostic realism score from partial-denoise corruption pairs. The unified `GRPOModule` can optimize either the JiT UNet policy or a warm-started ControlNet on a frozen base UNet; both paths fork stochastic transitions and score the terminal latent `z_K` unconditionally with the same reward before applying the clipped group-relative objective. For the ControlNet path, translation fidelity comes from source conditioning, supervised initialization, and the KL anchor rather than a separate condition-aware reward (ADR-0034). See the operational routing and recipe contract in [Reward and GRPO stages](workflows.md#reward-and-grpo-stages).
 
-Start with `src/manifold/models/reward_model.py`, `src/manifold/modules/{reward,paired_reward,grpo,paired_grpo}.py`, and the corresponding `src/manifold/training/*_cli.py` files.
+Start with `src/manifold/models/reward_model.py`, `src/manifold/modules/{reward,grpo}.py`, `src/manifold/modules/controlnet_sampler.py`, and `src/manifold/training/{reward_cli,grpo_cli}.py`.
 
 ## Configuration and persistence
 

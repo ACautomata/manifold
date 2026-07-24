@@ -43,13 +43,16 @@ The console surfaces are:
 ```text
 manifold-train-reward
 manifold-train-grpo
-manifold-train-paired-reward
-manifold-train-paired-grpo
+manifold-train-controlnet
 ```
 
-The reward stages load a frozen native generator and train a scorer. The GRPO stages load both a generator/policy and frozen reward model, then optimize singular branches of stochastic trajectories. For paired reward, real targets beat generated targets and the scorer receives the source latent alongside the candidate target. For paired GRPO, the stochastic Brownian bridge is a training mechanism; native paired inference remains deterministic.
+`manifold-train-reward` loads a frozen native generator and trains the shared mode-agnostic PatchGAN scorer on partial-denoise preference pairs. `manifold-train-grpo` then loads a policy and that frozen reward model, forks stochastic trajectories, and scores each terminal latent `z_K` unconditionally. The same reward serves both supported policy paths; the deleted paired-reward pipeline is not part of the current workflow.
 
-Consult `src/manifold/training/reward_cli.py`, `paired_reward_cli.py`, `grpo_cli.py`, and `paired_grpo_cli.py` for current arguments. Treat `scripts/generate_reward_pairs.py` cautiously: it documents an older offline reward-pair workflow, while the current noise-to-data reward module performs online fit-step rollout and precomputes only validation/probe data (`src/manifold/modules/reward.py`, `CONTEXT.md`).
+There is one GRPO recipe, `configs/train/config_grpo.yaml`. The native artifact supplied through `--native-dir` selects the policy automatically: a raw JiT export trains the UNet, while a supervised ControlNet export trains the ControlNet on its frozen base UNet. There is no mode flag or separate ControlNet-GRPO preset. Shared settings remain under `grpo_train`; `grpo_train.lr` is the UNet default, while optional `controlnet.lr` applies only to the ControlNet path and falls back to `grpo_train.lr` when absent. The ControlNet path also reads `diffusion_unet_inference` for paired cache geometry.
+
+For ControlNet, run `manifold-train-controlnet` first to produce the supervised native export, then pass that export to `manifold-train-grpo`. During GRPO, source conditioning, supervised initialization, and the KL anchor carry translation fidelity; the shared reward contributes realism only. Unconditional FID is suppressed for this path because it ignores the ControlNet and would measure the frozen base, so checkpoint selection uses `val/mean_reward`. The raw UNet path can use `val/fid` when the FID inputs are present.
+
+This workflow depends on the native artifact contract described in [Architecture and source map](architecture.md#configuration-and-persistence). Consult `src/manifold/training/reward_cli.py`, `controlnet_cli.py`, and `grpo_cli.py` for current arguments. Focused guards live in `tests/test_grpo.py` (routing and policy-specific learning rates) and `tests/test_config.py` (the removed mode-specific preset must not return); see [Operations and testing](operations-and-testing.md#standard-checks) for the broader test matrix.
 
 ## Checkpoint and export contract
 
@@ -70,7 +73,7 @@ python scripts/export_checkpoint.py \
 
 Paired export additionally selects the paired pipeline and supplies the scaling factor; inspect `scripts/export_checkpoint.py --help` for the exact current flags.
 
-EMA training was removed in commit `e89b05d`. `src/manifold/training/export.py` now extracts the raw UNet backbone under the `unet.unet.` state-dict prefix and always reports `unet_state_dict`. Do not pass retired `--ema`/`prefer_ema` options, configure `ema_decays`, or expect `val/fid_avg` and `val/fid_raw`; the single validation metric is `val/fid`, evaluated on the live raw model. Downstream paired reward and paired GRPO generator loading follows the same raw-weight contract.
+EMA training was removed in commit `e89b05d`. `src/manifold/training/export.py` now extracts the raw UNet backbone under the `unet.unet.` state-dict prefix and always reports `unet_state_dict`. Do not pass retired `--ema`/`prefer_ema` options, configure `ema_decays`, or expect `val/fid_avg` and `val/fid_raw`; the single validation metric is `val/fid`, evaluated on the live raw model. Reward and GRPO policy loading follows the same raw-weight contract.
 
 Only load trusted `.ckpt` files: export calls `torch.load(..., weights_only=False)` because Lightning checkpoints contain full training state.
 

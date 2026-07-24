@@ -23,7 +23,7 @@ For focused changes, start with the nearest tests:
 | Scheduler/module/pipeline behavior | `tests/test_scheduler.py`, `test_module_training.py`, `test_pipeline_inference.py`, paired equivalents |
 | FID and paired image metrics | `tests/test_fid.py`, `test_paired_metrics.py` |
 | Distributed validation | `tests/test_ddp.py`, `test_ddp_detection.py`, `test_ddp_metrics.py`, `test_ddp_val_honesty.py` |
-| Reward and policy learning | `tests/test_reward*.py`, `test_grpo.py`, `test_paired_reward*.py`, `test_paired_grpo.py` |
+| Reward and policy learning | `tests/test_reward.py`, `test_reward_pairs.py`, `test_grpo.py`, `test_controlnet_module_training.py` |
 | Persistence/export | `tests/test_persistence.py`, `test_paired_persistence.py`, export assertions in training/reward/GRPO tests |
 
 `tests/ddp.py` is the multi-process helper/harness used by DDP tests. Run the focused distributed tests after changing rank gates, sampler assumptions, reduction code, validation callbacks, trainer device selection, or checkpoint monitors.
@@ -37,7 +37,7 @@ ADR-0025 supersedes ADR-0016. Current behavior is:
 - **GRPO reward:** every rank validates and logs `val/mean_reward` with `sync_dist=True`.
 - **Checkpoint monitors:** `val/fid`, `val/psnr`, and `val/mean_reward` remain active under DDP because the monitored values are global.
 
-Key implementations are `src/manifold/metrics/fid.py`, `fid_callback.py`, `psnr_ssim_callback.py`, `src/manifold/modules/{grpo,paired_grpo}.py`, and the four training CLIs.
+Key implementations are `src/manifold/metrics/fid/`, `src/manifold/modules/grpo.py`, and the training callback/CLI paths in `src/manifold/training/`.
 
 Do not follow the stale checkpoint comments in `configs/train/config_rflow_jit.yaml` and `config_paired_jit.yaml` that still describe rank-0-only DDP metrics and unmonitored fallback. ADR-0025 and current callback/CLI code are authoritative.
 
@@ -93,3 +93,4 @@ These cases are covered principally by `tests/test_fid.py`, `test_ddp_metrics.py
 ## Diagnostics
 
 `scripts/eval_paired_step_sweep.py` evaluates paired integration-step choices. `scripts/diag_brain_mask_psnr.py`, `diag_paired_ceiling.py`, and `diag_raw_rollout.py` are targeted investigation tools rather than the primary training path. Read their arguments and assumptions before using them against a new dataset or checkpoint.
+ainst a new dataset or checkpoint.
