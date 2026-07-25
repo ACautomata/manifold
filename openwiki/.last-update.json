@@ -1,6 +1,6 @@
 {
-  "updatedAt": "2026-07-19T02:17:17.234Z",
+  "updatedAt": "2026-07-24T10:27:36.284Z",
   "command": "update",
-  "gitHead": "be5f07f4b62f6d6836fccdb135efe508c4b915aa",
-  "model": "glm-5.2"
+  "gitHead": "986efc81a30d0bb3a745e1c593b3060694c32a71",
+  "model": "MiniMax-M3"
 }
