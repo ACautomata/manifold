@@ -13,14 +13,14 @@ Manifold deliberately mirrors the diffusers vocabulary while keeping training an
 
 | Layer | Responsibility | Primary sources |
 |---|---|---|
-| Models | Thin wrappers around MONAI MAISI VAE/UNet implementations plus PatchGAN reward scoring. The VAE owns latent scaling and sliding-window encode/decode. | `src/manifold/models/` |
+| Models | Thin wrappers around MONAI MAISI VAE/UNet/ControlNet implementations plus PatchGAN reward scoring. The VAE owns latent scaling and sliding-window encode/decode. | `src/manifold/models/` |
 | Schedulers | Rectified-flow transport, timestep/sigma grids, model-input scaling, Heun integration, and stochastic GRPO/bridge transitions. They contain no training loop. | `src/manifold/schedulers/` |
-| Modules | stable-pretraining training components: objectives, optimizer/schedule wiring, rollout and validation steps for JiT, paired JiT, reward, and GRPO. | `src/manifold/modules/` |
-| Pipelines | Native inference composition of UNet, scheduler, and VAE, with `save_pretrained`/`from_pretrained`. | `src/manifold/pipelines/` |
+| Modules | stable-pretraining training components: objectives, optimizer/schedule wiring, rollout and validation steps for JiT, the supervised ControlNet translator, reward, and GRPO. | `src/manifold/modules/` |
+| Pipelines | Native inference composition of UNet, ControlNet (or frozen UNet plus ControlNet), scheduler, and VAE, with `save_pretrained`/`from_pretrained`. | `src/manifold/pipelines/` |
 | Training orchestration | CLI parsing, config composition, data warming, callbacks, Lightning trainer construction, checkpointing, and export. | `src/manifold/training/`, `src/manifold/metrics/` |
-| Metrics callbacks | Per-epoch FID, PSNR/SSIM, GRPO reward, and automatic metrics line-chart rendering. | `src/manifold/metrics/` |
+| Metrics callbacks | Per-epoch FID, latent-space x0-MAE, GRPO reward, and automatic metrics line-chart rendering. | `src/manifold/metrics/`, `src/manifold/training/metrics.py` |
 
-The shared rollout primitives are intentional: training-time sampling and native inference delegate to the same sampler behavior rather than maintaining parallel integrators (`src/manifold/modules/sampler.py`, `paired_sampler.py`; ADR-0005).
+The shared rollout primitives are intentional: training-time sampling and native inference delegate to the same sampler behavior rather than maintaining parallel integrators (`src/manifold/modules/sampler.py`, `controlnet_sampler.py`; ADR-0005).
 
 ## Runtime flows
 
@@ -36,24 +36,28 @@ Start with:
 - `src/manifold/pipelines/latent_flow.py`
 - `src/manifold/training/cli.py`
 
-### Paired JiT
+### Supervised paired translator (ControlNet)
 
-Paired JiT maps a source latent at `t=0` to a target latent at `t=1`. The model sees `concat([z_t, x_src])`, so its input channel count is twice the latent channel count. Source and target contrast embeddings are combined through a learned MLP that projects `concat([embed(src), embed(tgt+offset)])` from `R^{2·time_embed_dim}` to `R^{time_embed_dim}`, replacing the earlier linear sum. This provides greater discriminability across the 12 contrast directions. The optional `paired_direction_offset` config shifts the target embedding row to break A<->B symmetry when needed. The production recipe uses uniform `x0` MSE; the earlier `(1-t)^-2` weighting overemphasized high-`t` examples and encouraged copy-source collapse (`configs/train/config_paired_jit.yaml`).
+The paired `x_src -> x_tgt` translator is a **trainable ControlNet on a frozen JiT base UNet** — see the component model above and `docs/adr/0026-controlnet-via-monai-native-residual-interface.md`, `0027-controlnet-supervised-then-grpo-two-stage.md`. The ControlNet consumes `concat([z_t, x_src, src_label, tgt_label])` and emits per-block residuals that the frozen base consumes through an out-of-place forward (in-place adds would break the grad-bearing residual path). The frozen base UNet is held *unregistered* (`object.__setattr__`): off the optimizer, off the checkpoint, off DDP. The ControlNet's (src, tgt) contrast embeddings combine through `concat([embed(src), embed(tgt+offset)])` with the optional `paired_direction_offset` flipping the symmetry. The supervised loss is the `(1 - t)^-2`-weighted x0-MSE the base itself was trained with (ADR-0002 / ADR-0027).
 
-BraTS-specific code groups volumes by subject and contrast, creates subject-disjoint splits, and enumerates all ordered non-self pairs. The dataset contract itself remains generic: source/target latents, labels, and spacing.
+The paired reward pipeline was deleted in ADR-0034 (paired-reward CLI, condition-aware `2·C` reward, offline pair precompute); the ControlNet path no longer needs a condition-aware reward because translation fidelity now comes from `x_src` conditioning + supervised init + the KL anchor, and the *single* realism reward (`RewardModel`, `C_latent`, partial-denoise pairs) scores `z_K` unconditionally for both GRPO policies.
+
+BraTS-specific code groups volumes by subject and contrast, creates subject-disjoint splits, and enumerates all ordered non-self pairs. The dataset contract itself remains generic: source/target latents, labels, and spacing. The shared two-way subject splitter `_train_val_manifests` lives in `src/manifold/data/paired_manifests.py` (relocated from the deleted paired-reward CLI, consumed by `controlnet_cli` and `grpo_cli`).
 
 Start with:
 
-- `src/manifold/data/paired_brats.py`, `paired_volume_dataset.py`, `paired_latent_dataset.py`
-- `src/manifold/modules/paired_latent_flow.py`, `paired_sampler.py`
-- `src/manifold/pipelines/paired_latent_flow.py`
-- `src/manifold/training/paired_cli.py`
+- `src/manifold/data/paired_brats.py`, `paired_volume_dataset.py`, `paired_latent_dataset.py`, `paired_manifests.py`
+- `src/manifold/models/controlnet_3d.py`
+- `src/manifold/modules/controlnet_latent_flow.py`, `controlnet_sampler.py`
+- `src/manifold/pipelines/paired_latent_flow.py` (export-time only — the still-needed paired inference pipeline the reward's frozen generator ships through), `controlnet_latent_flow.py`
+- `src/manifold/training/controlnet_cli.py`
+- `configs/train/config_controlnet_supervised.yaml`
 
 ### Reward and policy post-training
 
-`RewardModel` wraps a MONAI PatchGAN discriminator and pools its output to a scalar. Reward training learns a mode-agnostic realism score from partial-denoise corruption pairs. The unified `GRPOModule` can optimize either the JiT UNet policy or a warm-started ControlNet on a frozen base UNet; both paths fork stochastic transitions and score the terminal latent `z_K` unconditionally with the same reward before applying the clipped group-relative objective. For the ControlNet path, translation fidelity comes from source conditioning, supervised initialization, and the KL anchor rather than a separate condition-aware reward (ADR-0034). See the operational routing and recipe contract in [Reward and GRPO stages](workflows.md#reward-and-grpo-stages).
+`RewardModel` wraps a MONAI PatchGAN discriminator and pools its output to a scalar. Reward training learns a mode-agnostic realism score from partial-denoise corruption pairs. The unified `GRPOModule` can optimize either the JiT UNet policy or a warm-started ControlNet on a frozen base UNet; both paths fork stochastic transitions and score the terminal latent `z_K` unconditionally with the *same* reward before applying the clipped group-relative objective. The policy is inferred from the native artifact passed to `--native-dir`, not a flag. For the ControlNet path, translation fidelity comes from `x_src` conditioning, supervised initialization, and the KL anchor rather than a separate condition-aware reward (ADR-0034 deleted the paired-reward pipeline). See the operational routing and recipe contract in [Reward and GRPO stages](workflows.md#reward-and-grpo-stages).
 
-Start with `src/manifold/models/reward_model.py`, `src/manifold/modules/{reward,grpo}.py`, `src/manifold/modules/controlnet_sampler.py`, and `src/manifold/training/{reward_cli,grpo_cli}.py`.
+Start with `src/manifold/models/reward_model.py`, `src/manifold/modules/{reward,grpo}.py`, `src/manifold/modules/controlnet_sampler.py`, and `src/manifold/training/{reward_cli,grpo_cli,controlnet_cli}.py`.
 
 ## Configuration and persistence
 

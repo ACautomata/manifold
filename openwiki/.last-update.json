@@ -1,6 +1,8 @@
 {
-  "updatedAt": "2026-07-24T10:27:36.284Z",
+  "updatedAt": "2026-07-30T10:36:47.772Z",
   "command": "update",
-  "gitHead": "986efc81a30d0bb3a745e1c593b3060694c32a71",
-  "model": "MiniMax-M3"
+  "gitHead": "056288f16753fcc0839e30aba78493ca5bcb8d01",
+  "model": "MiniMax-M3",
+  "status": "complete",
+  "language": "en"
 }

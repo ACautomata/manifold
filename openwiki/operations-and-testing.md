@@ -18,13 +18,13 @@ For focused changes, start with the nearest tests:
 
 | Area | Tests |
 |---|---|
-| Config and training orchestration | `tests/test_config.py`, `test_training_cli.py`, `test_paired_training_cli.py`, `test_training.py` |
-| Data, warming, and split isolation | `tests/test_data.py`, `test_paired_data.py`, `test_ddp_warm.py` |
-| Scheduler/module/pipeline behavior | `tests/test_scheduler.py`, `test_module_training.py`, `test_pipeline_inference.py`, paired equivalents |
-| FID and paired image metrics | `tests/test_fid.py`, `test_paired_metrics.py` |
-| Distributed validation | `tests/test_ddp.py`, `test_ddp_detection.py`, `test_ddp_metrics.py`, `test_ddp_val_honesty.py` |
+| Config and training orchestration | `tests/test_config.py`, `test_training_cli.py`, `test_controlnet_cli.py`, `test_training.py` |
+| Data, warming, and split isolation | `tests/test_data.py`, `test_paired_latent_cache.py`, `test_paired_manifests.py`, `test_ddp_warm.py`, `test_controlnet_warm_defer.py` |
+| Scheduler/module/pipeline behavior | `tests/test_scheduler.py`, `test_module_training.py`, `test_pipeline_inference.py`, `test_controlnet_module_training.py`, `test_controlnet_pipeline_inference.py` |
+| FID and image metrics | `tests/test_fid.py`, `test_fid_helpers.py`, `test_metric_plot.py`, `tests/test_paired_reward_deleted.py` |
+| Distributed validation | `tests/test_ddp.py`, `test_ddp_detection.py`, `test_ddp_metrics.py`, `test_ddp_val_honesty.py`, `test_controlnet_ddp_monitor.py` |
 | Reward and policy learning | `tests/test_reward.py`, `test_reward_pairs.py`, `test_grpo.py`, `test_controlnet_module_training.py` |
-| Persistence/export | `tests/test_persistence.py`, `test_paired_persistence.py`, export assertions in training/reward/GRPO tests |
+| Persistence/export | `tests/test_persistence.py`, export assertions in training/reward/GRPO tests |
 
 `tests/ddp.py` is the multi-process helper/harness used by DDP tests. Run the focused distributed tests after changing rank gates, sampler assumptions, reduction code, validation callbacks, trainer device selection, or checkpoint monitors.
 
@@ -32,14 +32,14 @@ For focused changes, start with the nearest tests:
 
 ADR-0025 supersedes ADR-0016. Current behavior is:
 
-- **Paired PSNR/SSIM:** every rank decodes its `DistributedSampler` shard. The callback accumulates per-volume sums/count and manually `all_reduce`s them at epoch end. It logs global `val/psnr` and `val/ssim` without `sync_dist`.
+- **Latent-space x0-MAE (`val/x0_mae`):** every rank computes the cheap reconstruction-MAE on its `DistributedSampler` shard through `LatentX0MAE` (`src/manifold/training/metrics.py`), which attaches a `torchmetrics.MeanMetric` to the module (sample-weighted) so Lightning's DDP reduction produces the true global mean.
 - **FID:** synthetic and real examples are rank-strided. Each plane reduces sufficient statistics `(sum_x, sum_xxT, n)`, reconstructs global moments, and computes unbiased FID without gathering feature matrices. Empty local shards contribute zero statistics; only the global count must be at least two.
 - **GRPO reward:** every rank validates and logs `val/mean_reward` with `sync_dist=True`.
-- **Checkpoint monitors:** `val/fid`, `val/psnr`, and `val/mean_reward` remain active under DDP because the monitored values are global.
+- **Checkpoint monitors:** `val/fid`, `val/x0_mae`, and `val/mean_reward` remain active under DDP because the monitored values are global. (Pre-ADR-0034 `val/psnr` / `val/ssim` callbacks were the paired-translator validation signal; they were removed when the paired-reward pipeline was deleted — see `docs/adr/0034-one-realism-reward-both-grpo-policies-delete-condition-aware.md`.)
 
 Key implementations are `src/manifold/metrics/fid/`, `src/manifold/modules/grpo.py`, and the training callback/CLI paths in `src/manifold/training/`.
 
-Do not follow the stale checkpoint comments in `configs/train/config_rflow_jit.yaml` and `config_paired_jit.yaml` that still describe rank-0-only DDP metrics and unmonitored fallback. ADR-0025 and current callback/CLI code are authoritative.
+Do not follow the stale checkpoint comments in `configs/train/config_rflow_jit.yaml` that still describe rank-0-only DDP metrics and unmonitored fallback. The `config_paired_jit.yaml` referenced in older docs no longer exists; the supervised paired translator is `configs/train/config_controlnet_supervised.yaml`. ADR-0025 and current callback/CLI code are authoritative.
 
 ## Distributed validation runbook
 
@@ -85,12 +85,11 @@ These cases are covered principally by `tests/test_fid.py`, `test_ddp_metrics.py
 ## Validation and checkpoint cautions
 
 - Noise-to-data production validation is disabled unless a held-out source is wired; the code refuses train-as-validation leakage. In that case checkpointing falls back to periodic/last rather than monitored FID.
-- Paired validation should use a nonzero subject-level `val_fraction`; `0` permits a train-as-validation fallback and is not an honest generalization estimate.
+- ControlNet-supervised validation (`manifold-train-controlnet`) should use a nonzero subject-level `val_fraction` (the recipe default is `0.2`); `0` permits a train-as-validation fallback and is not an honest generalization estimate. The shared splitter lives in `src/manifold/data/paired_manifests.py` and supports a native-split directory when `env.val_data_base_dir` is a real BraTS directory.
 - Metric callbacks decode in float32 with MAISI `norm_float16` disabled, then restore the VAE to CPU to free training VRAM.
 - Current metrics and native exports use raw optimizer weights. Remove references to EMA arms from automation and dashboards.
 - Export uses full-state deserialization; only process checkpoints produced by a trusted run.
 
 ## Diagnostics
 
-`scripts/eval_paired_step_sweep.py` evaluates paired integration-step choices. `scripts/diag_brain_mask_psnr.py`, `diag_paired_ceiling.py`, and `diag_raw_rollout.py` are targeted investigation tools rather than the primary training path. Read their arguments and assumptions before using them against a new dataset or checkpoint.
-ainst a new dataset or checkpoint.
+The `scripts/` directory was eliminated in ADR-0033; the helper scripts that used to live there (`scripts/eval_paired_step_sweep.py`, `scripts/diag_brain_mask_psnr.py`, etc.) are not part of this tree. The retained investigation tool is `tests/parity/validate_against_hope.py`, a sampler-parity probe kept as a `<1e-3` proof (ADR-0005) that the modules-side sampler and the inference pipeline roll out the same trajectory. Read its arguments and assumptions before using it against a new dataset or checkpoint.
