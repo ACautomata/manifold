@@ -4,8 +4,7 @@
 per-component ``ControlNetLatentFlowPipeline`` layout: base UNet + ControlNet + VAE +
 scheduler) — the fixture several GRPO / native-artifact-detection tests drive
 ``load_frozen_controlnet_generator`` / ``_detect_controlnet_export`` against. Extracted
-out of the deleted paired-reward test suite (ADR-0034) so those tests survive its
-deletion.
+into a shared helper (ADR-0034) so those tests stay reusable across deletions.
 """
 
 from __future__ import annotations

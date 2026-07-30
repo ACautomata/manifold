@@ -3,8 +3,7 @@
 ``controlnet_cli.main`` runs end-to-end via the ``data_provider`` injection seam
 (argparse -> compose -> build -> fit -> checkpoint) on a tiny frozen base +
 trainable ControlNet + toy paired batches, mirroring the GRPO/reward CLI smokes.
-The Mode-2 guard and the ``--native-dir`` / ``--latents-dir`` real-path validation
-are pinned too.
+The ``--native-dir`` / ``--latents-dir`` real-path validation is pinned too.
 """
 
 from __future__ import annotations

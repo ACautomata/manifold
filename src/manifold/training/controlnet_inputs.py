@@ -3,8 +3,8 @@
 Owns the frozen-ControlNet-generator loader consumed by the GRPO real-input path
 (the ControlNet-GRPO policy loader, :func:`~manifold.training.grpo_cli._controlnet_real_inputs`
 — the ControlNet path of the unified builder). Relocated from the now-deleted
-``manifold.data.paired_reward_pairs`` (issue #176, ADR-0034) ahead of the paired-reward
-pairs builder's deletion (#174) so dropping it did not take the loader with it; the
+``manifold.data.paired_reward_pairs`` (issue #176, ADR-0034) ahead of that module's
+deletion (#174) so dropping it did not take the loader with it; the
 loader's only consumer is this GRPO real-input path.
 
 The loader assumes the native dir is a ControlNet export (it accesses the

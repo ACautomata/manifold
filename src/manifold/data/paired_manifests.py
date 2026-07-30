@@ -3,9 +3,8 @@
 ``_train_val_manifests`` resolves the (train, val) paired manifests from the
 configured split mode. It is the ADR-0022 two-way subject split consumed by **both**
 the ControlNet supervised CLI and the GRPO CLI — a shared paired-manifest helper,
-not paired-reward-specific. It lives here (a neutral ``data`` home) so the
-paired-reward pipeline's deletion (ADR-0034) can drop the paired-reward CLI without
-taking the splitter with it. Relocated verbatim from the paired-reward CLI — no
+not tied to any single consumer. It lives here (a neutral ``data`` home) so no one
+CLI owns the shared splitter (ADR-0034). Relocated verbatim — no
 behavior change (same splits, same ``val_fraction`` mirroring, same
 native-split-vs-``val_fraction`` fallback).
 """
@@ -38,8 +37,7 @@ def _train_val_manifests(cfg, manifest):
       ``val_data_base_dir`` reads as unset via :func:`~manifold.config.opt`.
 
     Inlined from the deleted ``paired_cli`` (T8); relocated to the shared ``data``
-    package (issue #175) so the paired-reward CLI's deletion does not take the
-    shared splitter with it.
+    package (issue #175) as a neutral helper consumed by multiple CLIs.
     """
     import os
 

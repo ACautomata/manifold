@@ -641,7 +641,7 @@ def _tiny_base_and_controlnet():
     The ControlNet clones the base encoder, then its zero-conv out projections are
     perturbed so the round-trip assertion is load-bearing (a zero-init ControlNet
     would round-trip trivially). The base ``out`` conv is re-initialized too (the
-    MONAI zero-init would mask the residual effect, mirroring the Mode-2 helpers).
+    MONAI zero-init would mask the residual effect, mirroring the ControlNet GRPO helpers).
     """
     from manifold import ControlNet3DConditionModel
 

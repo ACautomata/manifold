@@ -14,7 +14,7 @@ Example (gauss, JiT noise->data)::
         --vae-checkpoint models/autoencoder_v1.pt \\
         --output /data72/junran/manifold-runtime/checkpoints/jit_exported
 
-Example (paired src->tgt - the reward's frozen generator)::
+Example (paired src->tgt translation)::
 
     manifold-export \\
         --ckpt <paired_run>/last.ckpt \\
@@ -25,7 +25,7 @@ Example (paired src->tgt - the reward's frozen generator)::
         --output <paired_native>
 
     ``--pipeline paired`` builds the 2\u00b7C_latent UNet (the paired
-    condition-aware concat); ``--scaling-factor`` (read from the paired run's
+    src->tgt concat); ``--scaling-factor`` (read from the paired run's
     paired_scaling_factor.pt) bakes the generator's training scale into the
     exported VAE.
 """
@@ -62,7 +62,7 @@ def main(argv: list[str] | None = None) -> int:
         default="jit",
         help="which native pipeline to write: 'jit' (LatentFlowPipeline, the "
         "noise->data JiT - the default), 'paired' (PairedLatentFlowPipeline, the "
-        "src->tgt translation - the reward's frozen generator, ADR-0021), or "
+        "src->tgt translation, ADR-0021), or "
         "'controlnet' (ControlNetLatentFlowPipeline - the supervised ControlNet "
         "stage-1 export, base UNet + ControlNet + VAE, ADR-0027/issue #144).",
     )
@@ -83,14 +83,14 @@ def main(argv: list[str] | None = None) -> int:
         help="the VAE scaling_factor (1/std(z)) to bake into the exported VAE. The "
         "network YAML carries a 1.0 placeholder; paired training writes the real "
         "value to <model_dir>/paired_scaling_factor.pt. REQUIRED for --pipeline "
-        "paired (the reward pairs scale src latents by vae.scaling_factor - "
+        "paired (the paired rollout scales src latents by vae.scaling_factor - "
         "ADR-0021; codex #98 P1). Optional (defaults to the YAML value) for jit.",
     )
     args = parser.parse_args(argv)
 
     cfg = load_config(args.network_config, None, args.network_config)
 
-    # Paired src->tgt checkpoints train a 2\u00b7C_latent condition-aware UNet: the input
+    # Paired src->tgt checkpoints train a 2\u00b7C_latent UNet: the input
     # is the [x_src, x_tgt_noisy] concat (in_channels=2\u00b7C), the output predicts the
     # tgt velocity (out_channels=C, unchanged). The stock network config builds
     # in_channels=${latent_channels}=4; override in_channels before construction or
@@ -146,8 +146,8 @@ def main(argv: list[str] | None = None) -> int:
         cfg = OmegaConf.merge(cfg, {"trained_autoencoder_path": args.vae_checkpoint})
         vae = _load_vae(cfg, torch.device("cpu"))
 
-    # The paired reward's frozen generator runs on the generator's TRAINING scale
-    # (1/std(z), ADR-0021); the reward pairs scale src latents by vae.scaling_factor.
+    # The paired generator runs on its TRAINING scale
+    # (1/std(z), ADR-0021); paired exports scale src latents by vae.scaling_factor.
     # The network YAML carries a 1.0 placeholder, so paired exports must override it
     # (read from <paired_model_dir>/paired_scaling_factor.pt, written after the warm)
     # or the rollout receives unscaled src -> garbage fakes (codex #98 P1).
@@ -155,7 +155,7 @@ def main(argv: list[str] | None = None) -> int:
         vae.scaling_factor.fill_(float(args.scaling_factor))
     elif args.pipeline == "paired":
         raise ValueError(
-            "--scaling-factor is required for --pipeline paired: the reward's frozen "
+            "--scaling-factor is required for --pipeline paired: the paired "
             "generator must be exported at its training scale (1/std(z), ADR-0021). "
             "Read it from <paired_model_dir>/paired_scaling_factor.pt (written by "
             "manifold-train-paired after the VAE warm)."

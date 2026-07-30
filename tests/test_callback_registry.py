@@ -243,7 +243,7 @@ def test_training_spine_fails_fast_without_checkpoint(tmp_path):
 def test_training_spine_forbidden_callbacks_force_removed_post_merge(tmp_path, monkeypatch):
     """forbidden_callbacks drops named callbacks AFTER the name merge, so a
     ``callback_names_override`` (the CLI ``--callbacks`` flag) cannot re-enable
-    them — the GRPO Mode-2 fid guard, expressed generically with no GRPO
+    them — the GRPO ControlNet fid guard, expressed generically with no GRPO
     vocabulary in the spine (ADR-0032).
     """
     from unittest.mock import MagicMock
@@ -289,7 +289,7 @@ def test_training_spine_forbidden_callbacks_force_removed_post_merge(tmp_path, m
 
 def test_training_spine_forbidden_monitor_raises(tmp_path):
     """forbidden_monitors rejects a checkpoint ``monitor_metric`` with a loud
-    ValueError BEFORE resolution — the GRPO Mode-2 ``val/fid`` monitor guard."""
+    ValueError BEFORE resolution — the GRPO ControlNet ``val/fid`` monitor guard."""
     from unittest.mock import MagicMock
 
     from manifold.training.core import TrainingSpine

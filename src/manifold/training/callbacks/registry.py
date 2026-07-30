@@ -118,7 +118,7 @@ class CallbackRegistry:
         ``monitor_metric`` must be logged by some resolved callback **or**
         declared by the training *module*.
 
-        The module side of the union covers reward / paired-reward / GRPO
+        The module side of the union covers reward / GRPO
         monitors (``val/gen_pair_acc``, ``val/mean_reward``) that the Module
         logs directly rather than through any resolved callback. A module
         declares them via a ``logged_metrics`` attribute (absent -> empty, the

@@ -570,7 +570,7 @@ def _load_frozen_reward(cfg, reward_path: str, device: torch.device, *, in_chann
     count (the network config's ``reward_model.in_channels`` for the UNet path, the
     latent channel count for the ControlNet path). ``latent_c``, when given (the
     ControlNet path), validates the checkpoint's first conv against the single-latent
-    contract — a 2·C condition-aware paired-reward ckpt is incompatible and fails fast
+    contract — a 2·C reward ckpt is incompatible and fails fast
     with a readable error (codex #151). ``None`` (the UNet path) skips the check.
 
     weights_only=True first (no arbitrary-code-execution risk); fall back to False only
@@ -605,14 +605,14 @@ def _load_frozen_reward(cfg, reward_path: str, device: torch.device, *, in_chann
     if latent_c is not None:
         # Fail fast on a channel mismatch BEFORE load_state_dict's cryptic shape error:
         # the z_K reward is scored unconditionally (in_channels = C_latent), so a 2·C
-        # condition-aware paired-reward ckpt (from the deleted paired-reward pipeline,
-        # ADR-0034) is incompatible. Detect via the first conv's input-channel dim (shape [out, in, ...]).
+        # reward ckpt (from the deleted paired-reward pipeline, ADR-0034) is
+        # incompatible. Detect via the first conv's input-channel dim (shape [out, in, ...]).
         first_conv = reward_sd.get("discriminator.initial_conv.conv.weight")
         if first_conv is not None and int(first_conv.shape[1]) != latent_c:
             raise ValueError(
                 f"Reward checkpoint {reward_path} has in_channels={int(first_conv.shape[1])}, "
                 f"but the z_K reward is scored unconditionally and needs a single-latent reward "
-                f"(in_channels={latent_c}). This looks like a 2·C condition-aware paired-reward "
+                f"(in_channels={latent_c}). This looks like a 2·C reward "
                 "ckpt (from the deleted paired-reward training, ADR-0034); the ControlNet policy "
                 "does NOT concat x_src into the reward (the policy x0 sees x_src instead). Point "
                 "--reward-path at a single-latent RewardModule checkpoint."
@@ -772,9 +772,8 @@ def _controlnet_real_inputs(
       the same ``paired_train`` cache as the reward/supervised stages.
     - The reward scores the terminal latent ``z_K`` **unconditionally** — the same
       single-latent reward (``in_channels = C_latent``) the UNet path uses, loaded
-      from a ``RewardModule`` ``.ckpt``. The ControlNet policy does NOT use the 2·C
-      condition-aware paired reward: its conditional fidelity is driven by the policy
-      x0 (which sees ``x_src``), not by the reward input.
+      from a ``RewardModule`` ``.ckpt``. The ControlNet policy's conditional fidelity
+      is driven by the policy x0 (which sees ``x_src``), not by the reward input.
 
     Scale-consistency (ADR-0021): scale-on-read uses the ControlNet export's
     ``vae.scaling_factor`` verbatim (never re-estimated).
@@ -809,9 +808,9 @@ def _controlnet_real_inputs(
     # the (expensive) paired cache warm so a bad reward ckpt fails fast (codex #151 /
     # issue #177 AC7). The ControlNet policy scores the terminal latent z_K
     # UNCONDITIONALLY (reward(z_K), in_channels = C_latent) — the same single-latent
-    # reward the UNet path uses, NOT the 2·C condition-aware paired reward. The
-    # ControlNet's conditional fidelity is driven by the policy x0 (which sees x_src),
-    # not by the reward input. latent_c is validated against the single-latent contract.
+    # reward the UNet path uses. The ControlNet's conditional fidelity is driven by
+    # the policy x0 (which sees x_src), not by the reward input. latent_c is validated
+    # against the single-latent contract.
     latent_c = int(opt(cfg, "latent_channels", 4))
     reward_model = _load_frozen_reward(
         cfg, reward_path, device, in_channels=latent_c, latent_c=latent_c

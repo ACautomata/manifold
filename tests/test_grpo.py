@@ -1147,7 +1147,7 @@ def _controlnet_reward() -> RewardModel:
     """Single-latent reward (in_channels = C_latent) scoring z_K unconditionally.
 
     The ControlNet policy scores the terminal latent ``z_K`` only (``reward(z_K)``) —
-    the same single-latent reward the UNet policy uses, NOT a 2·C condition-aware concat.
+    the same single-latent reward the UNet policy uses, NOT a 2·C concat.
     """
     torch.manual_seed(0)
     return RewardModel(spatial_dims=3, in_channels=4, channels=8, num_layers_d=1)
@@ -1652,7 +1652,7 @@ def _save_controlnet_reward_ckpt(path, *, in_channels=4) -> None:
 
     The ControlNet policy's reward scores the terminal latent ``z_K`` unconditionally
     (``in_channels = C_latent``, the same single-latent reward the UNet policy uses) —
-    NOT the 2·C condition-aware paired reward. _controlnet_real_inputs strips the ``reward_model.``
+    NOT a 2·C reward. _controlnet_real_inputs strips the ``reward_model.``
     Lightning prefix.
     """
     rm = RewardModel(spatial_dims=3, in_channels=in_channels, channels=8, num_layers_d=1)
@@ -1887,11 +1887,11 @@ def test_real_inputs_raises_on_no_val_split_controlnet_export(tmp_path, monkeypa
         )
 
 
-def test_real_inputs_rejects_condition_aware_reward_ckpt(tmp_path, monkeypatch):
-    """A 2·C condition-aware paired-reward ckpt fails fast with a readable error.
+def test_real_inputs_rejects_two_c_reward_ckpt(tmp_path, monkeypatch):
+    """A 2·C reward ckpt fails fast with a readable error.
 
     The ControlNet policy scores z_K unconditionally (in_channels = C_latent = 4).
-    Passing a 2·C paired-reward ckpt (in_channels = 8, from the deleted
+    Passing a 2·C reward ckpt (in_channels = 8, from the deleted
     paired-reward training) must raise a clear ValueError BEFORE
     load_state_dict's cryptic shape error (codex #151: the z_K-only reward is an
     intentional design decision; the check turns the real 2·C-ckpt incompatibility
@@ -1904,7 +1904,7 @@ def test_real_inputs_rejects_condition_aware_reward_ckpt(tmp_path, monkeypatch):
     from manifold.training import grpo_cli
 
     save_controlnet_export(tmp_path / "native")
-    # 2·C condition-aware ckpt: in_channels = 8 = 2 * C_latent(4).
+    # 2·C ckpt: in_channels = 8 = 2 * C_latent(4).
     _save_controlnet_reward_ckpt(tmp_path / "reward.ckpt", in_channels=8)
 
     train_manifest, val_manifest = _fake_controlnet_manifests()
