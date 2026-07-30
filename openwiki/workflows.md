@@ -1,7 +1,7 @@
 ---
 type: Guide
 title: Key Workflows
-description: JiT and Paired JiT training, reward/GRPO stages, inference, checkpoints, and export.
+description: JiT, supervised ControlNet translator, reward/GRPO training stages, inference, checkpoints, and export.
 tags: [workflows, training, inference, checkpoints, export]
 ---
 
@@ -25,15 +25,14 @@ Important constraint: the regular noise-to-data production flow disables validat
 
 ## Paired training
 
-`manifold-train-paired` builds subject-level train/validation splits, warms shared per-volume latents, and trains all source-to-target directions. Validation runs deterministic source-started Heun inference and reports decoded full-volume PSNR/SSIM (`src/manifold/training/paired_cli.py`, `src/manifold/metrics/psnr_ssym_callback.py`).
+`manifold-train-controlnet` is the supervised paired translator (ADR-0027 stage 1; the old `paired_cli` and the separate paired-reward pipeline were retired — the latter in ADR-0034). It loads a frozen JiT native export via `--native-dir`, warms shared per-volume latents via `--latents-dir`, and trains a trainable ControlNet over the frozen base through `ControlNetLatentFlowModule`. Validation uses the latent-space `val/x0_mae` callback (`src/manifold/training/metrics.py`), which is fast and runs through the shared `controlnet_rollout` primitive that native inference also uses (`src/manifold/modules/controlnet_sampler.py`; ADR-0005). The native supervised export then becomes stage-1 input to `manifold-train-grpo` for the ControlNet policy path.
 
-Paired JiT conditioning uses a learned MLP that combines source and target contrast embeddings (`concat([embed(src), embed(tgt+offset)])`), replacing the earlier linear sum. This provides greater discriminability across the 12 contrast directions. The optional `paired_direction_offset` config shifts the target embedding row to break A<->B symmetry when needed.
+Paired conditioning uses a learned MLP that combines source and target contrast embeddings (`concat([embed(src), embed(tgt+offset)])`), with the optional `paired_direction_offset` shifting the target embedding row to break A<->B symmetry. The learned MLP provides greater discriminability across the 12 contrast directions and replaces the earlier linear sum.
 
-Useful recipe controls in `configs/train/config_paired_jit.yaml` include:
+Useful recipe controls in `configs/train/config_controlnet_supervised.yaml` include:
 
-- `val_fraction`: subject-level holdout fraction; keep it nonzero for honest validation.
-- `paired_eval.num_inference_steps`: currently 8, based on the repository's step sweep.
-- `paired_eval.check_val_every_n_epoch`: set to the training horizon for one final validation pass.
+- `controlnet.num_inference_steps`: Heun steps for the validation rollout; mirror the JiT denoiser's production inference count.
+- `controlnet.val_fraction`: held-out subject fraction when `env.val_data_base_dir` is not a BraTS directory (the shipped `environment_brats2023.yaml` points it at a manifest JSON, which `_train_val_manifests` rejects and falls back to the fraction).
 - `diffusion_unet_train.lr_warmup_ratio`: preferred over a fixed count for short runs; warmup steps are clamped so peak LR can be reached.
 
 ## Reward and GRPO stages
@@ -61,17 +60,17 @@ There are two artifact types:
 - **Training checkpoint (`.ckpt`)** — full Lightning state for resume and selection.
 - **Native checkpoint directory** — deployable UNet/VAE/scheduler components loaded by a pipeline.
 
-Export is the sole supported bridge:
+Export is the sole supported bridge. The `scripts/export_checkpoint.py` shell was retired in ADR-0033; the same logic is now the `manifold-export` console entry:
 
 ```bash
-python scripts/export_checkpoint.py \
+manifold-export \
   --ckpt <run>/last.ckpt \
   --network-config configs/network/config_network.yaml \
   --vae-checkpoint <vae.pt> \
   --output <native-dir>
 ```
 
-Paired export additionally selects the paired pipeline and supplies the scaling factor; inspect `scripts/export_checkpoint.py --help` for the exact current flags.
+`--pipeline {jit,paired,controlnet}` selects which inference component tree to write (default `jit`). The paired export additionally requires `--scaling-factor` (read from `<paired_model_dir>/paired_scaling_factor.pt`); the ControlNet export additionally requires `--base-native-dir` (the JiT native export the supervised ControlNet was trained against — the ControlNet `.ckpt` registers only the trainable residuals). Inspect `manifold-export --help` for the current flags.
 
 EMA training was removed in commit `e89b05d`. `src/manifold/training/export.py` now extracts the raw UNet backbone under the `unet.unet.` state-dict prefix and always reports `unet_state_dict`. Do not pass retired `--ema`/`prefer_ema` options, configure `ema_decays`, or expect `val/fid_avg` and `val/fid_raw`; the single validation metric is `val/fid`, evaluated on the live raw model. Reward and GRPO policy loading follows the same raw-weight contract.
 
@@ -79,6 +78,12 @@ Only load trusted `.ckpt` files: export calls `torch.load(..., weights_only=Fals
 
 ## Inference
 
-`LatentFlowPipeline` generates from noise; `PairedLatentFlowPipeline` translates a source latent. Both package the UNet, scheduler, and frozen VAE and expose native save/load behavior. NIfTI writing is outside the pipeline boundary: pipelines return decoded `[B,C,D,H,W]` tensors.
+Three inference pipelines package the components and expose native save/load behavior:
 
-When changing inference, verify that module sampling and pipeline sampling still share the same rollout primitive. Relevant tests are `tests/test_pipeline_inference.py`, `test_paired_pipeline_inference.py`, `test_scheduler.py`, and persistence tests.
+- `LatentFlowPipeline` — JiT noise-to-data generator (UNet + scheduler + frozen VAE).
+- `ControlNetLatentFlowPipeline` — supervised paired translator (frozen JiT base UNet + trainable ControlNet + scheduler + frozen VAE).
+- `PairedLatentFlowPipeline` — still-maintained paired inference pipeline that the reward's frozen generator ships through (kept live for `manifold-export --pipeline paired`).
+
+NIfTI writing is outside the pipeline boundary: pipelines return decoded `[B,C,D,H,W]` tensors.
+
+When changing inference, verify that module sampling and pipeline sampling still share the same rollout primitive (`src/manifold/modules/sampler.py`, `controlnet_sampler.py`). Relevant tests are `tests/test_pipeline_inference.py`, `test_controlnet_pipeline_inference.py`, `test_scheduler.py`, and persistence tests.
