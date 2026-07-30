@@ -69,7 +69,9 @@ manifold-train-grpo = "manifold.training.grpo_cli:main"
 # The ControlNet supervised launcher (issue #141 / ADR-0027 stage 1): a frozen JiT
 # base UNet + a trainable ControlNet over the paired MRI latent cache -> fit. The
 # frozen base loads from --native-dir (a JiT native export); the paired cache from
-# --latents-dir. Stage 2 (ControlNet GRPO) runs via manifold-train-grpo --grpo-mode 2.
+# --latents-dir. The ControlNet GRPO policy runs via manifold-train-grpo with
+# --native-dir pointed at the ControlNet export (the policy is inferred from the
+# native artifact, no mode flag).
 manifold-train-controlnet = "manifold.training.controlnet_cli:main"
 # The checkpoint -> native inference-dir export bridge (ADR-0006 / ADR-0033): bake
 # the inference UNet/VAE/scheduler (jit / paired / controlnet) from a Lightning

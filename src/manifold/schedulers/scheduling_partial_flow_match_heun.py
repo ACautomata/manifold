@@ -22,7 +22,7 @@ from .scheduling_flow_match_heun import FlowMatchHeunDiscreteScheduler
 
 
 class PartialFlowMatchHeunScheduler(FlowMatchHeunDiscreteScheduler):
-    """Per-sample partial-range flow-match Heun scheduler (reward pairs).
+    """Per-sample partial-range flow-match Heun scheduler (the reward's corruption-level pairs).
 
     Identical transport + Heun steps to the JiT scheduler (inherited); only the
     integration grid differs — each sample integrates from its own ``t_start`` to

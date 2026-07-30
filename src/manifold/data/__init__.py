@@ -91,8 +91,8 @@ __all__ = [
 def __getattr__(name):
     """Lazy re-export of the relocated ControlNet-GRPO loader (issue #176).
 
-    ``load_frozen_controlnet_generator`` moved from this package's
-    ``paired_reward_pairs`` module to ``manifold.training.controlnet_inputs``
+    ``load_frozen_controlnet_generator`` moved from a now-deleted module in this
+    package to ``manifold.training.controlnet_inputs``
     (its only consumer is the GRPO real-input path). It stays re-exported here for
     the previously-exposed ``manifold.data`` surface (issue #176 acceptance), but
     imported lazily to avoid a ``data -> training -> data.datamodule`` import cycle

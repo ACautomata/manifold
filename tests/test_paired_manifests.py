@@ -1,8 +1,8 @@
 """Tests for the shared paired-manifest splitter (issue #175).
 
 ``_train_val_manifests`` is the ADR-0022 two-way subject split consumed by BOTH the
-ControlNet supervised CLI and the GRPO CLI. It was relocated out of the paired-reward
-CLI (which a later ticket deletes) into a neutral shared ``data`` home —
+ControlNet supervised CLI and the GRPO CLI. It was relocated from a single-consumer
+CLI into a neutral shared ``data`` home —
 ``manifold.data.paired_manifests`` — with **no behavior change**: same splits, same
 ``val_fraction`` mirroring, same native-split-vs-``val_fraction`` fallback.
 

@@ -59,7 +59,7 @@ def export_to_native(
         pipeline_cls: the pipeline class whose ``save_pretrained`` writes the dir
             - default :class:`~manifold.LatentFlowPipeline`; pass
             :class:`~manifold.ControlNetLatentFlowPipeline` for the ControlNet
-            export (the reward's frozen generator base+ControlNet, ADR-0027). One
+            export (the supervised ControlNet generator base+ControlNet, ADR-0027). One
             export path: the baking is MAISI-backbone-keyed, so it is reused
             verbatim (the base UNet wraps the same MAISI backbone).
         controlnet: optional fresh ControlNet (built from the network config). When

@@ -348,8 +348,8 @@ def _real_inputs(
     controlnet.load_base_encoder_weights(base)
     scheduler = build_scheduler(cfg)
 
-    # 3. Paired BraTS manifest + the train/val split (reuses the paired-reward split
-    # logic: native held-out dir, else a subject-level val_fraction).
+    # 3. Paired BraTS manifest + the train/val split (reuses the shared paired-manifest
+    # split logic: native held-out dir, else a subject-level val_fraction).
     inf_cfg = cfg.diffusion_unet_inference
     target_dim = tuple(int(d) for d in inf_cfg.dim)
     divisor = autoencoder_divisor(cfg)
