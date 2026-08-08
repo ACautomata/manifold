@@ -175,9 +175,8 @@ def test_module_backward_updates_discriminator_only():
     # parameters() (so Lightning's automatic .to(device) places them), yet frozen —
     # no grad after backward, off the checkpoint, and off the optimizer.
     denoiser_ids = {id(p) for p in mod.denoiser.parameters()}
-    module_ids = {id(p) for p in mod.parameters()}
     assert denoiser_ids, "fake denoiser has parameters"
-assert not any(k.startswith("denoiser.") for k in mod.state_dict()), "frozen denoiser must be stripped from the checkpoint"
+    assert not any(k.startswith("denoiser.") for k in mod.state_dict()), "frozen denoiser must be stripped from the checkpoint"
     # The optimizer covers discriminator params only.
     opt_ids = {id(p) for p in mod.configure_optimizers()["optimizer"].param_groups[0]["params"]}
     assert opt_ids == {id(p) for p in m.parameters()}
