@@ -1,0 +1,91 @@
+---
+type: Guide
+title: Quickstart
+description: Routing entry for the Manifold wiki; what the wiki covers, how it is organized, and where to go next for each change area.
+tags: [quickstart, navigation, overview]
+---
+
+# Quickstart
+
+Manifold is a 3D medical-imaging research codebase built on top of
+[stable-pretraining](https://github.com/galilai-group/stable-pretraining) and
+[MONAI](https://monai.io/). It follows the [diffusers](https://github.com/huggingface/diffusers)
+four-component layout (models / schedulers / training module / pipeline) and
+trains noise→data rectiflow generators (JiT), a supervised ControlNet translator
+on a frozen JiT base UNet, a mode-agnostic realism `RewardModel`, and a
+group-relative policy-optimization (GRPO) stage that can post-train either the
+UNet or a supervised ControlNet policy against the *same* shared reward
+(ADR-0034). The wiki is the evidence index; source code and tests remain
+authoritative.
+
+## Layout of the wiki
+
+- [Architecture and source map](architecture.md) — component boundaries, data/config layers, runtime flows, native artifact contract, and change guidance.
+- [Key workflows](workflows.md) — JiT training, supervised ControlNet, reward + GRPO stages, checkpoint → native export, and inference.
+- [Operations and testing](operations-and-testing.md) — standard checks, distributed-validation contract, runbook cautions, deadlock vs slow-validation diagnostic, and focused test commands.
+
+## Entrypoints at a glance
+
+Declared in `pyproject.toml` under `[project.scripts]` (the source of truth for
+console entry points; the deletion guards in
+`tests/test_paired_reward_deleted.py` read it directly):
+
+```text
+manifold-train            # noise→data JiT training (ADR-0017 warm)
+manifold-train-reward     # mode-agnostic PatchGAN realism reward (ADR-0009/0010)
+manifold-train-grpo       # UNet *or* ControlNet policy GRPO — inferred from --native-dir
+manifold-train-controlnet # supervised ControlNet translator on a frozen JiT base (ADR-0027)
+manifold-export           # checkpoint -> native inference dir (--pipeline {jit,controlnet})
+```
+
+The historical `manifold-train-paired` / `manifold-train-paired-reward` entries
+are gone; ADR-0034 deleted the condition-aware paired reward pipeline. The
+`--pipeline paired` flag in `manifold-export` references a now-removed module
+(`manifold.pipelines.paired_latent_flow`) and is not part of the current
+workflow — use `--pipeline jit` (default) or `--pipeline controlnet`.
+
+## Task routing
+
+| Change area / intent | Wiki page | Entry points | Important symbols / types | Focused tests | Minimal validation |
+|---|---|---|---|---|---|
+| Edit transport, integration, scheduler grid | [architecture.md](architecture.md#runtime-flows), [workflows.md](workflows.md#inference) | `src/manifold/schedulers/scheduling_flow_match_heun.py`, `src/manifold/modules/sampler.py`, `src/manifold/pipelines/latent_flow.py` | `FlowMatchHeunDiscreteScheduler`, `PartialFlowMatchHeunScheduler`, `sample_latent_flow`, `FlowMatchGRPOScheduler` | `tests/test_scheduler.py`, `test_pipeline_inference.py`, `test_module_training.py` | `pytest tests/test_scheduler.py tests/test_pipeline_inference.py -q` |
+| Edit JiT training loop, latent cache, scaling | [architecture.md](architecture.md#runtime-flows), [workflows.md](workflows.md#jit-training) | `src/manifold/training/cli.py`, `src/manifold/data/{latent_dataset,latent_pipeline,warm_datamodule}.py`, `src/manifold/modules/latent_flow.py` | `LatentFlowModule`, `LatentDataset`, `estimate_scale_factor`, `manifold-train` | `tests/test_training_cli.py`, `test_training.py`, `test_data.py`, `test_ddp_warm.py` | `pytest tests/test_training_cli.py tests/test_ddp_warm.py -q` |
+| Edit ControlNet conditioning or supervised training | [architecture.md](architecture.md#supervised-paired-translator-controlnet), [workflows.md](workflows.md#paired-training) | `src/manifold/models/controlnet_3d.py`, `src/manifold/modules/{controlnet_latent_flow,controlnet_sampler}.py`, `src/manifold/data/{paired_brats,paired_latent_dataset,paired_manifests,paired_volume_dataset}.py`, `src/manifold/training/controlnet_cli.py` | `ControlNet3DConditionModel`, `ControlNetLatentFlowModule`, `controlnet_rollout`, `_train_val_manifests`, `manifold-train-controlnet` | `tests/test_controlnet_cli.py`, `test_controlnet_module_training.py`, `test_controlnet_pipeline_inference.py`, `test_paired_manifests.py`, `test_paired_latent_cache.py` | `pytest tests/test_controlnet_cli.py tests/test_controlnet_pipeline_inference.py -q` |
+| Edit reward training (preference pairs, online rollout) | [workflows.md](workflows.md#reward-and-grpo-stages) | `src/manifold/modules/reward.py`, `src/manifold/modules/partial_denoise.py`, `src/manifold/data/reward_pairs.py`, `src/manifold/training/reward_cli.py` | `RewardModule`, `partial_denoise_rollout`, `bradley_terry_loss`, `PartialFlowMatchHeunScheduler` | `tests/test_reward.py`, `test_reward_pairs.py`, `test_paired_reward_deleted.py` | `pytest tests/test_reward.py tests/test_reward_pairs.py -q` |
+| Edit GRPO (UNet or ControlNet policy) | [workflows.md](workflows.md#reward-and-grpo-stages), [architecture.md](architecture.md#reward-and-policy-post-training) | `src/manifold/modules/grpo.py`, `src/manifold/training/grpo_cli.py`, `src/manifold/training/controlnet_inputs.py` | `GRPOModule`, `singular_branch_rollout`, `clipped_surrogate_loss`, `_detect_controlnet_export`, `_controlnet_real_inputs`, `_unet_real_inputs`, `load_frozen_controlnet_generator`, `manifold-train-grpo` | `tests/test_grpo.py`, `test_paired_reward_deleted.py` | `pytest tests/test_grpo.py -q` |
+| Edit checkpoint / export contract | [workflows.md](workflows.md#checkpoint-and-export-contract) | `src/manifold/training/{export_cli,export}.py`, `src/manifold/pipelines/{latent_flow,controlnet_latent_flow}.py`, `configs/network/config_network.yaml` | `export_to_native`, `LatentFlowPipeline`, `ControlNetLatentFlowPipeline`, `manifold-export` | `tests/test_persistence.py`, `test_pipeline_inference.py`, `test_controlnet_pipeline_inference.py`, `test_config.py` | `pytest tests/test_persistence.py tests/test_controlnet_pipeline_inference.py -q` |
+| Edit validation / FID / x0-MAE / reward metric | [operations-and-testing.md](operations-and-testing.md#distributed-validation-contract) | `src/manifold/metrics/fid/*`, `src/manifold/training/metrics.py`, `src/manifold/training/callbacks/{fid,registry}.py` | `FIDCallback`, `LatentX0MAE`, `FIDSpec`, `CallbackRegistry`, `CallbackContext` | `tests/test_fid.py`, `test_fid_helpers.py`, `test_metric_plot.py`, `test_ddp_metrics.py`, `test_callback_registry.py`, `test_ddp_val_honesty.py` | `pytest tests/test_fid.py tests/test_ddp_metrics.py -q` |
+| Diagnose a hung / slow multi-DCU validation epoch | [operations-and-testing.md](operations-and-testing.md#diagnosing-deadlock-vs-slow-validation) | `src/manifold/training/cli.py`, `src/manifold/metrics/fid/*` | `FIDCallback`, `LatentX0MAE`, MAISI `sliding_window_inference` | `tests/ddp.py` helper, `tests/test_ddp*.py` | `pytest tests/test_ddp.py -q` |
+| Add / remove a console entry point | [workflows.md](workflows.md#reward-and-grpo-stages) | `pyproject.toml` (`[project.scripts]`) | n/a | `tests/test_paired_reward_deleted.py` (parses `pyproject.toml` directly) | `pytest tests/test_paired_reward_deleted.py -q` |
+
+## High-level repository layout
+
+```text
+manifold/
+├── pyproject.toml              # console scripts + hatch build config (single source of truth)
+├── README.md
+├── AGENTS.md / CLAUDE.md       # agent skill pointers (do not hand-edit OpenWiki section)
+├── CONTEXT.md                  # domain vocabulary — use its terms
+├── configs/
+│   ├── env/                    # environment profiles (brats2023, euler, sugon)
+│   ├── network/config_network.yaml
+│   └── train/                  # rflow_jit / controlnet_supervised / reward / grpo recipes
+├── docs/adr/                   # 34 ADRs; ADR-0034 is the latest (one realism reward)
+├── src/manifold/               # four-component layout (models / schedulers / modules / pipelines)
+└── tests/                      # focus tests + tests/ddp.py multi-process harness
+```
+
+## Change-agent checklist
+
+- **Transport/integration:** change the scheduler and the shared sampler path together; run scheduler, pipeline, and module tests to prevent train/inference drift.
+- **Latent scaling:** preserve VAE ownership and the unscaled-cache contract; check VAE, data, persistence, and pipeline tests.
+- **Paired conditioning / pairing:** keep BraTS discovery outside the generic dataset contract and preserve subject-level split isolation (`_train_val_manifests` is shared by both CLIs after ADR-0022 / ADR-0034).
+- **Reward / GRPO policy:** the discriminator is the native artifact under `--native-dir` (a ControlNet export exposes a `controlnet` component in `model_index.json`); there is **no** `--grpo-mode` flag. Both policies score `z_K` unconditionally with the same `RewardModel` (ADR-0034).
+- **Metrics:** distinguish per-rank accumulation from global reduction. Manual `all_reduce` must not also use `sync_dist=True` for the same value.
+- **Checkpoint behavior:** update training callbacks, export, downstream frozen-generator loaders, and tests as one contract.
+- **Console scripts:** `pyproject.toml` is the single source of truth — the deletion guard in `tests/test_paired_reward_deleted.py` parses it directly.
+
+## Backlog
+
+- Document the `CallbackRegistry` (`src/manifold/training/callbacks/{registry,context,fid,checkpoint,train_loss}.py`) as a first-class page — currently only ADR-0029 references it inline.
+- Resolve the stale `--pipeline paired` reference in `src/manifold/training/export_cli.py` (it imports a now-deleted module); either remove the choice or restore the `PairedLatentFlowPipeline` definition before it can be exercised again.
