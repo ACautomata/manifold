@@ -35,6 +35,7 @@ from torch import Tensor
 
 from ..schedulers.scheduling_flow_match_grpo import FlowMatchGRPOScheduler
 from .controlnet_sampler import _controlnet_x0, controlnet_rollout
+from .frozen_arm import FrozenArmMixin
 from .sampler import sample_latent_flow
 
 #: Per-step rollout buffer entry consumed by the GRPO inner loop.
@@ -293,7 +294,7 @@ def clipped_surrogate_loss(
 GRPOBatch = dict[str, Any]
 
 
-class GRPOModule(spt.Module):
+class GRPOModule(FrozenArmMixin, spt.Module):
     """Granular-GRPO policy post-training of the JiT x0-denoiser (ADR-0011/0012).
 
     Overrides :meth:`training_step` (NOT ``forward`` — GRPO is multi-term, multi-step,
@@ -307,11 +308,15 @@ class GRPOModule(spt.Module):
     Holds EITHER the **trainable JiT UNet** (the UNet policy) OR the **frozen base UNet
     + trainable ControlNet** (the ControlNet policy), plus the **frozen**
     :class:`~manifold.RewardModel` and (optional) frozen reference policy. The frozen
-    arms are **registered + dual-excluded** (ADR-0031): normal ``nn.Module`` children
-    so Lightning owns their device placement, kept off the optimizer and the checkpoint
-    via the :meth:`state_dict` / :meth:`load_state_dict` overrides, and held in
-    :meth:`eval` across ``module.train()`` via the :meth:`train` override. No EMA;
-    resumes / selects / exports the raw arm (ADR-0006/0012).
+    arms are **registered + dual-excluded** (ADR-0031 A1, via
+    :class:`~manifold.modules.FrozenArmMixin`): normal ``nn.Module`` children so
+    Lightning owns their device placement, kept off the optimizer and the checkpoint by
+    the mixin's :meth:`~manifold.modules.FrozenArmMixin.state_dict` /
+    :meth:`~manifold.modules.FrozenArmMixin.load_state_dict` overrides, and held in
+    :meth:`~manifold.modules.FrozenArmMixin.eval` across ``module.train()`` via the
+    mixin's :meth:`~manifold.modules.FrozenArmMixin.train` override. This host declares
+    only WHICH arms are frozen (``_frozen_arm_names``); the mechanism's mechanics live
+    in the shared mixin. No EMA; resumes / selects / exports the raw arm (ADR-0006/0012).
 
     **Two policies, one reward (ADR-0028 / ADR-0034).** The only thing that differs
     between the two policies is the transition ``x_θ`` source: the UNet policy reads it
@@ -393,54 +398,40 @@ class GRPOModule(spt.Module):
             # The ControlNet policy: the base UNet is FROZEN + registered (a normal
             # nn.Module child so Lightning's automatic .to(device) moves it per-rank),
             # kept off the optimizer and the checkpoint via the dual-exclude in
-            # state_dict() / load_state_dict() (ADR-0031). The base freeze is a derived
-            # invariant (``controlnet is not None``), not a constructor arg. The
-            # ControlNet is the only optimized + checkpointed arm. (No manual
-            # on_fit_start .to(device) — Lightning owns it.)
-            policy = policy.eval()
-            for p in policy.parameters():
-                p.requires_grad_(False)
-            self.unet = policy
+            # FrozenArmMixin (ADR-0031 A1). The base freeze is a derived invariant
+            # (``controlnet is not None``), not a constructor arg. The ControlNet is
+            # the only optimized + checkpointed arm. (No manual on_fit_start
+            # .to(device) — Lightning owns it.)
+            self._register_frozen_arm("unet", policy)
             self.controlnet = controlnet  # registered → optimized / checkpointed
         else:
             # The UNet policy: the UNet is the trainable policy (registered, optimized).
             self.unet = policy
             self.controlnet = None
         self.scheduler = scheduler  # carries η (the SDE exploration knob)
-        # Frozen reward, registered + dual-excluded (ADR-0031): a normal nn.Module
-        # child so Lightning's .to(device) moves it, but kept off the optimizer (the
-        # trainable-arm-only configure_optimizers + requires_grad=False) and off the
-        # checkpoint (the state_dict() override), and held in eval() across
-        # module.train() via the train() override (the mode-management cost of
-        # registration — the old object.__setattr__ bypass avoided it by hiding the
-        # arm from the module tree, at the cost of Lightning not owning its device).
-        reward_model = reward_model.eval()
-        for p in reward_model.parameters():
-            p.requires_grad_(False)
-        self.reward_model = reward_model
+        # Frozen reward, registered + dual-excluded (ADR-0031 A1, via FrozenArmMixin):
+        # a normal nn.Module child so Lightning's .to(device) moves it, but kept off
+        # the optimizer (the trainable-arm-only configure_optimizers +
+        # requires_grad=False) and off the checkpoint (the mixin's state_dict()
+        # override), and held in eval() across module.train() via the mixin's train()
+        # override (the mode-management cost of registration — the old
+        # object.__setattr__ bypass avoided it by hiding the arm from the module tree,
+        # at the cost of Lightning not owning its device).
+        self._register_frozen_arm("reward_model", reward_model)
 
         # Frozen reference policy (the KL anchor, ADR-0015): a deepcopy of the policy,
-        # registered + dual-excluded exactly like the reward (ADR-0031). For the
-        # ControlNet policy: a ``(base, controlnet)`` pair — both frozen + registered.
-        # ``None`` ⇒ no KL (the v1 default); the None arms stay plain attributes (not
-        # submodules), so they contribute no keys to state_dict() and no params to
-        # parameters().
+        # registered + dual-excluded exactly like the reward (ADR-0031 A1, via
+        # FrozenArmMixin). For the ControlNet policy: a ``(base, controlnet)`` pair —
+        # both frozen + registered. ``None`` ⇒ no KL (the v1 default); the None arms
+        # stay plain attributes (not submodules), so they contribute no keys to
+        # state_dict() and no params to parameters().
         if reference_policy is not None:
             if controlnet is not None:
                 ref_base, ref_controlnet = reference_policy
-                ref_base = ref_base.eval()
-                for p in ref_base.parameters():
-                    p.requires_grad_(False)
-                ref_controlnet = ref_controlnet.eval()
-                for p in ref_controlnet.parameters():
-                    p.requires_grad_(False)
-                self.reference_unet = ref_base
-                self.reference_controlnet = ref_controlnet
+                self._register_frozen_arm("reference_unet", ref_base)
+                self._register_frozen_arm("reference_controlnet", ref_controlnet)
             else:
-                reference_policy = reference_policy.eval()
-                for p in reference_policy.parameters():
-                    p.requires_grad_(False)
-                self.reference_unet = reference_policy
+                self._register_frozen_arm("reference_unet", reference_policy)
                 self.reference_controlnet = None
         else:
             self.reference_unet = None
@@ -458,21 +449,10 @@ class GRPOModule(spt.Module):
         self.reward_temp = float(reward_temp)
         self._val_reward_sum = 0.0
         self._val_reward_count = 0
-
-        #: The registered submodule prefixes kept off the optimizer + checkpoint
-        #: (ADR-0031 dual-exclude). Always the frozen reward; the ControlNet-policy
-        #: frozen base ``unet``; and the frozen KL-anchor arms when present. The UNet-
-        #: policy ``unet`` (the trainable policy) is intentionally NOT here. Declared
-        #: once at init — the arm set is fixed at construction — and shared by
-        #: state_dict() (strip) and load_state_dict() (the strict-load allow-list).
-        frozen = {"reward_model"}
-        if self.controlnet is not None:  # ControlNet policy: the base UNet is the frozen arm
-            frozen.add("unet")
-        if self.reference_unet is not None:
-            frozen.add("reference_unet")
-        if self.reference_controlnet is not None:
-            frozen.add("reference_controlnet")
-        self._frozen_arm_names: frozenset[str] = frozenset(frozen)
+        # The frozen-arm set lives in FrozenArmMixin._frozen_arm_names, declared by
+        # the _register_frozen_arm calls above (always the reward; the ControlNet-
+        # policy base ``unet``; the KL-anchor arms when present). The UNet-policy
+        # ``unet`` (the trainable policy) is intentionally never registered.
 
     # -- ControlNet-policy helpers ---------------------------------------------
 
@@ -606,88 +586,13 @@ class GRPOModule(spt.Module):
         if count:
             self.log("val/mean_reward", total / count, prog_bar=True, sync_dist=False)
 
-    # -- frozen-arm registration + dual-exclude (ADR-0031) --------------------
-
-    def _is_frozen_key(self, key: str) -> bool:
-        """Whether a ``state_dict`` key belongs to a registered frozen arm.
-
-        Matched on the key's top-level segment (the prefix before the first ``.``), so
-        ``reward_model.conv.weight`` matches the ``reward_model`` arm. Non-frozen keys
-        (the trainable ``unet`` for the UNet policy, the trainable ``controlnet`` for
-        the ControlNet policy) return ``False`` — they stay on the checkpoint and in the
-        optimizer.
-        """
-        return key.split(".", 1)[0] in self._frozen_arm_names
-
-    def state_dict(self, destination=None, prefix="", keep_vars=False, **kwargs):
-        """Strip the registered frozen arms — they are rebuilt fresh each launch.
-
-        The frozen reward / reference / ControlNet-policy base stay off the checkpoint:
-        the reward is reloaded from its own ``.ckpt``, the reference is a launch-time
-        ``deepcopy`` (ADR-0028), and the ControlNet-policy base comes from the native
-        export. Registering the arms (so Lightning owns their device placement) would
-        otherwise leak their weights into the checkpoint; this override restores the
-        off-checkpoint invariant at the source, so direct ``mod.state_dict()`` calls see
-        them stripped (ADR-0031).
-
-        The filter mutates the shared ``destination`` IN PLACE (and matches the arms
-        under the caller-supplied ``prefix``): ``super().state_dict()`` writes every
-        frozen-arm tensor into ``destination``, and a parent/wrapper that drives the
-        recursion reads ``destination`` (the return value is the same object), so
-        building a fresh dict would leave the multi-GB arms behind. Prefix-awareness
-        makes a GRPOModule nested under another ``nn.Module`` —
-        ``state_dict(prefix="grpo.")`` — strip them too.
-        """
-        destination = super().state_dict(destination=destination, prefix=prefix, keep_vars=keep_vars, **kwargs)
-        frozen_prefixes = tuple(f"{prefix}{name}." for name in self._frozen_arm_names)
-        for key in [k for k in destination if k.startswith(frozen_prefixes)]:
-            del destination[key]
-        return destination
-
-    def load_state_dict(self, state_dict, strict: bool = True, **kwargs):
-        """Strict load over the TRAINABLE keys; frozen arms are an explicit allow-list.
-
-        The checkpoint never carries frozen-arm weights (``state_dict()`` strips them);
-        the arms are rebuilt fresh each launch (ADR-0031). Strip any stray frozen keys
-        a stale pre-refactor checkpoint may carry too, then enforce strict parity on
-        the trainable keys ONLY — a missing/unexpected TRAINABLE key (an incomplete or
-        mode-mismatched ``.ckpt``) surfaces loudly, NOT silently via a blanket
-        ``strict=False`` (which would also hide a missing trainable key and resume on
-        random or stale weights, corrupting the experiment). The frozen arms being
-        absent from the checkpoint is the one tolerated mismatch.
-        """
-        incoming = {k: v for k, v in state_dict.items() if not self._is_frozen_key(k)}
-        result = super().load_state_dict(incoming, strict=False, **kwargs)
-        # super() reports the registered frozen arms as missing (present in the module,
-        # absent in the incoming) — that is the allow-listed tolerance. Anything else is
-        # a real trainable-key mismatch and (when strict) must raise.
-        bad_missing = [k for k in result.missing_keys if not self._is_frozen_key(k)]
-        bad_unexpected = [k for k in result.unexpected_keys if not self._is_frozen_key(k)]
-        if strict and (bad_missing or bad_unexpected):
-            raise RuntimeError(
-                f"Error(s) loading state_dict for {type(self).__name__} (frozen arms "
-                f"{sorted(self._frozen_arm_names)} allow-listed): missing "
-                f"{len(bad_missing)} trainable key(s) {bad_missing[:5]}; unexpected "
-                f"{len(bad_unexpected)} key(s) {bad_unexpected[:5]}."
-            )
-        return result
-
-    def train(self, mode: bool = True):
-        """Re-freeze ``eval()`` on the registered frozen arms after ``super().train()``.
-
-        Registration makes Lightning's ``module.train(mode)`` recurse into the frozen
-        arms and flip them to training mode — an ``eval()`` set at construction does
-        NOT persist. A frozen arm in training mode would let its BatchNorm running
-        stats drift during rollout / reward evaluation, corrupting the supposedly-fixed
-        function. This override re-applies ``eval()`` to every present frozen arm after
-        the recursive call (the mode-management cost registration buys; ADR-0031).
-        """
-        result = super().train(mode)
-        for name in self._frozen_arm_names:
-            arm = getattr(self, name, None)
-            if arm is not None:
-                arm.eval()
-        return result
+    # -- frozen arms (ADR-0031 A1) -------------------------------------------
+    #
+    # The frozen-arm mechanism (registration + dual-exclude) lives in the shared
+    # FrozenArmMixin: this host declares only WHICH arms are frozen, via the
+    # _register_frozen_arm calls in __init__ — the mixin owns state_dict() stripping
+    # (prefix-aware, in-place), the load_state_dict() strict-load allow-list, and the
+    # train() eval() re-freeze (see the mixin for the mechanism's contract).
 
     # -- optimizer ------------------------------------------------------------
 
