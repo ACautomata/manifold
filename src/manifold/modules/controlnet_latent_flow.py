@@ -12,16 +12,16 @@ against it (the same discipline the base was trained with). An optional L1 term 
 the target prediction (default weight 0) preserves the L1+direction-offset lever
 from the prior paired experiments (spec user story 7).
 
-**Base frozen + unregistered; ControlNet is the only optimized arm.** The frozen
-base UNet is held via ``object.__setattr__`` (bypassing ``nn.Module`` registration)
-so it stays off ``parameters()`` / ``state_dict()`` / the optimizer / DDP — the
-same pattern :class:`~manifold.modules.GRPOModule` uses to hold its frozen reward.
-The ControlNet is a registered submodule (the only optimized + checkpointed arm).
-The base receives only the target-contrast ``class_labels``; the ControlNet carries
-the (src, tgt) direction conditioning. Gradient flows from the base output back to
-the ControlNet through the base wrapper's out-of-place residual forward
-(ADR-0026's corrected hazard — MONAI's native in-place adds would break this
-backward).
+**Base frozen + registered (dual-excluded); ControlNet is the only optimized arm.**
+The frozen base UNet is a registered ``nn.Module`` submodule placed off the
+optimizer + checkpoint via :class:`~manifold.modules.FrozenArmMixin` (ADR-0031 A1)
+— so Lightning's automatic ``.to(device)`` owns its placement, and it stays off
+``state_dict()`` / the optimizer while remaining in ``parameters()``. The ControlNet
+is the only optimized + checkpointed arm. The base receives only the target-contrast
+``class_labels``; the ControlNet carries the (src, tgt) direction conditioning.
+Gradient flows from the base output back to the ControlNet through the base
+wrapper's out-of-place residual forward (ADR-0026's corrected hazard — MONAI's
+native in-place adds would break this backward).
 
 The optimizer/schedule/grad-norm wiring **composes** the existing
 :class:`~manifold.modules.LatentFlowModule` helpers (``scaled_peak_lr``,
@@ -48,6 +48,7 @@ from ..models.controlnet_3d import ControlNet3DConditionModel
 from ..models.unet_3d_condition import UNet3DConditionModel
 from ..schedulers.scheduling_flow_match_heun import FlowMatchHeunDiscreteScheduler
 from .controlnet_sampler import controlnet_rollout
+from .frozen_arm import FrozenArmMixin
 from .latent_flow import cosine_with_warmup, resolve_warmup_steps, scaled_peak_lr
 
 #: A ControlNet supervised training batch: scaled src (control) + tgt (target)
@@ -57,12 +58,14 @@ from .latent_flow import cosine_with_warmup, resolve_warmup_steps, scaled_peak_l
 ControlNetSampleDict = dict[str, Any]
 
 
-class ControlNetLatentFlowModule(spt.Module):
+class ControlNetLatentFlowModule(FrozenArmMixin, spt.Module):
     """Supervised ControlNet training module (``spt.Module``).
 
     Args:
         unet: the **frozen** noise→data :class:`~manifold.UNet3DConditionModel`
-            (predicts x0). Held unregistered — off the optimizer/checkpoint.
+            (predicts x0). Registered + dual-excluded via :class:`FrozenArmMixin` —
+            off the optimizer/checkpoint, on the module tree so Lightning owns its
+            device placement.
         controlnet: the trainable :class:`~manifold.ControlNet3DConditionModel`
             (the only optimized params); emits the residual injections.
         scheduler: the :class:`~manifold.FlowMatchHeunDiscreteScheduler`; its
@@ -122,15 +125,14 @@ class ControlNetLatentFlowModule(spt.Module):
                 "lr_warmup_ratio": lr_warmup_ratio,
             }
         )
-        # The frozen base UNet, held UNregistered (object.__setattr__ bypasses
-        # nn.Module registration) → absent from parameters()/state_dict()/optimizer/
-        # DDP, moved to the device manually in on_fit_start (mirrors GRPOModule's
-        # frozen reward). It is eval + grad-disabled: the supervised stage never
-        # trains it.
-        unet = unet.eval()
-        for p in unet.parameters():
-            p.requires_grad_(False)
-        object.__setattr__(self, "unet", unet)
+        # The frozen base UNet — registered + dual-excluded via FrozenArmMixin
+        # (ADR-0031 A1): a normal nn.Module child so Lightning's automatic .to(device)
+        # moves it (no manual on_fit_start move), kept off the optimizer (the
+        # trainable-arm-only configure_optimizers + requires_grad=False) and off the
+        # checkpoint (the state_dict() strip), held in eval() across module.train().
+        # The eval + grad-disable prep is applied once inside _register_frozen_arm;
+        # the supervised stage never trains it.
+        self._register_frozen_arm("unet", unet)
 
         # The trainable ControlNet — the only registered (optimized + checkpointed) arm.
         self.controlnet = controlnet
@@ -155,10 +157,6 @@ class ControlNetLatentFlowModule(spt.Module):
         self.n_epochs = int(n_epochs)
         #: Last AMP-corrected grad norm (stashed by ``after_manual_backward``).
         self._last_grad_norm: float | None = None
-
-    def on_fit_start(self) -> None:
-        """Move the unregistered frozen base to the device (Lightning's ``.to`` skips it)."""
-        self.unet.to(self.device)
 
     def _sample_timesteps(self, batch_size: int, device: torch.device) -> Tensor:
         """Logit-normal ``t ~ sigmoid(N(p_mean, p_std))`` in ``(0, 1)`` (the JiT sampler)."""
@@ -271,7 +269,7 @@ class ControlNetLatentFlowModule(spt.Module):
         return 1
 
     def configure_optimizers(self):
-        """Adam over the **ControlNet params only** (the base is frozen/unregistered).
+        """Adam over the **ControlNet params only** (the base is frozen + dual-excluded).
 
         The schedule horizon is in optimizer steps (``_total_optimizer_steps``); the
         Adam peak LR is auto-scaled from ``self.lr`` by the effective batch

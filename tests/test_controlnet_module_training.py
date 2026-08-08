@@ -84,13 +84,36 @@ def test_validation_stage_exposes_pred_and_target(module, batch):
     assert out["target"].shape == batch["tgt_latent"].shape
 
 
-def test_base_is_frozen_and_unregistered(module, base):
-    """The base is off the optimizer/checkpoint; the ControlNet is the only arm."""
-    opt_params = {id(p) for p in module.parameters()}
-    assert not ({id(p) for p in base.parameters()} & opt_params)
-    assert {id(p) for p in module.controlnet.parameters()} <= opt_params
-    assert not any(k.startswith("unet.") for k in module.state_dict())
-    assert any("controlnet" in k for k in module.state_dict())
+def test_base_is_registered_but_dual_excluded(module, base):
+    """The base is registered (in parameters()) but dual-excluded (ADR-0031 A1).
+
+    Registration lets Lightning own device placement (the on_fit_start manual move is
+    gone); the off-optimizer + off-checkpoint invariants survive via requires_grad=False
+    + the state_dict() override (FrozenArmMixin) — NOT via the old object.__setattr__
+    bypass. The base appears in parameters() but carries no grad, sits in no optimizer
+    group, and emits no checkpoint key; the ControlNet is the only optimized arm.
+    """
+    assert module._frozen_arm_names == frozenset({"unet"})
+
+    module_param_ids = {id(p) for p in module.parameters()}
+    # Registered ⇒ the frozen base's params are present in parameters() ...
+    assert {id(p) for p in base.parameters()} <= module_param_ids
+    assert {id(p) for p in module.controlnet.parameters()} <= module_param_ids
+    # ... but frozen (requires_grad=False) ...
+    assert not any(p.requires_grad for p in base.parameters())
+    # ... while the ControlNet stays trainable.
+    assert any(p.requires_grad for p in module.controlnet.parameters())
+
+    # Off the optimizer: it wires the ControlNet only.
+    opt = module.configure_optimizers()["optimizer"]
+    opt_ids = {id(p) for g in opt.param_groups for p in g["params"]}
+    assert opt_ids == {id(p) for p in module.controlnet.parameters()}
+    assert opt_ids.isdisjoint({id(p) for p in base.parameters()})
+
+    # Off the checkpoint: state_dict() strips the unet. prefix (the ControlNet stays).
+    keys = set(module.state_dict())
+    assert not any(k.startswith("unet.") for k in keys)
+    assert any("controlnet" in k for k in keys)
 
 
 def test_backward_routes_grad_to_controlnet_not_base(module, batch, base):
