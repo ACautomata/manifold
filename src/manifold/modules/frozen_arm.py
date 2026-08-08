@@ -117,7 +117,10 @@ class FrozenArmMixin:
         experiment). The frozen arms being absent from the checkpoint is the one
         tolerated mismatch.
         """
-        incoming = {k: v for k, v in state_dict.items() if not self._is_frozen_key(k)}
+        incoming = type(state_dict)({k: v for k, v in state_dict.items() if not self._is_frozen_key(k)})
+        metadata = getattr(state_dict, "_metadata", None)
+        if metadata is not None and hasattr(incoming, "__dict__"):
+            incoming._metadata = metadata
         result = super().load_state_dict(incoming, strict=False, **kwargs)
         # super() reports the registered frozen arms as missing (present in the
         # module, absent in the incoming) — that is the allow-listed tolerance.
