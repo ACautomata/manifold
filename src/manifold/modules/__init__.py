@@ -7,6 +7,7 @@ scheduler (ADR-0001).
 
 from .controlnet_latent_flow import ControlNetLatentFlowModule, ControlNetSampleDict
 from .controlnet_sampler import controlnet_partial_rollout, controlnet_rollout
+from .frozen_arm import FrozenArmMixin
 from .grpo import (
     GRPOBatch,
     GRPOModule,
@@ -24,6 +25,7 @@ from .sampler import sample_latent_flow
 __all__ = [
     "ControlNetLatentFlowModule",
     "ControlNetSampleDict",
+    "FrozenArmMixin",
     "GRPOBatch",
     "GRPOModule",
     "LatentFlowModule",
