@@ -49,6 +49,7 @@ import torch.nn.functional as F
 from torch import Tensor
 
 from ..models.reward_model import RewardModel
+from .frozen_arm import FrozenArmMixin
 from .partial_denoise import partial_denoise_rollout
 
 #: A reward-training batch. In ``fit`` a clean-latent batch (``{latent, ...}``);
@@ -124,16 +125,17 @@ def _score_pair(reward_model, winner: Tensor, loser: Tensor) -> tuple[Tensor, Te
     return rewards[:batch_size], rewards[batch_size:]
 
 
-class RewardModule(spt.Module):
+class RewardModule(FrozenArmMixin, spt.Module):
     """Bradley–Terry preference training over the Reward Model.
 
     Args:
         reward_model: the :class:`~manifold.models.RewardModel` being trained.
         lr: Adam learning rate over the discriminator parameters.
         denoiser: the frozen JiT x0-denoiser (the GRPO starting policy) held for
-            the online rollout. Attached **unregistered** (``object.__setattr__``,
-            not plain assignment — see :attr:`denoiser`) so it never enters the
-            checkpoint / optimizer / DDP replication. ``None`` only when ``fit`` is
+            the online rollout. Registered + dual-excluded via
+            :class:`~manifold.modules.FrozenArmMixin` (ADR-0031 A1): a plain
+            registered submodule so Lightning owns its device placement, kept off
+            the checkpoint / optimizer by the mixin. ``None`` only when ``fit`` is
             never called (validation-only).
         scheduler: a :class:`~manifold.PartialFlowMatchHeunScheduler` (frozen;
             its transport + per-sample grid run the rollout). Required with
@@ -185,18 +187,13 @@ class RewardModule(spt.Module):
         if denoiser is not None:
             if scheduler is None:
                 raise ValueError("denoiser requires a scheduler for the online rollout.")
-            denoiser = denoiser.eval()
-            for p in denoiser.parameters():
-                p.requires_grad_(False)
-            # object.__setattr__ bypasses nn.Module.__setattr__, which would
-            # auto-register the denoiser into _modules → leaking its 3.6 GB into
-            # state_dict(), parameters(), the optimizer, and DDP replication. Kept
-            # off the books: absent from the checkpoint and the optimizer, and moved
-            # to the device manually in on_fit_start (the bypass also hides it from
-            # Lightning's automatic .to(device), so it would otherwise stay where
-            # from_pretrained left it). The scheduler is NOT an nn.Module, so plain
+            # Registered + dual-excluded (ADR-0031 A1, via FrozenArmMixin): the
+            # frozen denoiser lives in the module tree so Lightning's automatic
+            # .to(device) places it, while the mixin keeps it off the checkpoint
+            # (state_dict() strips it), eval + requires_grad=False across
+            # module.train(). The scheduler is NOT an nn.Module, so plain
             # assignment does not register it.
-            object.__setattr__(self, "denoiser", denoiser)
+            self._register_frozen_arm("denoiser", denoiser)
             self.scheduler = scheduler
         else:
             self.denoiser = None
@@ -219,18 +216,6 @@ class RewardModule(spt.Module):
         self._val_r_l: list[Tensor] = []
 
     # -- frozen-denoiser lifecycle -------------------------------------------
-
-    def on_fit_start(self) -> None:
-        """Move the unregistered frozen denoiser to the device (Lightning won't).
-
-        The ``object.__setattr__`` bypass keeps the denoiser off Lightning's books,
-        so its automatic ``.to(device)`` skips it. The real path moves it already
-        (``load_frozen_denoiser`` → ``.to(device)``); this is the safety net for
-        direct ``fit`` calls and the resume path (the checkpoint holds no denoiser,
-        so it is re-read from ``--native-dir``).
-        """
-        if self.denoiser is not None:
-            self.denoiser.to(self.device)
 
     def set_val_probe(self, winner: Tensor, loser: Tensor) -> None:
         """Attach the fixed generated-end probe pair set (reused across epochs)."""
@@ -386,8 +371,9 @@ class RewardModule(spt.Module):
     def configure_optimizers(self):
         """Adam over discriminator parameters only (the reward model).
 
-        The frozen denoiser is unregistered (``object.__setattr__``), so it is
-        absent from ``reward_model.parameters()`` and the optimizer never touches
-        it — the discriminator-only-gradient invariant holds structurally.
+        The frozen denoiser is registered but ``requires_grad=False`` and never
+        selected here (the mixin does not own arm selection), so the optimizer
+        never touches it — the discriminator-only-gradient invariant holds via
+        explicit arm selection (``reward_model.parameters()`` only).
         """
         return {"optimizer": torch.optim.Adam(self.reward_model.parameters(), lr=self.lr)}
