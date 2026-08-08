@@ -5,8 +5,9 @@ latent to a finite per-sample scalar (no sigmoid); the Bradley–Terry loss is
 finite and its gradient pushes ``r_w`` up / ``r_l`` down; the online
 ``RewardModule.forward("fit")`` consumes a **clean-latent** batch, rolls fresh
 preference pairs (frozen denoiser, no grad), and returns a finite BT loss whose
-backward touches discriminator params only; the frozen denoiser is held but
-UNregistered (off the checkpoint/optimizer); and a reward-training run completes
+backward touches discriminator params only; the frozen denoiser is held
+registered-but-dual-excluded (ADR-0031 A1 — present in parameters() so Lightning
+owns device placement, yet off the checkpoint/optimizer); and a reward-training run completes
 end-to-end on toy clean latents via the injected-data CLI smoke, writing a
 checkpoint and logging pairwise accuracy + the generated-end probe.
 """
@@ -157,29 +158,33 @@ def test_module_online_rollout_moves_latent():
 
 
 def test_module_backward_updates_discriminator_only():
-    """backward populates grads on every discriminator param; the denoiser is frozen + unregistered.
+    """backward populates grads on every discriminator param; the frozen denoiser stays untouched.
 
-    The Module HOLDS the frozen denoiser (unregistered via object.__setattr__) —
-    so it is absent from parameters()/state_dict()/optimizer, and backward only
-    touches discriminator params (#50 acceptance: the exclusion invariant).
-    """
+    The Module HOLDS the frozen denoiser registered + dual-excluded (ADR-0031 A1,
+    via ``FrozenArmMixin``) — so it is present in ``parameters()`` (Lightning owns
+    its device placement) yet off the checkpoint/optimizer, and backward only
+    touches discriminator params (#50 acceptance: the exclusion invariant,
+    mirroring GRPOModule)."""
     m = _reward_model()
     mod = RewardModule(m, lr=1e-2, denoiser=_soft_denoiser(), scheduler=PartialFlowMatchHeunScheduler(), num_steps=2)
     mod.forward(_clean_batch(), "fit")["loss"].backward()
     params = list(m.parameters())
     assert params, "reward model has parameters"
     assert all(p.grad is not None and torch.isfinite(p.grad).all() for p in params)
-    # Denoiser held but UNREGISTERED: its params are disjoint from the Module's
-    # parameters() (so off the optimizer / checkpoint / DDP).
+    # Denoiser registered-but-dual-excluded: its params ARE in the Module's
+    # parameters() (so Lightning's automatic .to(device) places them), yet frozen —
+    # no grad after backward, off the checkpoint, and off the optimizer.
     denoiser_ids = {id(p) for p in mod.denoiser.parameters()}
     module_ids = {id(p) for p in mod.parameters()}
     assert denoiser_ids, "fake denoiser has parameters"
-    assert denoiser_ids.isdisjoint(module_ids)
-    assert "denoiser" not in mod.state_dict()
+    assert denoiser_ids <= module_ids, "registered frozen denoiser must appear in parameters()"
+    assert all(p.grad is None for p in mod.denoiser.parameters()), "frozen denoiser must take no grad"
+    assert "denoiser" not in mod.state_dict(), "frozen denoiser must be stripped from the checkpoint"
     assert all(not p.requires_grad for p in mod.denoiser.parameters())
     # The optimizer covers discriminator params only.
     opt_ids = {id(p) for p in mod.configure_optimizers()["optimizer"].param_groups[0]["params"]}
     assert opt_ids == {id(p) for p in m.parameters()}
+    assert opt_ids.isdisjoint(denoiser_ids), "frozen denoiser must be off the optimizer"
 
 
 def test_module_optimizer_step_widens_winner_loser_margin():
@@ -348,7 +353,8 @@ def test_run_reward_training_writes_ckpt_and_logs_metrics(tmp_path):
     ckpts = list(Path(str(tmp_path)).glob("*.ckpt"))
     assert any(p.name == "last.ckpt" for p in ckpts)
     assert ckpt.best_model_path and Path(ckpt.best_model_path).is_file()
-    # on_fit_start moved the unregistered denoiser onto the module device.
+    # The denoiser is registered, so Lightning's automatic .to(device) places it
+    # on the module device (the old on_fit_start manual move is gone — ADR-0031 A1).
     assert next(trainer.model.denoiser.parameters()).device == trainer.model.device
 
 
