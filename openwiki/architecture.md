@@ -49,7 +49,7 @@ Start with:
 - `src/manifold/data/paired_brats.py`, `paired_volume_dataset.py`, `paired_latent_dataset.py`, `paired_manifests.py`
 - `src/manifold/models/controlnet_3d.py`
 - `src/manifold/modules/controlnet_latent_flow.py`, `controlnet_sampler.py`
-- `src/manifold/pipelines/paired_latent_flow.py` (export-time only — the still-needed paired inference pipeline the reward's frozen generator ships through), `controlnet_latent_flow.py`
+- `src/manifold/pipelines/controlnet_latent_flow.py`
 - `src/manifold/training/controlnet_cli.py`
 - `configs/train/config_controlnet_supervised.yaml`
 

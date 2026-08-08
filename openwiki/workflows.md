@@ -70,7 +70,7 @@ manifold-export \
   --output <native-dir>
 ```
 
-`--pipeline {jit,paired,controlnet}` selects which inference component tree to write (default `jit`). The paired export additionally requires `--scaling-factor` (read from `<paired_model_dir>/paired_scaling_factor.pt`); the ControlNet export additionally requires `--base-native-dir` (the JiT native export the supervised ControlNet was trained against — the ControlNet `.ckpt` registers only the trainable residuals). Inspect `manifold-export --help` for the current flags.
+`--pipeline {jit,paired,controlnet}` selects which inference component tree to write (default `jit`). The ControlNet export additionally requires `--base-native-dir` (the JiT native export the supervised ControlNet was trained against — the ControlNet `.ckpt` registers only the trainable residuals). `--pipeline paired` is currently a stale code reference (the `PairedLatentFlowPipeline` module was deleted alongside the paired-reward pipeline in ADR-0034); do not use it until it is either restored or removed from the `argparse` choices. Inspect `manifold-export --help` for the current flags.
 
 EMA training was removed in commit `e89b05d`. `src/manifold/training/export.py` now extracts the raw UNet backbone under the `unet.unet.` state-dict prefix and always reports `unet_state_dict`. Do not pass retired `--ema`/`prefer_ema` options, configure `ema_decays`, or expect `val/fid_avg` and `val/fid_raw`; the single validation metric is `val/fid`, evaluated on the live raw model. Reward and GRPO policy loading follows the same raw-weight contract.
 
@@ -78,11 +78,12 @@ Only load trusted `.ckpt` files: export calls `torch.load(..., weights_only=Fals
 
 ## Inference
 
-Three inference pipelines package the components and expose native save/load behavior:
+Two native inference pipelines package the components and expose native save/load behavior:
 
 - `LatentFlowPipeline` — JiT noise-to-data generator (UNet + scheduler + frozen VAE).
 - `ControlNetLatentFlowPipeline` — supervised paired translator (frozen JiT base UNet + trainable ControlNet + scheduler + frozen VAE).
-- `PairedLatentFlowPipeline` — still-maintained paired inference pipeline that the reward's frozen generator ships through (kept live for `manifold-export --pipeline paired`).
+
+The previous `PairedLatentFlowPipeline` (the 2·C src→tgt UNet paired-JiT inference pipeline) was retired with the paired-reward pipeline (ADR-0034); `manifold.pipelines.paired_latent_flow` no longer exists, and the `--pipeline paired` choice in `manifold-export` is a stale reference — use `--pipeline jit` (default) or `--pipeline controlnet`. The JiT and ControlNet pipelines share the per-component `save_pretrained` / `from_pretrained` contract.
 
 NIfTI writing is outside the pipeline boundary: pipelines return decoded `[B,C,D,H,W]` tensors.
 
