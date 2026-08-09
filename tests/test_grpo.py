@@ -198,6 +198,25 @@ def test_rollout_runs_for_each_perturbed_step(unet):
     assert [e["t_k"] for e in buf] == [0.0, 0.5]  # nodes[0]=0, nodes[2]=0.5 on n=4
 
 
+def test_grpo_rollout_loop_lives_on_the_scheduler_not_module_functions():
+    """The Heun interval loop is a scheduler method — no Heun domain free functions (iron-law #1).
+
+    The ADR-0005 / issue #211 invariant: the anchor/suffix Heun loop moved from the
+    module-level ``_heun_one_step`` / ``_heun_rollout`` free functions to
+    :meth:`FlowMatchGRPOScheduler.rollout_range`. The module must no longer carry
+    Heun-domain logic as free functions (the project's OOP iron law #1), and the
+    rollout delegates to the scheduler's method.
+    """
+    import inspect
+
+    import manifold.modules.grpo as grpo_mod
+
+    src = inspect.getsource(grpo_mod)
+    assert "def _heun_one_step" not in src and "def _heun_rollout" not in src
+    # The rollout walks the interval via the scheduler method, not a module loop.
+    assert "rollout_range" in src
+
+
 # -- clipped-surrogate loss (the PPO objective piece) ------------------------
 
 

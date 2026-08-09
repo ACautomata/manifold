@@ -224,6 +224,38 @@ def test_grpo_scheduler_set_timesteps_is_full_zero_to_one_anchor_grid():
     assert s.num_inference_steps == 4  # the 1/n noise-end floor
 
 
+def test_grpo_scheduler_rollout_range_is_the_anchor_suffix_interval_loop():
+    """rollout_range lives on the GRPO scheduler — the anchor/suffix loop is not a free function.
+
+    The iron-law-#1 / ADR-0005 interval-slice invariant (issue #211): the anchor
+    (0 → max_k) and each branch's suffix (k+1 → n) run through the scheduler's
+    :meth:`rollout_range` — a method, not a module-level function — and the loop
+    delegates to the inherited euler_step / heun_correct (never reimplemented).
+    """
+    from manifold import FlowMatchGRPOScheduler
+
+    s = FlowMatchGRPOScheduler()
+    assert callable(s.rollout_range)
+    # The interval loop walks nodes [start_i..end_i] and returns the visited latents,
+    # with the final-step Euler guard when t_next == 1 (the `1 − t_next` divergence).
+    n = 3
+    nodes = s.set_timesteps(n)
+    z = torch.randn(1, 2, 2, 2, 2)
+
+    def x0_fn(z_, t_):
+        return 0.5 * z_
+
+    zs = s.rollout_range(x0_fn, z, nodes, 0, n)
+    assert len(zs) == n + 1
+    assert torch.equal(zs[0], z)
+    # A suffix slice (k+1 → n) starts the list at the caller's start latent.
+    zs_suffix = s.rollout_range(x0_fn, z, nodes, 1, n)
+    assert len(zs_suffix) == n  # nodes[1] → nodes[n] inclusive
+    assert torch.equal(zs_suffix[0], z)
+    # Nodes beyond t_next == 1 are never stepped (the grid ends at 1.0).
+    assert float(nodes[-1]) == 1.0
+
+
 def test_grpo_scheduler_sde_mean_eta_zero_equals_euler_mean():
     """η→0: the Langevin term (σ²/2t)·x_θ vanishes → SDE mean == euler_step's z_euler.
 
