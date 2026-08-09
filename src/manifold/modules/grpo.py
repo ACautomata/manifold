@@ -36,7 +36,7 @@ from torch import Tensor
 
 from ..schedulers.scheduling_flow_match_grpo import FlowMatchGRPOScheduler
 from ..schedulers.scheduling_flow_match_heun import Timestep
-from .controlnet_sampler import _controlnet_x0, controlnet_rollout
+from .controlnet_sampler import controlnet_x0, controlnet_rollout
 from .frozen_arm import FrozenArmMixin
 from .sampler import sample_latent_flow
 
@@ -412,12 +412,12 @@ class GRPOModule(FrozenArmMixin, spt.Module):
 
     def _controlnet_forward(self, controlnet, z, t, x_src, spacing_t, src_labels, tgt_labels):
         """One ControlNet-conditioned base x0 forward (frozen base + ControlNet residuals)."""
-        return _controlnet_x0(self.unet, controlnet, z, t, x_src, spacing_t, src_labels, tgt_labels)
+        return controlnet_x0(self.unet, controlnet, z, t, x_src, spacing_t, src_labels, tgt_labels)
 
     def _reference_x0(self, z, t, spacing_t, class_labels, x_src=None, src_labels=None, tgt_labels=None):
         """The frozen KL-anchor x0 at ``z`` (the UNet, or the base+ControlNet when present)."""
         if self.reference_controlnet is not None:
-            return _controlnet_x0(
+            return controlnet_x0(
                 self.reference_unet, self.reference_controlnet, z, t, x_src, spacing_t, src_labels, tgt_labels
             )
         return self.reference_unet(sample=z, timestep=t, spacing=spacing_t, class_labels=class_labels)
