@@ -158,28 +158,6 @@ def make_encode_fn(autoencoder: nn.Module, device: torch.device, cfg: DictConfig
     return encode_fn
 
 
-def resolve_warm_device(fallback: torch.device) -> torch.device:
-    """The device for the post-PG VAE warm: the per-rank local CUDA device under DDP.
-
-    The launch-time ``fallback`` is captured in ``main()`` BEFORE Lightning
-    initializes the process group, so under DDP it is the default ``cuda:0`` (or
-    whatever GPU index the rank's ``CUDA_VISIBLE_DEVICES`` exposes as 0). With a
-    torchrun launch (no per-rank mask), every rank would warm on the same GPU 0 ->
-    memory concentration + device-mismatch failures (P1, ADR-0017). After the PG is
-    up (inside ``DataModule.setup()``), ``LOCAL_RANK`` names the rank's GPU: return
-    ``cuda:{local_rank}``. Off-CUDA / single-process -> the ``fallback`` unchanged.
-    """
-    if fallback.type == "cuda" and dist.is_initialized():
-        # LOCAL_RANK (set by the launcher) names the rank's GPU; fall back to the
-        # global rank only when it is unset. Use an explicit None check (not
-        # os.environ.get(key, default)) so dist.get_rank() is NOT eagerly evaluated
-        # when LOCAL_RANK is present (it would touch the PG needlessly).
-        local_rank_env = os.environ.get("LOCAL_RANK")
-        local_rank = int(local_rank_env) if local_rank_env is not None else dist.get_rank()
-        return torch.device(f"cuda:{local_rank}")
-    return fallback
-
-
 def build_encode_pipeline(
     cfg: DictConfig,
     *,

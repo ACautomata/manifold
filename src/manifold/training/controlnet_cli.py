@@ -337,7 +337,7 @@ def _real_inputs(
     """
     from ..config import autoencoder_divisor
     from ..config.builder import build_controlnet, build_scheduler
-    from ..data.latent_pipeline import make_encode_fn, resolve_warm_device
+    from ..data.latent_pipeline import make_encode_fn
     from ..data.paired_brats import build_brats_pair_manifest
     from ..data.paired_latent_dataset import PairedLatentDataset, paired_cache_tag
     from ..data.paired_manifests import _train_val_manifests
@@ -417,7 +417,10 @@ def _real_inputs(
         # rebuild the encode_fn bound to it. Each rank encodes its ``i % world == rank``
         # shard, barriers, then loads the full set (one encode per unique volume,
         # ADR-0014 — disjoint sample_ids ⇒ free disk hits across splits).
-        warm_device = resolve_warm_device(device)
+        # DevicePolicy owns the per-rank resolution (ADR-0035 T5); mirrors the JiT
+        # _warm_data warm (ADR-0035 T4) — byte-identical to the former latent_pipeline
+        # free function, now deleted.
+        warm_device = DevicePolicy().warm_device(device)
         vae.to(warm_device)
         encode_fn = make_encode_fn(vae, warm_device, cfg)
         for ds in (train_ds, val_ds):

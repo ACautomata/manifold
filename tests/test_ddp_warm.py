@@ -181,29 +181,6 @@ def test_f4_find_unused_parameters_preserved():
 # -- P1 (codex #85): warm uses the per-rank local CUDA device -----------------
 
 
-def test_p1_resolve_warm_device_returns_local_rank_under_ddp(monkeypatch):
-    """``resolve_warm_device`` returns ``cuda:{local_rank}`` under DDP (post-PG),
-    NOT the launch-time ``cuda:0``. P1: the warm_fn captured the launch-time device
-    (the default cuda:0 before LOCAL_RANK is known), so under DDP every rank would
-    warm on GPU 0. Locks the LOCAL_RANK-derived device resolution."""
-    import torch
-
-    from manifold.data.latent_pipeline import resolve_warm_device
-
-    # No PG initialized -> the fallback device is returned unchanged (single-process).
-    assert resolve_warm_device(torch.device("cpu")) == torch.device("cpu")
-    assert resolve_warm_device(torch.device("cuda")) == torch.device("cuda")
-
-    # PG initialized -> cuda:{LOCAL_RANK}. Mock dist.is_initialized + the env var.
-    import torch.distributed as dist
-
-    monkeypatch.setattr(dist, "is_initialized", lambda: True)
-    monkeypatch.setenv("LOCAL_RANK", "3")
-    assert resolve_warm_device(torch.device("cuda")) == torch.device("cuda:3")
-    # A non-CUDA fallback is returned unchanged even under DDP (warm stays CPU).
-    assert resolve_warm_device(torch.device("cpu")) == torch.device("cpu")
-
-
 def test_p1_warm_fn_uses_local_rank_device_not_launch_device():
     """The JiT ``_warm_data`` warm_fn rebuild the encode_fn on the
     per-rank device (P1): the VAE is built on CPU pre-PG and re-staged inside
@@ -226,6 +203,28 @@ def test_p1_warm_fn_uses_local_rank_device_not_launch_device():
     assert callable(make_encode_fn)
     assert callable(DevicePolicy)
 
+
+def test_p1_controlnet_warm_uses_device_policy_not_resolve_warm_device():
+    """The controlnet ``_real_inputs`` warm_fn rebuilds the encode_fn on the per-rank
+    device via ``DevicePolicy.warm_device`` (P1), mirroring the JiT ``_warm_data``
+    migration (ADR-0035 T4). ADR-0035 T5 (issue #208) reroutes the LAST
+    ``resolve_warm_device`` call site off the latent_pipeline free function onto
+    ``DevicePolicy`` (byte-identical behavior) and deletes the free function.
+    Source-level guard so the old free function (or a launch-time ``device=device``
+    capture) cannot sneak back into the controlnet warm closure."""
+    from manifold.training import controlnet_cli
+    from manifold.training.device_policy import DevicePolicy
+
+    src = inspect.getsource(controlnet_cli._real_inputs)
+    assert "DevicePolicy" in src, "controlnet _real_inputs missing DevicePolicy (ADR-0035 T5)"
+    assert ".warm_device(" in src, (
+        "controlnet _real_inputs missing DevicePolicy.warm_device() (ADR-0035 T5)"
+    )
+    assert "resolve_warm_device" not in src, (
+        "controlnet _real_inputs still uses resolve_warm_device "
+        "(ADR-0035 T5 — the free function is deleted)"
+    )
+    assert callable(DevicePolicy)
 
 
 # -- P2 (codex #85 re-review): fail-safe lazy factory + graceful skip ----------
