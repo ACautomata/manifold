@@ -38,6 +38,7 @@ from manifold.training.callbacks import (
     TrainLossSpec,
 )
 from manifold.training.core import TrainingSpine
+from .device_policy import DevicePolicy
 from .metrics import LatentX0MAE
 
 
@@ -506,7 +507,6 @@ def _warm_data(cfg, device) -> tuple[_DataBundle, int]:
         build_encode_pipeline,
         build_volume_dataset,
         make_encode_fn,
-        resolve_warm_device,
         warm_latent_pipeline,
     )
     from ..data.volume_dataset import NiftiVolumeDataset
@@ -544,9 +544,10 @@ def _warm_data(cfg, device) -> tuple[_DataBundle, int]:
 
     def warm_fn():
         # P1: warm on the per-rank local CUDA device, not the launch-time ``device``
-        # (which is cuda:0 before Lightning assigns LOCAL_RANK). Rebuild the encode_fn
-        # bound to that device so the sliding-window predictor runs on the right GPU.
-        warm_device = resolve_warm_device(device)
+        # (which is cuda:0 before Lightning assigns LOCAL_RANK). DevicePolicy owns
+        # the per-rank decision (ADR-0035 T4); rebuild the encode_fn bound to that
+        # device so the sliding-window predictor runs on the right GPU.
+        warm_device = DevicePolicy().warm_device(device)
         autoencoder.to(warm_device)
         encode_fn = make_encode_fn(autoencoder, warm_device, cfg)
         # Warm the held-out val cache FIRST (while the VAE is still on the warm

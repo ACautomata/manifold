@@ -207,18 +207,24 @@ def test_p1_resolve_warm_device_returns_local_rank_under_ddp(monkeypatch):
 def test_p1_warm_fn_uses_local_rank_device_not_launch_device():
     """The JiT ``_warm_data`` warm_fn rebuild the encode_fn on the
     per-rank device (P1): the VAE is built on CPU pre-PG and re-staged inside
-    warm_fn via ``resolve_warm_device`` + ``make_encode_fn``. Source-level guard so
-    the launch-time ``device=device`` capture cannot sneak back into warm_fn."""
-    from manifold.data.latent_pipeline import make_encode_fn, resolve_warm_device
+    warm_fn via ``DevicePolicy.warm_device`` + ``make_encode_fn``. ADR-0035 T4
+    (issue #207) rerouted the per-rank resolution off the latent_pipeline
+    ``resolve_warm_device`` free function onto ``DevicePolicy`` (byte-identical
+    behavior). Source-level guard so the launch-time ``device=device`` capture
+    cannot sneak back into warm_fn."""
+    from manifold.data.latent_pipeline import make_encode_fn
     from manifold.training import cli as jit_cli
+    from manifold.training.device_policy import DevicePolicy
 
     src = inspect.getsource(jit_cli._warm_data)
-    assert "resolve_warm_device" in src, "JiT _warm_data missing resolve_warm_device (P1)"
+    assert "DevicePolicy" in src, "JiT _warm_data missing DevicePolicy (ADR-0035 T4)"
+    assert ".warm_device(" in src, "JiT _warm_data missing DevicePolicy.warm_device() (ADR-0035 T4)"
+    assert "resolve_warm_device" not in src, "JiT _warm_data still uses resolve_warm_device (ADR-0035 T4)"
     assert "make_encode_fn" in src, "JiT _warm_data missing make_encode_fn rebuild (P1)"
     # The VAE is built on CPU pre-PG (no GPU-0 placement before LOCAL_RANK).
     assert 'torch.device("cpu")' in src, "JiT _warm_data must build the VAE on CPU pre-PG (P1)"
     assert callable(make_encode_fn)
-    assert callable(resolve_warm_device)
+    assert callable(DevicePolicy)
 
 
 
