@@ -774,6 +774,67 @@ def controlnet_monitor_ddp_worker(rank: int, world: int, results_dir: str, port:
     finally:
         ddp_fini()
 
+# -- ControlNet device-pin 2-rank worker (issue #206: per-rank pre-PG pin) ------
+
+
+def controlnet_device_pin_ddp_worker(
+    rank: int, world: int, results_dir: str, port: str, cfg_dir: str
+) -> None:
+    """Drive controlnet ``main``'s REAL path under a 2-rank spawn; capture the device
+    ``_real_inputs`` receives (ADR-0035 T3 / PR #156).
+
+    ``_real_inputs`` stages the frozen base + ControlNet onto the device ``main``
+    resolves, so the device it receives IS the device landing under test. The worker
+    pins the property the AC names — that landing is per-rank ``cuda:{LOCAL_RANK}``,
+    NOT a cuda:0 collapse. The real ``_real_inputs`` needs JiT/BraTS artifacts
+    unavailable on CPU, so it is stubbed to surface its ``device`` arg (raised before
+    any staging); ``main``'s full pre-PG path (config → require_paths → pin() → the
+    real branch) runs unchanged. CUDA is mocked in this child only so
+    ``DevicePolicy.pin()`` (called inside main) resolves cuda devices on CPU gloo;
+    ``ddp_init`` sets ``LOCAL_RANK=rank`` (the torchrun contract). No fit runs — the
+    regression is the pre-PG device choice main hands ``_real_inputs``.
+    """
+    import manifold.training.controlnet_cli as cn_cli
+
+    ddp_init(rank, world, port)
+    # Mock CUDA in this child only so pin() resolves cuda devices on CPU gloo.
+    torch.cuda.is_available = lambda: True
+    torch.cuda.device_count = lambda: world
+    torch.cuda.set_device = lambda i: None
+
+    class _CaptureDevice(Exception):
+        """Carries the ``device`` arg ``_real_inputs`` received out of ``main``."""
+
+    def _stub_real_inputs(cfg, native_dir, latents_dir, device):
+        raise _CaptureDevice(str(device))
+
+    # Surface the device _real_inputs receives instead of loading JiT/BraTS artifacts.
+    cn_cli._real_inputs = _stub_real_inputs
+    argv = [
+        "-e", str(Path(cfg_dir) / "env.yaml"),
+        "-c", str(Path(cfg_dir) / "train.yaml"),
+        "-t", str(Path(cfg_dir) / "network.yaml"),
+        "-g", "1",
+        "--native-dir", "/tmp/_unused_native",   # truthy -> passes main's real-path guard
+        "--latents-dir", "/tmp/_unused_latents",
+    ]
+    captured: str | None = None
+    bypass = False
+    try:
+        # data_provider=None -> real branch -> DevicePolicy().pin() -> _real_inputs (stub).
+        cn_cli.main(argv)
+        bypass = True  # main returned without the stub firing (the real path was bypassed)
+    except _CaptureDevice as c:
+        captured = str(c)
+    finally:
+        ddp_fini()
+    Path(results_dir, f"r{rank}.json").write_text(json.dumps({
+        "rank": rank,
+        "device": captured,
+        "bypassed": bypass,
+        "local_rank_env": os.environ.get("LOCAL_RANK"),
+    }))
+
 
 
 
@@ -787,4 +848,5 @@ __all__ = [
     "cold_cache_ddp_worker",
     "controlnet_cold_cache_ddp_worker",
     "controlnet_monitor_ddp_worker",
+    "controlnet_device_pin_ddp_worker",
 ]

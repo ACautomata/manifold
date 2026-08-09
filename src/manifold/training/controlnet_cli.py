@@ -40,6 +40,7 @@ try:
 except ImportError:  # pragma: no cover
     from pytorch_lightning.utilities.rank_zero import rank_zero_info  # type: ignore
 
+from .device_policy import DevicePolicy
 from ..config import opt
 from ..data.datamodule import build_datamodule
 from ..modules.controlnet_latent_flow import ControlNetLatentFlowModule
@@ -258,11 +259,18 @@ def main(argv: list[str] | None = None, *, data_provider=None) -> int:
 
     seed = int(opt(cfg, "random_seed", 0))
     pl.seed_everything(seed, workers=True)
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
     if data_provider is not None:
+        # CPU smoke seam: no DevicePolicy, no CUDA (ADR-0035 testing seam — the
+        # data_provider branch stays pure CPU, needing no GPU or launcher env).
+        device = torch.device("cpu")
         inputs = data_provider(cfg, device)
     else:
+        # Pin each DDP rank to its own GPU before _real_inputs stages the frozen base
+        # UNet + the fresh ControlNet onto `device`. Without this every rank lands on
+        # the default cuda:0 — the base + ControlNet pile on one GPU, racing and
+        # blowing past the DDP init timeout (PR #156 / ADR-0031 §A2). DevicePolicy owns
+        # the per-rank decision + the out-of-range LOCAL_RANK guard (ADR-0035).
+        device = DevicePolicy().pin()
         # --native-dir / --latents-dir are NOT argparse-required: that would break
         # the data_provider injection seam (the CPU smoke). Validate them here, only
         # on the real path.

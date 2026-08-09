@@ -303,3 +303,46 @@ def test_main_rejects_non_controlnet_recipe(tmp_path):
             ["-e", str(env), "-c", str(train), "-t", str(net), "-g", "1"],
             data_provider=_provider,
         )
+
+
+def test_main_real_path_pins_each_rank_to_local_gpu(tmp_path):
+    """2-rank DDP: controlnet's real path hands ``_real_inputs`` a per-rank
+    cuda:{LOCAL_RANK} device (PR #156 regression lock — no cuda:0 collapse).
+
+    Drives ``main`` on the real branch (``data_provider=None``) under spawn with
+    ``_real_inputs`` stubbed to surface the device it receives; the lock is that the
+    two ranks DISAGREE on that device (a bare cuda:0 resolution would collapse both
+    onto GPU 0 — the PR #156 race / DDP init timeout). CUDA is mocked in the spawned
+    children so ``pin()`` resolves cuda devices on CPU gloo; ``LOCAL_RANK`` is set per
+    rank by the harness (the torchrun contract). (ADR-0031 §A2 required this 2-rank
+    smoke; it had never landed.)
+    """
+    from tests.ddp import controlnet_device_pin_ddp_worker, run_ddp_two_rank
+
+    cfg_dir = tmp_path / "cfg"
+    cfg_dir.mkdir()
+    (cfg_dir / "network.yaml").write_text("spatial_dims: 3\nlatent_channels: 4\n")
+    (cfg_dir / "env.yaml").write_text(
+        "data_base_dir: /tmp/_unused_\n"
+        "model_dir: %s\n" % (tmp_path / "model")
+    )
+    (cfg_dir / "train.yaml").write_text(
+        "diffusion_unet_train: {batch_size: 2, lr: 1.0e-3, n_epochs: 1, "
+        "lr_warmup_steps: 0, lr_ref_batch_size: 8, lr_scale_rule: sqrt}\n"
+        "formulation: {p_mean: -0.8, p_std: 0.8, t_eps: 0.05, l1_weight: 0.0}\n"
+        "checkpoint: {save_top_k: 1}\n"
+    )
+    results = run_ddp_two_rank(
+        controlnet_device_pin_ddp_worker, results_dir=str(tmp_path), args=(str(cfg_dir),)
+    )
+    r0, r1 = results
+    # The stub fired on both ranks (main's real path reached _real_inputs).
+    assert not r0["bypassed"] and not r1["bypassed"], (r0, r1)
+    # ddp_init set LOCAL_RANK per rank (the torchrun contract).
+    assert r0["local_rank_env"] == "0" and r1["local_rank_env"] == "1"
+    # _real_inputs received each rank's OWN cuda:{LOCAL_RANK} device.
+    assert r0["device"] == "cuda:0", r0
+    assert r1["device"] == "cuda:1", r1
+    # The PR #156 regression lock: the two ranks DIVERGE on the device _real_inputs
+    # stages onto (a bare cuda:0 resolution would collapse both onto cuda:0).
+    assert r0["device"] != r1["device"]
