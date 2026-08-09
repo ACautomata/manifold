@@ -166,3 +166,30 @@ def test_reward_cli_main_pins_via_device_policy_not_inline_set_device():
     assert "DevicePolicy" in src, "reward_cli.main does not construct DevicePolicy (T2)"
     assert ".pin()" in src, "reward_cli.main does not call DevicePolicy.pin() (T2)"
     assert "set_device" not in src, "reward_cli.main still inlines the set_device twin (T2)"
+
+
+# -- Shell wiring guards (ADR-0035 T3, issue #206) ------------------------------
+#
+# controlnet's shell used to resolve a BARE cuda device
+# (``torch.device("cuda" if torch.cuda.is_available() else "cpu")`` -> cuda:0), so
+# under DDP every rank staged its frozen base + ControlNet onto GPU 0 — the PR #156
+# cuda:0 race / DDP-init-timeout category ADR-0031 §A2 promised to close. #206 routes
+# the real path through ``DevicePolicy.pin()`` (per-rank cuda:{LOCAL_RANK}); the
+# data_provider CPU smoke stays DevicePolicy-free (transparent). Verified by source.
+
+
+def test_controlnet_cli_main_pins_via_device_policy_not_bare_cuda():
+    """controlnet ``main`` pins through ``DevicePolicy.pin()`` on the real path and
+    no longer resolves the bare cuda device that collapsed every DDP rank onto GPU 0
+    (ADR-0035 T3 / PR #156)."""
+    from manifold.training import controlnet_cli
+
+    src = inspect.getsource(controlnet_cli.main)
+    assert "DevicePolicy" in src, "controlnet_cli.main does not construct DevicePolicy (T3)"
+    assert ".pin()" in src, "controlnet_cli.main does not call DevicePolicy.pin() (T3)"
+    # The bare cuda device resolution (every DDP rank onto GPU 0 — PR #156) is gone:
+    # main no longer constructs a cuda device directly; the device comes solely from
+    # DevicePolicy.pin() on the real path (and torch.device("cpu") on the smoke path).
+    assert 'torch.device("cuda"' not in src, (
+        "controlnet_cli.main still resolves a bare cuda device (T3 / PR #156 regression)"
+    )
