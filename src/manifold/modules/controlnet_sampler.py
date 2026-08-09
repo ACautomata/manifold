@@ -46,7 +46,7 @@ from torch import Tensor
 from ..schedulers.scheduling_partial_flow_match_heun import PartialFlowMatchHeunScheduler
 
 
-def _as_label_tensor(labels: int | Tensor | Sequence[int], batch_size: int, device: torch.device) -> Tensor:
+def as_label_tensor(labels: int | Tensor | Sequence[int], batch_size: int, device: torch.device) -> Tensor:
     """Coerce ``labels`` to a ``[batch_size]`` long tensor on ``device``.
 
     A scalar — a Python ``int`` or a 0-d tensor like ``torch.tensor(0)`` — is
@@ -74,7 +74,7 @@ def _as_label_tensor(labels: int | Tensor | Sequence[int], batch_size: int, devi
     return out
 
 
-def _controlnet_x0(
+def controlnet_x0(
     unet,
     controlnet,
     z: Tensor,
@@ -138,8 +138,9 @@ def controlnet_rollout(
         unet: the frozen noise→data base UNet (predicts x0).
         controlnet: the trainable :class:`~manifold.ControlNet3DConditionModel`.
         scheduler: the :class:`FlowMatchHeunDiscreteScheduler`; its ``t_eps`` is
-            the Heun endpoint clamp, and its ``set_timesteps`` / ``euler_step`` /
-            ``heun_correct`` run.
+            the Heun endpoint clamp, and its ``set_timesteps`` grid plus the
+            shared :meth:`~manifold.FlowMatchHeunDiscreteScheduler.heun_rollout`
+            loop (``euler_step`` / ``heun_correct``) run.
         noise: the pure-noise start latent ``[B, C_latent, D, H, W]`` — the
             stochastic input (callers build it from a generator).
         x_src: the source latent control signal ``[B, C_latent, D, H, W]``
@@ -158,39 +159,27 @@ def controlnet_rollout(
     batch_size = noise.shape[0]
 
     spacing_t = torch.as_tensor(spacing, device=device)
-    src_labels = _as_label_tensor(src_label, batch_size, device)
-    tgt_labels = _as_label_tensor(tgt_label, batch_size, device)
+    src_labels = as_label_tensor(src_label, batch_size, device)
+    tgt_labels = as_label_tensor(tgt_label, batch_size, device)
 
     x_src_dev = x_src.to(device=device, dtype=dtype)
 
     def unet_call(z: Tensor, t: float) -> Tensor:
-        return _controlnet_x0(
+        return controlnet_x0(
             unet, controlnet, z, float(t), x_src_dev, spacing_t, src_labels, tgt_labels
         )
 
     z = noise.to(device=device, dtype=dtype)
     nodes = scheduler.set_timesteps(num_inference_steps, device=device)
-    n = int(num_inference_steps)
 
     unet.eval()
     controlnet.eval()
-    with torch.inference_mode():
-        # Autocast the Heun rollout on cuda (mirrors sample_latent_flow); disabled
-        # off-cuda, so CPU results are bit-identical to the no-autocast path.
-        with torch.autocast(device_type=device.type, enabled=device.type == "cuda"):
-            for i in range(n):
-                t = float(nodes[i])
-                t_next = float(nodes[i + 1])
-                x0_1 = unet_call(z, t)
-                z_euler, v1 = scheduler.euler_step(x0_1, z, t, t_next)
-                if i == n - 1:
-                    # Final step is Euler: at t_next = 1 the denominator 1 − t_next
-                    # vanishes, so the second Heun evaluation is undefined.
-                    z = z_euler
-                else:
-                    x0_2 = unet_call(z_euler, t_next)
-                    z = scheduler.heun_correct(x0_2, z, z_euler, v1, t, t_next)
-    return z
+    # The shared heun_rollout loop (the ADR-0005 convergence point for the
+    # full-range / per-sample rollouts) runs the Euler→guard→Heun cycle with
+    # the ControlNet-conditioned unet_call as the injected x0_fn; cuda autocast
+    # on / off-cuda disabled (CPU results bit-identical to the pre-primitive
+    # path), mirroring sample_latent_flow.
+    return scheduler.heun_rollout(unet_call, z, nodes, grad="inference")
 
 
 def controlnet_partial_rollout(
@@ -262,8 +251,8 @@ def controlnet_partial_rollout(
             f"per-sample spacing rows ({spacing_t.shape[0]}) != batch ({batch_size}); "
             "a [B,3] spacing must match the batch size."
         )
-    src_labels = _as_label_tensor(src_label, batch_size, device)
-    tgt_labels = _as_label_tensor(tgt_label, batch_size, device)
+    src_labels = as_label_tensor(src_label, batch_size, device)
+    tgt_labels = as_label_tensor(tgt_label, batch_size, device)
 
     x_src_dev = x_src.to(device=device, dtype=dtype)
     x_tgt_dev = x_tgt.to(device=device, dtype=dtype)
@@ -274,27 +263,18 @@ def controlnet_partial_rollout(
     nodes = scheduler.set_timesteps_partial(t_start, num_steps, device=device)  # (B, n+1)
 
     def unet_call(z_t: Tensor, t: Tensor) -> Tensor:
-        return _controlnet_x0(
+        return controlnet_x0(
             unet, controlnet, z_t, t, x_src_dev, spacing_t, src_labels, tgt_labels
         )
 
     unet.eval()
     controlnet.eval()
-    with torch.inference_mode():
-        with torch.autocast(device_type=device.type, enabled=device.type == "cuda"):
-            for i in range(num_steps):
-                t = nodes[:, i]  # (B,)
-                t_next = nodes[:, i + 1]  # (B,)
-                x0_1 = unet_call(z, t)
-                z_euler, v1 = scheduler.euler_step(x0_1, z, t, t_next)
-                if i == num_steps - 1:
-                    # Final step is Euler: at t_next = 1 the denominator 1 − t_next
-                    # vanishes, so the second Heun evaluation is undefined.
-                    z = z_euler
-                else:
-                    x0_2 = unet_call(z_euler, t_next)
-                    z = scheduler.heun_correct(x0_2, z, z_euler, v1, t, t_next)
-    return z
+    # The shared heun_rollout loop (the ADR-0005 convergence point for the
+    # full-range / per-sample rollouts) runs the Euler→guard→Heun cycle over the
+    # per-sample grid with the ControlNet-conditioned unet_call as the injected
+    # x0_fn, under inference_mode (the probe is precomputed once to disk and
+    # scored forward-only); cuda autocast on / off-cuda disabled.
+    return scheduler.heun_rollout(unet_call, z, nodes, grad="inference")
 
 
-__all__ = ["_as_label_tensor", "controlnet_partial_rollout", "controlnet_rollout"]
+__all__ = ["as_label_tensor", "controlnet_partial_rollout", "controlnet_rollout"]

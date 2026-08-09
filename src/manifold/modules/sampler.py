@@ -112,25 +112,10 @@ def sample_latent_flow(
 
     z = noise.to(device=device, dtype=dtype)
     nodes = scheduler.set_timesteps(num_inference_steps, device=device)
-    n = int(num_inference_steps)
 
     unet.eval()
-    with torch.inference_mode():
-        # Autocast the Heun rollout on cuda so the
-        # latent-trajectory tolerance for numerical validation is achievable;
-        # disabled off-cuda, so CPU results are bit-identical to the no-autocast
-        # path.
-        with torch.autocast(device_type=device.type, enabled=device.type == "cuda"):
-            for i in range(n):
-                t = float(nodes[i])
-                t_next = float(nodes[i + 1])
-                x0_1 = unet_call(z, t)
-                z_euler, v1 = scheduler.euler_step(x0_1, z, t, t_next)
-                if i == n - 1:
-                    # Final step is Euler: at t_next = 1 the denominator 1 − t_next
-                    # vanishes, so the second Heun evaluation is undefined.
-                    z = z_euler
-                else:
-                    x0_2 = unet_call(z_euler, t_next)
-                    z = scheduler.heun_correct(x0_2, z, z_euler, v1, t, t_next)
-    return z
+    # The shared heun_rollout loop (the ADR-0005 convergence point for the
+    # full-range / per-sample rollouts) runs the Euler→guard→Heun cycle with
+    # the CFG-wrapped unet_call as the injected x0_fn; cuda autocast on /
+    # off-cuda disabled (CPU results bit-identical to the pre-primitive path).
+    return scheduler.heun_rollout(unet_call, z, nodes, grad="inference")
