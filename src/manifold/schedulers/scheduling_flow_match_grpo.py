@@ -27,12 +27,13 @@ Diffusion schedule: equimarginal reverse-SDE ``σ_t = η·sqrt((1−t)/t)`` (η 
 from __future__ import annotations
 
 import math
+from typing import Callable
 
 import torch
 from torch import Tensor
 
 from ..configuration import register_to_config
-from .scheduling_flow_match_heun import FlowMatchHeunDiscreteScheduler
+from .scheduling_flow_match_heun import FlowMatchHeunDiscreteScheduler, Timestep
 
 
 class FlowMatchGRPOScheduler(FlowMatchHeunDiscreteScheduler):
@@ -69,6 +70,54 @@ class FlowMatchGRPOScheduler(FlowMatchHeunDiscreteScheduler):
         ts = super().set_timesteps(num_inference_steps, device=device)
         self.num_inference_steps = int(num_inference_steps)
         return ts
+
+    def rollout_range(
+        self,
+        x0_fn: Callable[[Tensor, Timestep], Tensor],
+        z_start: Tensor,
+        nodes: Tensor,
+        start_i: int,
+        end_i: int,
+    ) -> list[Tensor]:
+        """Deterministic Heun over the node interval ``[start_i, end_i]``; returns ``[z_start_i, …, z_end_i]``.
+
+        The GRPO training path's interval-slice loop (ADR-0005, issue #211): runs the
+        inherited two-eval Heun step over each node pair ``nodes[i] → nodes[i+1]`` —
+        predictor at ``z``, Euler advance, corrector at the Euler point — with the
+        final-step Euler guard when ``t_next == 1`` (the ``1 − t_next`` corrector
+        denominator diverges; the same convention as
+        :meth:`FlowMatchHeunDiscreteScheduler.heun_rollout`). Returns the visited
+        latents ``[z_start_i, z_end_i]`` inclusive so the caller can index the anchor
+        nodes by step. Used for both the shared anchor (``start_i=0``) and each
+        branch's suffix (``start_i=k+1``).
+
+        ``x0_fn`` is the injected x0 source ``x0_fn(z, t) → x0`` (the clean-latent
+        prediction; the ControlNet policy pre-binds its conditionals and batch
+        dispatch — ``None`` for the UNet policy is folded in by the caller). ``nodes``
+        is the batch-wide anchor grid (:meth:`set_timesteps`); the step math is the
+        inherited :meth:`FlowMatchHeunDiscreteScheduler.euler_step` /
+        :meth:`FlowMatchHeunDiscreteScheduler.heun_correct` — never reimplemented
+        (ADR-0001/0002). The interval shape differs from the full-range
+        :meth:`FlowMatchHeunDiscreteScheduler.heun_rollout` primitive (anchor + suffix
+        slices of the GRPO grid), so the loop lives here rather than being forced
+        into it.
+        """
+        zs = [z_start]
+        z = z_start
+        for i in range(start_i, end_i):
+            t = nodes[i]
+            t_next = nodes[i + 1]
+            x0_1 = x0_fn(z, t)
+            z_euler, v1 = self.euler_step(x0_1, z, t, t_next)
+            if float(t_next) >= 1.0:
+                # Final step is Euler: at t_next = 1 the denominator 1 − t_next
+                # vanishes, so the second Heun evaluation is undefined.
+                z = z_euler
+            else:
+                x0_2 = x0_fn(z_euler, t_next)
+                z = self.heun_correct(x0_2, z, z_euler, v1, t, t_next)
+            zs.append(z)
+        return zs
 
     def _sigma_t(self, t_b):
         """Equimarginal ``σ_t = η·sqrt((1−t)/t)`` with the noise-end clamp applied.

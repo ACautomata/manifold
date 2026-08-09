@@ -9,12 +9,13 @@ SDE step is the x-pred equimarginal reverse-time SDE of the JiT transport
 and group-normalized advantage live here.
 
 Module-owned, scheduler-delegated (ADR-0005): the anchor grid
-(:meth:`~manifold.FlowMatchGRPOScheduler.set_timesteps`, inherited) and the Heun
+(:meth:`~manifold.FlowMatchGRPOScheduler.set_timesteps`, inherited), the Heun
 steps (:meth:`~manifold.FlowMatchHeunDiscreteScheduler.euler_step` /
-:meth:`heun_correct`, inherited verbatim) are the scheduler's; only the loop +
-the SDE draw + the log-prob/advantage live here. The rollout is **fully
-``no_grad``** — the anchor + suffix + reward must NOT retain a graph (the property
-that keeps 3D feasible; the policy's single grad eval lives in the
+:meth:`heun_correct`, inherited verbatim), and the anchor/suffix interval-slice
+loop (:meth:`~manifold.FlowMatchGRPOScheduler.rollout_range`) are the
+scheduler's; only the SDE draw + the log-prob/advantage live here. The rollout is
+**fully ``no_grad``** — the anchor + suffix + reward must NOT retain a graph (the
+property that keeps 3D feasible; the policy's single grad eval lives in the
 :class:`~manifold.modules.GRPOModule` inner loop, which re-evaluates the UNet at
 the stored ``z_k`` under grad).
 
@@ -34,6 +35,7 @@ import torch
 from torch import Tensor
 
 from ..schedulers.scheduling_flow_match_grpo import FlowMatchGRPOScheduler
+from ..schedulers.scheduling_flow_match_heun import Timestep
 from .controlnet_sampler import controlnet_x0, controlnet_rollout
 from .frozen_arm import FrozenArmMixin
 from .sampler import sample_latent_flow
@@ -83,56 +85,6 @@ def group_advantage(rewards: Tensor, adv_clip_max: float = 5.0, eps: float = 1e-
     return adv.clamp(min=-adv_clip_max, max=adv_clip_max)
 
 
-def _heun_one_step(
-    unet, scheduler, z: Tensor, t: float, t_next: float, spacing_t: Tensor, class_labels: Tensor,
-    x0_fn: Callable[..., Tensor] | None = None, fn_labels: Any = None,
-) -> Tensor:
-    """One deterministic two-eval-Heun reverse step (the deployed sampler's step).
-
-    Final-step Euler when ``t_next == 1`` (the ``1/(1 − t_next)`` corrector
-    denominator diverges) — the same convention as
-    :func:`~manifold.modules.sample_latent_flow` / :func:`partial_denoise_rollout`.
-
-    ``x0_fn`` (the ControlNet policy) overrides the x0 prediction: called as
-    ``x0_fn(z, t, fn_labels)`` and must return the clean-latent prediction. ``None``
-    (the UNet policy) uses ``unet(sample=z, timestep=t, spacing, class_labels)`` directly.
-    """
-    if x0_fn is None:
-        def x0_fn(z_, t_, _labels):  # noqa: ANN001
-            return unet(sample=z_, timestep=t_, spacing=spacing_t, class_labels=class_labels)
-    x0_1 = x0_fn(z, t, fn_labels)
-    z_euler, v1 = scheduler.euler_step(x0_1, z, t, t_next)
-    if float(t_next) >= 1.0:
-        return z_euler
-    x0_2 = x0_fn(z_euler, t_next, fn_labels)
-    return scheduler.heun_correct(x0_2, z, z_euler, v1, t, t_next)
-
-
-def _heun_rollout(
-    unet, scheduler, z_start: Tensor, nodes: Tensor, spacing_t: Tensor, class_labels: Tensor,
-    start_i: int, end_i: int,
-    x0_fn: Callable[..., Tensor] | None = None, fn_labels: Any = None,
-) -> list[Tensor]:
-    """Deterministic Heun from node ``start_i`` to ``end_i``; returns ``[z_start_i, …, z_end_i]``.
-
-    Used for both the shared anchor (``start_i=0``) and each branch's suffix
-    (``start_i=k+1``). ``nodes`` is the scheduler's batch-wide grid
-    (:meth:`~manifold.FlowMatchGRPOScheduler.set_timesteps`); the steps are the
-    scheduler's inherited ``euler_step`` / ``heun_correct`` (never reimplemented).
-    ``x0_fn`` / ``fn_labels`` (the ControlNet policy) thread a ControlNet-conditioned x0
-    prediction through every step; ``None`` (the UNet policy) uses the plain UNet call.
-    """
-    zs = [z_start]
-    z = z_start
-    for i in range(start_i, end_i):
-        z = _heun_one_step(
-            unet, scheduler, z, float(nodes[i]), float(nodes[i + 1]), spacing_t, class_labels,
-            x0_fn=x0_fn, fn_labels=fn_labels,
-        )
-        zs.append(z)
-    return zs
-
-
 @torch.no_grad()
 def singular_branch_rollout(
     unet,
@@ -147,9 +99,7 @@ def singular_branch_rollout(
     num_steps: int,
     adv_clip_max: float = 5.0,
     reward_transform: Callable[[Tensor], Tensor] | None = None,
-    x0_fn: Callable[..., Tensor] | None = None,
-    fn_labels_bg: Any = None,
-) -> list[RolloutStep]:
+    x0_fn: Callable[[Tensor, Timestep], Tensor] | None = None,) -> list[RolloutStep]:
     """One Granular-GRPO singular-branch rollout (no_grad) → per-step buffer.
 
     The shared anchor (``z_0 → z_k`` for each perturbed ``k``) runs once on the
@@ -176,13 +126,13 @@ def singular_branch_rollout(
         reward_transform: optional monotone bound applied to the raw rewards before the
             group normalization (the v2 tanh cap, ADR-0015); ``None`` ⇒ raw logit (v1).
         x0_fn: optional ControlNet-policy x0 prediction override, called
-            ``x0_fn(z, t_scalar, fn_labels_bg)`` at every eval point (anchor, perturbed,
-            suffix). Must be pre-bound to the ControlNet-conditioned frozen-base
-            forward and the current conditioning (``z_k``-batch for anchor/perturbed,
-            ``(B·G,)`` for the suffix — the same ``fn_labels_bg`` batching). ``None``
-            (the UNet policy) uses the plain ``unet(sample, timestep, spacing, class_labels)``.
-        fn_labels_bg: the ``(B·G,)``-batched conditioning labels forwarded to
-            ``x0_fn`` (the ControlNet policy); ignored for the UNet policy.
+            ``x0_fn(z, t)`` at every eval point (anchor, perturbed, suffix) and
+            returning the clean-latent prediction. Must be pre-bound to the
+            ControlNet-conditioned frozen-base forward AND to the batch dispatch —
+            the anchor / perturbed evals run at ``(B,)``, the suffix at ``(B·G,)``
+            (see :meth:`~manifold.modules.GRPOModule._controlnet_rollout_fns`).
+            ``None`` (the UNet policy) uses the plain
+            ``unet(sample, timestep, spacing, class_labels)``.
 
     Returns:
         One :data:`RolloutStep` per ``k`` in ``eta_step_list`` (sorted ascending).
@@ -217,13 +167,18 @@ def singular_branch_rollout(
         spacing_bg = spacing_t.repeat_interleave(G, dim=0)
     else:  # broadcast (3,) spacing — fine for any batch
         spacing_bg = spacing_t
+    if x0_fn is None:
+        # The UNet policy: the plain UNet x0. The anchor/perturbed evals run at
+        # (B,) with the (B,) conditioning; the suffix at (B·G,) — dispatch on the
+        # batch size (the same convention the ControlNet-policy x0_fn uses).
+        def x0_fn(z_, t_):  # noqa: ANN001
+            if z_.shape[0] == B * G:  # suffix batch (B·G,)
+                return unet(sample=z_, timestep=t_, spacing=spacing_bg, class_labels=class_labels_bg)
+            return unet(sample=z_, timestep=t_, spacing=spacing_t, class_labels=class_labels)
 
     with torch.autocast(device_type=device.type, enabled=device.type == "cuda"):
         # Shared anchor: z at nodes [0..max_k] (anchor_z[k] = latent at node k).
-        anchor_z = _heun_rollout(
-            unet, scheduler, z0, nodes, spacing_t, class_labels, 0, max_k,
-            x0_fn=x0_fn, fn_labels=fn_labels_bg,
-        )
+        anchor_z = scheduler.rollout_range(x0_fn, z0, nodes, 0, max_k)
 
         buffer: list[RolloutStep] = []
         for k in eta_steps:
@@ -232,10 +187,7 @@ def singular_branch_rollout(
             z_k = anchor_z[k]  # (B, *spatial) — the anchor node
 
             # SDE transition params at the current (rollout-time) policy.
-            if x0_fn is not None:
-                x0 = x0_fn(z_k, t_k, fn_labels_bg)
-            else:
-                x0 = unet(sample=z_k, timestep=t_k, spacing=spacing_t, class_labels=class_labels)
+            x0 = x0_fn(z_k, t_k)
             mean_old, std_old = scheduler.sde_step_mean(x0, z_k, t_k, t_next)
             # G siblings branch off z_k via one SDE draw each (the only per-sibling
             # difference; the anchor + suffix are otherwise deterministic given z_{k+1}).
@@ -245,10 +197,7 @@ def singular_branch_rollout(
 
             # Deterministic Heun suffix from z_{k+1} (node k+1) to the terminal z_K.
             z_g = z_kplus1.reshape(B * G, *spatial)
-            suffix = _heun_rollout(
-                unet, scheduler, z_g, nodes, spacing_bg, class_labels_bg, k + 1, num_steps,
-                x0_fn=x0_fn, fn_labels=fn_labels_bg,
-            )
+            suffix = scheduler.rollout_range(x0_fn, z_g, nodes, k + 1, num_steps)
             z_K = suffix[-1]  # (B·G, *spatial)
 
             # float(): under cuda autocast the PatchGAN emits fp16 rewards; the
@@ -474,7 +423,7 @@ class GRPOModule(FrozenArmMixin, spt.Module):
         return self.reference_unet(sample=z, timestep=t, spacing=spacing_t, class_labels=class_labels)
 
     def _controlnet_rollout_fns(self, x_src, spacing_t, src_labels, tgt_labels):
-        """Build the ControlNet-policy ``(x0_fn, fn_labels_bg)`` the rollout consumes.
+        """Build the ControlNet-policy ``x0_fn`` the rollout consumes.
 
         ``x0_fn`` is the frozen-base + trainable-ControlNet x0 prediction (the unified
         ``x_θ`` source); the inner-loop grad flows into the ControlNet through the base's
@@ -485,32 +434,30 @@ class GRPOModule(FrozenArmMixin, spt.Module):
         the reward input. ``x_src`` /
         ``src_labels`` / ``tgt_labels`` are G-expanded ONCE here (flat index ``b·G+g``
         is sibling ``g`` of ``b``) — matching ``z_kplus1.reshape(B·G, ...)`` and the
-        suffix ``(B·G,)`` batch — so a single ``fn_labels_bg`` tuple serves the perturbed
-        eval and the suffix without a second expansion (D9).
+        suffix ``(B·G,)`` batch — and bound into the ``x0_fn`` closure, so the rollout
+        calls the plain two-argument ``x0_fn(z, t)`` with the batch dispatch inside (D9).
         """
         G = self.G
         x_src_bg = x_src.repeat_interleave(G, dim=0)  # (B·G, C, ...)
         src_labels_bg = src_labels.repeat_interleave(G)
         tgt_labels_bg = tgt_labels.repeat_interleave(G)
         spacing_bg = spacing_t.repeat_interleave(G, dim=0) if spacing_t.dim() == 2 else spacing_t
-        fn_labels_bg = (x_src_bg, spacing_bg, src_labels_bg, tgt_labels_bg)
 
-        def x0_fn(z_, t_, labels):
-            xs_bg, sp_bg, sl_bg, tl_bg = labels
+        def x0_fn(z_, t_):
             # The rollout calls x0_fn on TWO batch sizes: the anchor / perturbed eval at
-            # (B,) and the suffix at (B·G,). ``labels`` is pre-G-expanded to (B·G,) in
+            # (B,) and the suffix at (B·G,). The labels are pre-G-expanded to (B·G,) in
             # repeat_interleave layout [b0g0, b0g1, …, b1g0, …] (so the suffix + reward
             # concat reuse one expansion, D9); for the (B,) anchor/perturbed batch stride
             # by G (b's sibling-0 slot) to recover the per-b conditioning.
             b = z_.shape[0]
-            if b == xs_bg.shape[0]:  # suffix batch (B·G,) — use the full expansion
-                xs, sp, sl, tl = xs_bg, sp_bg, sl_bg, tl_bg
+            if b == x_src_bg.shape[0]:  # suffix batch (B·G,) — use the full expansion
+                xs, sp, sl, tl = x_src_bg, spacing_bg, src_labels_bg, tgt_labels_bg
             else:  # anchor/perturbed batch (B,) — stride G
-                xs, sl, tl = xs_bg[:: self.G], sl_bg[:: self.G], tl_bg[:: self.G]
-                sp = sp_bg[:: self.G] if sp_bg.dim() == 2 else sp_bg
+                xs, sl, tl = x_src_bg[:: G], src_labels_bg[:: G], tgt_labels_bg[:: G]
+                sp = spacing_bg[:: G] if spacing_bg.dim() == 2 else spacing_bg
             return self._controlnet_forward(self.controlnet, z_, t_, xs, sp, sl, tl)
 
-        return x0_fn, fn_labels_bg
+        return x0_fn
 
     def _conditioning(self, batch: GRPOBatch):
         """Unified batch conditioning → ``(spacing_t, class_labels, B, cond)``.
@@ -707,17 +654,17 @@ class GRPOModule(FrozenArmMixin, spt.Module):
         # else ``_bound_reward`` (tanh) caps the reward the rollout scores + groups.
         reward_transform = self._bound_reward if self.reward_bound != "none" else None
         # ControlNet policy: inject the ControlNet-conditioned x0 prediction into the
-        # shared rollout (the UNet policy leaves both None — the plain UNet + the same
+        # shared rollout (the UNet policy leaves it None — the plain UNet + the same
         # unconditional reward path). The spine reuses verbatim for both policies.
-        x0_fn = fn_labels_bg = None
+        x0_fn = None
         if cond is not None:
             x_src, src_labels, tgt_labels = cond
-            x0_fn, fn_labels_bg = self._controlnet_rollout_fns(x_src, spacing_t, src_labels, tgt_labels)
+            x0_fn = self._controlnet_rollout_fns(x_src, spacing_t, src_labels, tgt_labels)
         buffer = singular_branch_rollout(
             self.unet, self.scheduler, self.reward_model, noise, spacing_t, class_labels,
             G=self.G, eta_step_list=self.eta_step_list, num_steps=self.num_steps,
             adv_clip_max=self.adv_clip_max, reward_transform=reward_transform,
-            x0_fn=x0_fn, fn_labels_bg=fn_labels_bg,
+            x0_fn=x0_fn,
         )
 
         opt = self.optimizers()
