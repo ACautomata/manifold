@@ -204,6 +204,19 @@ def test_grpo_scheduler_subclasses_and_inherits_verbatim():
     assert torch.allclose(s.add_noise(x, e, 0.25), 0.25 * x + 0.75 * e)
 
 
+def test_heun_rollout_primitive_subclasses_inherit_verbatim():
+    """heun_rollout is the base's primitive; both subclasses inherit it word-for-word.
+
+    The ADR-0005 single-copy invariant (issue #209): the Euler→guard→Heun loop lives
+    once on FlowMatchHeunDiscreteScheduler, and the partial / GRPO schedulers inherit
+    it without overriding (a fork would let the five former copies drift again).
+    """
+    from manifold import FlowMatchGRPOScheduler, PartialFlowMatchHeunScheduler
+
+    assert PartialFlowMatchHeunScheduler.heun_rollout is FlowMatchHeunDiscreteScheduler.heun_rollout
+    assert FlowMatchGRPOScheduler.heun_rollout is FlowMatchHeunDiscreteScheduler.heun_rollout
+
+
 def test_grpo_scheduler_set_timesteps_is_full_zero_to_one_anchor_grid():
     """set_timesteps is the JiT anchor grid linspace(0,1,n+1) — not the partial per-sample grid."""
     s = _grpo(n=4)

@@ -26,7 +26,7 @@ Conventions:
 
 from __future__ import annotations
 
-from typing import Union
+from typing import Callable, Union
 
 import torch
 from torch import Tensor
@@ -175,3 +175,74 @@ class FlowMatchHeunDiscreteScheduler(SchedulerMixin):
         dt = t_next_b - t_b
         out = sample.float() + 0.5 * (v1 + v2) * dt
         return out.to(sample.dtype)
+
+    # -- the shared full-range/per-sample rollout primitive (ADR-0005) ---------
+
+    def heun_rollout(
+        self,
+        x0_fn: Callable[[Tensor, Timestep], Tensor],
+        z_start: Tensor,
+        grid: Tensor,
+        *,
+        grad: str,
+    ) -> Tensor:
+        """The shared x0 Heun rollout primitive — the Euler→guard→Heun loop (ADR-0005).
+
+        The full-range / per-sample rollouts converge here: ``num_steps`` Heun steps
+        over ``grid``'s nodes under the true two-evaluation Heun — predictor at
+        ``z_t``, Euler advance, corrector at ``z_{t+dt}`` — Euler on the final
+        step, where ``t_next = 1`` makes the ``1 − t_next`` corrector denominator
+        vanish. The loop body carries zero branching on the grid shape: each node
+        is passed to :meth:`euler_step` / :meth:`heun_correct` verbatim, and both
+        accept a python-float node (the scalar full-range path, bit-identical to
+        the pre-primitive arithmetic) or a ``(B,)`` node (the per-sample partial
+        path — each sample divides by its own ``1 − t`` and advances by its own dt,
+        ADR-0008). The grad context is two-state: ``"inference"``
+        (``torch.inference_mode()``) for the forward-only paths, ``"no_grad"``
+        (``torch.no_grad()``) when the output must stay backward-safe — the online
+        reward path's discriminator backward forbids saving an ``inference_mode``
+        tensor (issue #49/50); both run identical math, only the tensor flag differs.
+        Autocast on cuda mirrors the deployed sampler; disabled off-cuda so CPU
+        results are bit-identical to the no-autocast path.
+
+        Args:
+            x0_fn: the x0 source — ``x0_fn(z, t) → x0``, the clean-latent prediction
+                (the injected seam: UNet direct, CFG-wrapped, or ControlNet
+                residual forward, per caller).
+            z_start: the rollout's start latent ``[B, C, D, H, W]`` (pure noise at
+                ``t = 0``, or the caller's noised start for the partial path — the
+                ``add_noise`` start stays with the caller).
+            grid: the integration nodes — ``(n+1,)`` (scalar full-range,
+                :meth:`set_timesteps` product) or ``(B, n+1)`` (per-sample partial,
+                :meth:`PartialFlowMatchHeunScheduler.set_timesteps_partial` product).
+            grad: ``"inference"`` or ``"no_grad"`` (the two-state grad context).
+
+        Returns:
+            The denoised latent ``[B, C, D, H, W]``.
+        """
+        if grad not in ("inference", "no_grad"):
+            raise ValueError(
+                f"grad must be 'inference' or 'no_grad' (no third state — a "
+                f"full-grad Heun rollout does not exist), got {grad!r}."
+            )
+        device = z_start.device
+        ctx = torch.inference_mode() if grad == "inference" else torch.no_grad()
+        n = grid.shape[-1] - 1  # steps: a (n+1,) scalar grid or a (B, n+1) per-sample grid
+        z = z_start
+        with ctx:
+            # Autocast the Heun rollout on cuda (mirrors sample_latent_flow); disabled
+            # off-cuda, so CPU results are bit-identical to the no-autocast path.
+            with torch.autocast(device_type=device.type, enabled=device.type == "cuda"):
+                for i in range(n):
+                    t = grid[..., i]  # scalar (full-range) or (B,) (per-sample)
+                    t_next = grid[..., i + 1]
+                    x0_1 = x0_fn(z, t)
+                    z_euler, v1 = self.euler_step(x0_1, z, t, t_next)
+                    if i == n - 1:
+                        # Final step is Euler: at t_next = 1 the denominator 1 − t_next
+                        # vanishes, so the second Heun evaluation is undefined.
+                        z = z_euler
+                    else:
+                        x0_2 = x0_fn(z_euler, t_next)
+                        z = self.heun_correct(x0_2, z, z_euler, v1, t, t_next)
+        return z

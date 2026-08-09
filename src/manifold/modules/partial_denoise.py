@@ -5,17 +5,18 @@ latent from a **per-sample** flow-time ``t_start`` to clean (``t = 1``) under th
 true two-evaluation Heun, using the
 :class:`~manifold.PartialFlowMatchHeunScheduler`'s per-sample grid and the
 (shared) Heun step math. Module-owned, scheduler-delegated (ADR-0005): the grid
-(:meth:`set_timesteps_partial`) and the steps
-(:meth:`~manifold.FlowMatchHeunDiscreteScheduler.euler_step` / :meth:`heun_correct`,
-inherited verbatim) are the scheduler's; only the loop lives here. The denoiser is
-the frozen JiT export (ADR-0006) — the GRPO starting policy — run under
-``no_grad`` (not ``inference_mode``): the same no-activation-retention, but the
-output is a plain tensor that a downstream discriminator can ``backward`` through
-(an ``inference_mode`` tensor carries a flag PyTorch forbids saving for backward).
-Online reward training feeds this output straight into the discriminator's fit
-step (issue #48/#50); the offline path ``.detach()``'s it regardless. The parity
-with ``sample_latent_flow`` (ADR-0008) is preserved — ``no_grad`` and
-``inference_mode`` run identical math; only the tensor's flag differs.
+(:meth:`set_timesteps_partial`) and the loop itself
+(:meth:`~manifold.FlowMatchHeunDiscreteScheduler.heun_rollout`, inherited
+verbatim by the partial scheduler) are the scheduler's; only the ``x0_fn`` seam
+and the conditioning live here. The denoiser is the frozen JiT export (ADR-0006)
+— the GRPO starting policy — run under ``no_grad`` (not ``inference_mode``): the
+same no-activation-retention, but the output is a plain tensor that a downstream
+discriminator can ``backward`` through (an ``inference_mode`` tensor carries a
+flag PyTorch forbids saving for backward). Online reward training feeds this
+output straight into the discriminator's fit step (issue #48/#50); the offline
+path ``.detach()``'s it regardless. The parity with ``sample_latent_flow``
+(ADR-0008) is preserved — ``no_grad`` and ``inference_mode`` run identical math
+(the ``grad="no_grad"`` heun_rollout state); only the tensor's flag differs.
 
 The caller noises the clean latent via the scheduler's transport
 (``scheduler.add_noise(clean, noise, t_start)``) so the rollout's start matches
@@ -48,7 +49,8 @@ def partial_denoise_rollout(
         unet: the frozen JiT x0-denoiser (predicts the clean latent).
         scheduler: a :class:`PartialFlowMatchHeunScheduler`; its
             :meth:`set_timesteps_partial` builds the per-sample grid and its
-            (inherited) ``euler_step`` / ``heun_correct`` run.
+            (inherited) :meth:`~manifold.FlowMatchHeunDiscreteScheduler.heun_rollout`
+            runs the shared Euler→Heun loop.
         z_start: the noised latent ``[B, C, D, H, W]`` at flow-time ``t_start``
             (callers noise via ``scheduler.add_noise``).
         t_start: ``(B,)`` flow-times — each sample's corruption level.
@@ -89,28 +91,16 @@ def partial_denoise_rollout(
         class_labels = torch.full((batch_size,), int(modality), dtype=torch.long, device=device)
     nodes = scheduler.set_timesteps_partial(t_start, num_steps, device=device)  # (B, n+1)
 
+    def x0_fn(z: Tensor, t: Tensor) -> Tensor:
+        return unet(sample=z, timestep=t, spacing=spacing_t, class_labels=class_labels)
+
     z = z_start.to(device=device, dtype=dtype)
     unet.eval()
     # no_grad (not inference_mode): the discriminator in the online fit step must
     # backward through this output, and PyTorch forbids saving an inference_mode
     # tensor for backward (detach/clone don't clear the flag). no_grad keeps the
     # no-activation-retention while yielding a backward-safe tensor (issue #49).
-    with torch.no_grad():
-        # Autocast the Heun rollout on cuda (mirrors sample_latent_flow); disabled
-        # off-cuda so CPU results are bit-identical to the no-autocast path.
-        with torch.autocast(device_type=device.type, enabled=device.type == "cuda"):
-            for i in range(num_steps):
-                t = nodes[:, i]  # (B,)
-                t_next = nodes[:, i + 1]  # (B,)
-                x0_1 = unet(sample=z, timestep=t, spacing=spacing_t, class_labels=class_labels)
-                z_euler, v1 = scheduler.euler_step(x0_1, z, t, t_next)
-                if i == num_steps - 1:
-                    # Final step is Euler: at t_next = 1 the denominator 1 − t_next
-                    # vanishes, so the second Heun evaluation is undefined.
-                    z = z_euler
-                else:
-                    x0_2 = unet(
-                        sample=z_euler, timestep=t_next, spacing=spacing_t, class_labels=class_labels
-                    )
-                    z = scheduler.heun_correct(x0_2, z, z_euler, v1, t, t_next)
-    return z
+    # The shared heun_rollout loop (the ADR-0005 convergence point for the
+    # full-range / per-sample rollouts) runs it, with cuda autocast on /
+    # off-cuda disabled (CPU results bit-identical).
+    return scheduler.heun_rollout(x0_fn, z, nodes, grad="no_grad")
