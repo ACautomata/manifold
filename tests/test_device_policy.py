@@ -135,3 +135,34 @@ def test_warm_device_dist_import_is_lazy():
     assert "import torch.distributed" in inspect.getsource(
         device_policy.DevicePolicy.warm_device
     ), "warm_device lost its lazy torch.distributed import"
+
+
+# -- Shell wiring guards (ADR-0035 T2, issue #205) ------------------------------
+#
+# The grpo + reward shells used to carry a character-identical pre-PG
+# ``set_device`` twin. #205 deletes both twins and routes them through
+# ``DevicePolicy.pin()`` (de-duplication, not a behavior change). Verified by
+# source: each ``main`` constructs ``DevicePolicy`` and calls ``.pin()``, and no
+# longer inlines the ``set_device`` block (the test_f3_* getsource pattern).
+
+
+def test_grpo_cli_main_pins_via_device_policy_not_inline_set_device():
+    """grpo ``main`` pins through ``DevicePolicy.pin()`` and no longer holds the
+    pre-PG ``set_device`` twin (ADR-0035 T2)."""
+    from manifold.training import grpo_cli
+
+    src = inspect.getsource(grpo_cli.main)
+    assert "DevicePolicy" in src, "grpo_cli.main does not construct DevicePolicy (T2)"
+    assert ".pin()" in src, "grpo_cli.main does not call DevicePolicy.pin() (T2)"
+    assert "set_device" not in src, "grpo_cli.main still inlines the set_device twin (T2)"
+
+
+def test_reward_cli_main_pins_via_device_policy_not_inline_set_device():
+    """reward ``main`` pins through ``DevicePolicy.pin()`` and no longer holds the
+    pre-PG ``set_device`` twin (ADR-0035 T2)."""
+    from manifold.training import reward_cli
+
+    src = inspect.getsource(reward_cli.main)
+    assert "DevicePolicy" in src, "reward_cli.main does not construct DevicePolicy (T2)"
+    assert ".pin()" in src, "reward_cli.main does not call DevicePolicy.pin() (T2)"
+    assert "set_device" not in src, "reward_cli.main still inlines the set_device twin (T2)"

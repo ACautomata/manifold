@@ -35,6 +35,7 @@ except ImportError:  # pragma: no cover
 
 from lightning.pytorch.callbacks import ModelCheckpoint
 
+from .device_policy import DevicePolicy
 from ..config import opt
 from ..data.datamodule import build_datamodule
 from ..modules.grpo import GRPOModule
@@ -361,19 +362,18 @@ def main(argv: list[str] | None = None, *, data_provider=None) -> int:
 
     seed = int(opt(cfg, "random_seed", 0))
     pl.seed_everything(seed, workers=True)
-    # Pin each DDP rank to its own GPU before _real_inputs runs the policy rollout
-    # on `device` (GPU inference happens here, before trainer.fit sets up DDP).
-    # Without this every rank lands on cuda:0 and serializes on one GPU, blowing
-    # past the DDP init timeout (sugon 8-DCU).
-    if torch.cuda.is_available():
-        _lr = int(os.environ.get("LOCAL_RANK", 0))
-        if _lr < torch.cuda.device_count():
-            torch.cuda.set_device(_lr)
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
     if data_provider is not None:
+        # CPU smoke seam: no DevicePolicy, no CUDA (ADR-0035 testing seam — the
+        # data_provider branch stays pure CPU, needing no GPU or launcher env).
+        device = torch.device("cpu")
         inputs = data_provider(cfg, device)
     else:
+        # Pin each DDP rank to its own GPU before _real_inputs runs the policy
+        # rollout on `device` (GPU inference happens here, before trainer.fit sets
+        # up DDP). Without this every rank lands on cuda:0 and serializes on one
+        # GPU, blowing past the DDP init timeout (sugon 8-DCU). DevicePolicy owns
+        # the per-rank decision + the out-of-range LOCAL_RANK guard (ADR-0035).
+        device = DevicePolicy().pin()
         # --native-dir / --reward-path / --latents-dir are NOT argparse-required: that
         # would break the data_provider injection seam (the CPU smoke). Validate them
         # here, only on the real path.

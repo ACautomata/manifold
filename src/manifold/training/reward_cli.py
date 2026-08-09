@@ -22,7 +22,6 @@ precompute (and offline inspection); the offline *train*-pair path is superseded
 from __future__ import annotations
 
 import argparse
-import os
 from dataclasses import dataclass
 from typing import Any
 
@@ -43,6 +42,7 @@ from ..models.reward_model import RewardModel
 from ..modules.reward import RewardModule
 from manifold.training.callbacks import CallbackContext, CheckpointSpec, TrainLossSpec
 from manifold.training.core import TrainingSpine
+from .device_policy import DevicePolicy
 from .trainer import is_multi_gpu
 
 
@@ -263,19 +263,19 @@ def main(argv: list[str] | None = None, *, data_provider=None) -> int:
 
     seed = int(opt(cfg, "random_seed", 0))
     pl.seed_everything(seed, workers=True)
-    # Pin each DDP rank to its own GPU before _real_inputs runs the frozen-denoiser
-    # rollout on `device` (generate_full_range_val_pairs / probe do GPU inference
-    # here, before trainer.fit sets up DDP). Without this every rank lands on cuda:0
-    # and serializes on one GPU, blowing past the DDP init timeout (sugon 8-DCU).
-    if torch.cuda.is_available():
-        _lr = int(os.environ.get("LOCAL_RANK", 0))
-        if _lr < torch.cuda.device_count():
-            torch.cuda.set_device(_lr)
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
     if data_provider is not None:
+        # CPU smoke seam: no DevicePolicy, no CUDA (ADR-0035 testing seam — the
+        # data_provider branch stays pure CPU, needing no GPU or launcher env).
+        device = torch.device("cpu")
         inputs = data_provider(cfg, device)
     else:
+        # Pin each DDP rank to its own GPU before _real_inputs runs the
+        # frozen-denoiser rollout on `device` (generate_full_range_val_pairs /
+        # probe do GPU inference here, before trainer.fit sets up DDP). Without
+        # this every rank lands on cuda:0 and serializes on one GPU, blowing past
+        # the DDP init timeout (sugon 8-DCU). DevicePolicy owns the per-rank
+        # decision + the out-of-range LOCAL_RANK guard (ADR-0035).
+        device = DevicePolicy().pin()
         # --native-dir / --latents-dir are NOT argparse-required: that would break
         # the data_provider injection seam (the CPU smoke). Validate them here,
         # only on the real path.
