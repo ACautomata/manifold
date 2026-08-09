@@ -1,5 +1,14 @@
 # Device ownership — Lightning owns in-Trainer frozen arms (register + dual-exclude); a DevicePolicy owns pre-Trainer staging
 
+> **§A2 landed by [ADR-0035](0035-devicepolicy-per-rank-device.md).** This ADR's §A2
+> text is internally contradictory on whether `training/device_policy.py` already
+> existed: one passage calls it an "existing orphan (zero importers)", another says it
+> was "created/landed as part of A". The truth is the latter — it was **never committed
+> before ADR-0035**. ADR-0035 creates the `DevicePolicy` object, lands the three-method
+> contract (`pin` / `device` / `warm_device`), wires the three training shells, and
+> deletes the misplaced `resolve_warm_device` free function. This merged body is
+> unchanged.
+
 The device-ownership problem splits in two, and the two halves get **different**
 owners because they live on opposite sides of `Trainer.fit`:
 
