@@ -49,7 +49,29 @@ manifold-train-controlnet
 
 There is one GRPO recipe, `configs/train/config_grpo.yaml`. The native artifact supplied through `--native-dir` selects the policy automatically: a raw JiT export trains the UNet, while a supervised ControlNet export trains the ControlNet on its frozen base UNet. There is no mode flag or separate ControlNet-GRPO preset. Shared settings remain under `grpo_train`; `grpo_train.lr` is the UNet default, while optional `controlnet.lr` applies only to the ControlNet path and falls back to `grpo_train.lr` when absent. The ControlNet path also reads `diffusion_unet_inference` for paired cache geometry.
 
-For ControlNet, run `manifold-train-controlnet` first to produce the supervised native export, then pass that export to `manifold-train-grpo`. During GRPO, source conditioning, supervised initialization, and the KL anchor carry translation fidelity; the shared reward contributes realism only. Unconditional FID is suppressed for this path because it ignores the ControlNet and would measure the frozen base, so checkpoint selection uses `val/mean_reward`. The raw UNet path can use `val/fid` when the FID inputs are present.
+For ControlNet, run `manifold-train-controlnet` first to produce the supervised native export, then pass that export to `manifold-train-grpo`. During GRPO, source conditioning, supervised initialization, and the KL anchor carry translation fidelity; the shared reward contributes realism only. Unconditional FID is suppressed for this path because it ignores the ControlNet and would measure the frozen base, so checkpoint selection uses `val/mean_reward`. The suppression is enforced post-merge through `TrainingSpine.run(..., forbidden_callbacks={"fid": ...}, forbidden_monitors={"val/fid": ...})` (ADR-0032) — a YAML or `--callbacks` override cannot re-enable FID or its monitor on the ControlNet policy path. The raw UNet path can use `val/fid` when the FID inputs are present.
+
+### GRPO scheduler: `rollout_range` single Heun interval loop (ADR-0005)
+
+The GRPO rollout (`singular_branch_rollout` in `src/manifold/modules/grpo.py`)
+walks two slices per branch:
+
+- the **anchor slice** `0 → max_k` (one Heun trajectory across the deterministic
+  prefix, shared by every sibling), and
+- the **suffix slice** `k+1 → n` (the per-sibling stochastic branch that
+  produces the GRPO group).
+
+Both slices now run through `FlowMatchGRPOScheduler.rollout_range` (commit
+`d13691d`, issue #211, ADR-0005 single-copy). The method lives on the
+scheduler, not as a free function in `grpo.py` — both the partial and GRPO
+schedulers inherit the parent `FlowMatchHeunDiscreteScheduler.heun_rollout`
+verbatim, and the GRPO scheduler adds `rollout_range` on top. The acceptance
+tests are the source-level guards `tests/test_grpo.py::test_grpo_rollout_loop_lives_on_the_scheduler_not_module_functions`
+(no `_heun_one_step` / `_heun_rollout` free function survives in `grpo.py`)
+and `tests/test_scheduler.py::test_heun_rollout_primitive_subclasses_inherit_verbatim`
+(the three schedulers share the inherited primitive by identity), plus
+`test_grpo_scheduler_rollout_range_is_the_anchor_suffix_interval_loop` which
+exercises the anchor and the suffix slice through the scheduler method.
 
 This workflow depends on the native artifact contract described in [Architecture and source map](architecture.md#configuration-and-persistence). Consult `src/manifold/training/reward_cli.py`, `controlnet_cli.py`, and `grpo_cli.py` for current arguments. Focused guards live in `tests/test_grpo.py` (routing and policy-specific learning rates) and `tests/test_config.py` (the removed mode-specific preset must not return); see [Operations and testing](operations-and-testing.md#standard-checks) for the broader test matrix.
 
@@ -73,6 +95,18 @@ manifold-export \
 `--pipeline {jit,paired,controlnet}` selects which inference component tree to write (default `jit`). The ControlNet export additionally requires `--base-native-dir` (the JiT native export the supervised ControlNet was trained against — the ControlNet `.ckpt` registers only the trainable residuals). `--pipeline paired` is currently a stale code reference (the `PairedLatentFlowPipeline` module was deleted alongside the paired-reward pipeline in ADR-0034); do not use it until it is either restored or removed from the `argparse` choices. Inspect `manifold-export --help` for the current flags.
 
 EMA training was removed in commit `e89b05d`. `src/manifold/training/export.py` now extracts the raw UNet backbone under the `unet.unet.` state-dict prefix and always reports `unet_state_dict`. Do not pass retired `--ema`/`prefer_ema` options, configure `ema_decays`, or expect `val/fid_avg` and `val/fid_raw`; the single validation metric is `val/fid`, evaluated on the live raw model. Reward and GRPO policy loading follows the same raw-weight contract.
+
+Supervised ControlNet `.ckpt` files follow the same contract under
+[`FrozenArmMixin`](frozen-arm-and-device-policy.md#frozenarmmixin-register--dual-exclude)
+(ADR-0031 A1): the trainable ControlNet is the only arm that survives
+`state_dict()`; the frozen base is registered on the host (so Lightning owns
+its device placement) but stripped from the checkpoint by the `state_dict`
+override and strict-loaded as an allow-list by `load_state_dict`. A supervised
+ControlNet ckpt therefore carries only `controlnet.*` keys; a missing or
+unexpected `controlnet.*` key still raises (no blanket `strict=False`).
+Export bakes those `controlnet.*` keys into a fresh ControlNet built from the
+network config and restores the frozen base from `--base-native-dir` (the JiT
+native export the supervised stage trained against).
 
 Only load trusted `.ckpt` files: export calls `torch.load(..., weights_only=False)` because Lightning checkpoints contain full training state.
 
