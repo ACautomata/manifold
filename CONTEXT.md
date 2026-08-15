@@ -380,6 +380,15 @@ path — a direction MLP over `concat(embed(src), embed(tgt+offset))`, ADR-0028 
 the (now frozen) base UNet. Carries any-to-any pairing (the 12 ordered contrast pairs).
 _Avoid_: summed-label conditioning (that was the ADR-0014 base-UNet mechanism, retired).
 
+**Paired fidelity** (3D PSNR/SSIM):
+The full-reference quality metric of the ControlNet translation policy — 3D PSNR + 3D SSIM
+of the generated target volume against the real target, both VAE-decoded and per-sample
+min-max normalized to `[0,1]`, scored in an offline before/after eval, never during
+training (ADR-0036). The paired counterpart to **Unbiased FID** — which is reference-free
+and fits the unconditional JiT; the realism **Reward Model** is fidelity-blind (ADR-0034)
+and is not this metric.
+_Avoid_: image PSNR (specify 3D), fidelity reward.
+
 ### Configuration
 
 **Experiment config**:
