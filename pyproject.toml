@@ -77,6 +77,12 @@ manifold-train-controlnet = "manifold.training.controlnet_cli:main"
 # the inference UNet/VAE/scheduler (jit / paired / controlnet) from a Lightning
 # ``.ckpt`` into a dir ``LatentFlowPipeline.from_pretrained`` loads.
 manifold-export = "manifold.training.export_cli:main"
+# The offline before/after-GRPO eval (ADR-0036 / issue #229): export the after
+# (GRPO) ckpt to native via the ADR-0006 bridge, build the before/after
+# pipelines with ``from_pretrained``, and run the same-noise before/after
+# driver — slice-grid PNGs + a metrics JSON (JiT grid; ControlNet + 3D
+# PSNR/SSIM vs the real target).
+manifold-eval = "manifold.eval.cli:main"
 
 [project.urls]
 Homepage = "https://github.com/junran/manifold"
