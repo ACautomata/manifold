@@ -9,6 +9,8 @@
   re-seeded generation noise, single-GPU / rank-0).
 - :class:`MetricsPlotCallback` — re-renders all logged metrics to a line-chart
   PNG every epoch + at fit end (crash-robust on remote DCU).
+- :class:`PairedFidelityMetrics` — 3D PSNR + 3D SSIM of a generated target vs the
+  real target (MONAI-backed, ADR-0036); the ControlNet translation-fidelity screen.
 """
 
 from .fid.callback import FIDCallback
@@ -19,6 +21,7 @@ from .fid.reducer import SufficientStatsReducer
 from .fid.rollout import FixedSampleRollout
 from .fid.vram import VramStage
 from .metric_plot_callback import MetricsPlotCallback
+from .paired import PairedFidelityMetrics, PairedFidelityScores
 
 __all__ = [
     "FIDCallback",
@@ -26,6 +29,8 @@ __all__ = [
     "FixedSampleRollout",
     "LatentDecoder",
     "MetricsPlotCallback",
+    "PairedFidelityMetrics",
+    "PairedFidelityScores",
     "SufficientStatsReducer",
     "VramStage",
     "frechet_distance_unbiased",
