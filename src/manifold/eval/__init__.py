@@ -12,10 +12,14 @@ presentation tool layered on the written JSON + PNGs.
 """
 
 from .before_after import BeforeAfterEval, BeforeAfterResult
+from .comparison_page import ComparisonPageBuilder, ControlNetComparison, JitComparison
 from .slice_grid import SliceGrid
 
 __all__ = [
     "BeforeAfterEval",
     "BeforeAfterResult",
+    "ComparisonPageBuilder",
+    "ControlNetComparison",
+    "JitComparison",
     "SliceGrid",
 ]
