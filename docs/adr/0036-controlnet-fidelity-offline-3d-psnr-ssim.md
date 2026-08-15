@@ -32,7 +32,7 @@ real target volume**, computed in an **offline before/after eval**, not during t
   number — and the same pass furnishes the visual slice grids.
 - **Normalization + reuse.** Both generated and real `tgt` are VAE-decoded and then
   per-sample min-max normalized to `[0,1]` (the Pipeline's published-output convention,
-  `_minmax_to_unit` in `pipelines/controlnet_latent_flow.py`), so `data_range = 1.0`.
+  `min_max_to_unit` in `pipelines/pipeline_utils.py`), so `data_range = 1.0`.
   We reuse MONAI `PSNRMetric(max_val=1.0)` / `SSIMMetric(spatial_dims=3, data_range=1.0)`
   — never hand-rolled, matching the RewardModel-wraps-MONAI ethos.
 

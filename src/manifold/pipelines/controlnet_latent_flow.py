@@ -31,7 +31,7 @@ from ..models.controlnet_3d import ControlNet3DConditionModel
 from ..models.unet_3d_condition import UNet3DConditionModel
 from ..modules.controlnet_sampler import controlnet_rollout
 from ..schedulers.scheduling_flow_match_heun import FlowMatchHeunDiscreteScheduler
-from .pipeline_utils import DiffusionPipeline
+from .pipeline_utils import DiffusionPipeline, min_max_to_unit
 
 #: Top-level index naming the pipeline and its per-component layout.
 _MODEL_INDEX_FILE = "model_index.json"
@@ -180,7 +180,7 @@ class ControlNetLatentFlowPipeline(DiffusionPipeline):
         self.vae.eval()
         with torch.inference_mode():
             vol = self._decode_f32(latent)
-            return self._minmax_to_unit(vol)
+            return min_max_to_unit(vol)
 
     # -- decode + post-process (mirror FID eval) ----
 
@@ -201,23 +201,6 @@ class ControlNetLatentFlowPipeline(DiffusionPipeline):
             self._norm16_disabled = True
         vae_device = next(self.vae.parameters()).device
         return self.vae.decode(latents.float().to(vae_device))
-
-    @staticmethod
-    def _minmax_to_unit(vol: Tensor) -> Tensor:
-        """Per-volume min-max normalization to ``[0, 1]`` (FID feature-arm step).
-
-        Mirrors the per-volume min-max in FID's RadImageNet preprocessing, so the
-        published inference output is a normalized image regardless of the raw VAE
-        decode range. Per-sample (each volume normalized by its own ``[min, max]``);
-        a degenerate zero-range volume maps to zeros.
-        """
-        b = vol.shape[0]
-        flat = vol.reshape(b, -1)  # [B, C*D*H*W]
-        mn = flat.amin(dim=1).view(b, 1, 1, 1, 1)
-        mx = flat.amax(dim=1).view(b, 1, 1, 1, 1)
-        rng = mx - mn
-        rng = torch.where(rng > 0, rng, torch.ones_like(rng))  # avoid div-by-zero
-        return (vol - mn) / rng
 
 
 # -- model_index helper -----------------------------------------------------
