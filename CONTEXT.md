@@ -383,10 +383,13 @@ _Avoid_: summed-label conditioning (that was the ADR-0014 base-UNet mechanism, r
 **Paired fidelity** (3D PSNR/SSIM):
 The full-reference quality metric of the ControlNet translation policy — 3D PSNR + 3D SSIM
 of the generated target volume against the real target, both VAE-decoded and per-sample
-min-max normalized to `[0,1]`, scored in an offline before/after eval, never during
-training (ADR-0036). The paired counterpart to **Unbiased FID** — which is reference-free
-and fits the unconditional JiT; the realism **Reward Model** is fidelity-blind (ADR-0034)
-and is not this metric.
+min-max normalized to `[0,1]` (`data_range = 1.0`). One metric, two protocols: an
+**in-training monitor** (observe-only `val/psnr` / `val/ssim` logged per gated validation
+epoch on a fixed paired subset under fixed noise — never a checkpoint monitor or a loss
+term; ADR-0037) and the **offline before/after comparison** (before vs after GRPO under
+identical noise + conditioning; ADR-0036). The paired counterpart to **Unbiased FID** — which
+is reference-free and fits the unconditional JiT; the realism **Reward Model** is
+fidelity-blind (ADR-0034) and is not this metric.
 _Avoid_: image PSNR (specify 3D), fidelity reward.
 
 ### Configuration
