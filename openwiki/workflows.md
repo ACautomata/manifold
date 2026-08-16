@@ -1,7 +1,7 @@
 ---
 type: Guide
 title: Key Workflows
-description: JiT, supervised ControlNet translator, reward/GRPO training stages, inference, checkpoints, and export.
+description: JiT, supervised ControlNet translator, reward/GRPO training stages, before/after evaluation, inference, checkpoints, and export.
 tags: [workflows, training, inference, checkpoints, export]
 ---
 
@@ -25,7 +25,7 @@ Important constraint: the regular noise-to-data production flow disables validat
 
 ## Paired training
 
-`manifold-train-controlnet` is the supervised paired translator (ADR-0027 stage 1; the old `paired_cli` and the separate paired-reward pipeline were retired — the latter in ADR-0034). It loads a frozen JiT native export via `--native-dir`, warms shared per-volume latents via `--latents-dir`, and trains a trainable ControlNet over the frozen base through `ControlNetLatentFlowModule`. Validation uses the latent-space `val/x0_mae` callback (`src/manifold/training/metrics.py`), which is fast and runs through the shared `controlnet_rollout` primitive that native inference also uses (`src/manifold/modules/controlnet_sampler.py`; ADR-0005). The native supervised export then becomes stage-1 input to `manifold-train-grpo` for the ControlNet policy path.
+`manifold-train-controlnet` is the supervised paired translator (ADR-0027 stage 1; the old `paired_cli` and the separate paired-reward pipeline were retired — the latter in ADR-0034). It loads a frozen JiT native export via `--native-dir`, warms shared per-volume latents via `--latents-dir`, and trains a trainable ControlNet over the frozen base through `ControlNetLatentFlowModule`. Validation currently uses the latent-space `val/x0_mae` callback (`src/manifold/training/metrics.py`), which is fast and runs through the shared `controlnet_rollout` primitive that native inference also uses (`src/manifold/modules/controlnet_sampler.py`; ADR-0005). ADR-0037 accepts a complementary fixed-subset `val/psnr` / `val/ssim` monitor, but that callback is not implemented yet and will remain observe-only, not a checkpoint selector. The native supervised export then becomes stage-1 input to `manifold-train-grpo` for the ControlNet policy path.
 
 Paired conditioning uses a learned MLP that combines source and target contrast embeddings (`concat([embed(src), embed(tgt+offset)])`), with the optional `paired_direction_offset` shifting the target embedding row to break A<->B symmetry. The learned MLP provides greater discriminability across the 12 contrast directions and replaces the earlier linear sum.
 
@@ -43,6 +43,7 @@ The console surfaces are:
 manifold-train-reward
 manifold-train-grpo
 manifold-train-controlnet
+manifold-eval
 ```
 
 `manifold-train-reward` loads a frozen native generator and trains the shared mode-agnostic PatchGAN scorer on partial-denoise preference pairs. `manifold-train-grpo` then loads a policy and that frozen reward model, forks stochastic trajectories, and scores each terminal latent `z_K` unconditionally. The same reward serves both supported policy paths; the deleted paired-reward pipeline is not part of the current workflow.
@@ -75,6 +76,34 @@ exercises the anchor and the suffix slice through the scheduler method.
 
 This workflow depends on the native artifact contract described in [Architecture and source map](architecture.md#configuration-and-persistence). Consult `src/manifold/training/reward_cli.py`, `controlnet_cli.py`, and `grpo_cli.py` for current arguments. Focused guards live in `tests/test_grpo.py` (routing and policy-specific learning rates) and `tests/test_config.py` (the removed mode-specific preset must not return); see [Operations and testing](operations-and-testing.md#standard-checks) for the broader test matrix.
 
+## Before/after evaluation
+
+Use the shipped `manifold-eval` to compare the supervised native export with the post-GRPO Lightning checkpoint. It infers the policy from the before artifact's `model_index.json`, exports the after checkpoint through the normal checkpoint-to-native bridge, reloads both pipelines, and runs the same-seed evaluation described in [Before/after GRPO evaluation](evaluation.md#runtime-flow). JiT records only seed, step count, and sample count; ControlNet additionally records full-reference 3D PSNR/SSIM against each real target.
+
+```bash
+manifold-eval \
+  --before-dir <jit-native-export> \
+  --after-ckpt <grpo-jit>/lightning/last.ckpt \
+  --output runs/eval_jit \
+  --device cuda
+```
+
+For ControlNet, the before directory must be the **supervised** export. Evaluation reads held-out `(src, tgt)` pairs from a warmed cache and refuses an empty validation split or cache miss; it does not estimate a new VAE scaling factor.
+
+```bash
+manifold-eval \
+  --before-dir <supervised-controlnet-export> \
+  --after-ckpt <grpo-controlnet>/lightning/last.ckpt \
+  --output runs/eval_controlnet \
+  --data-base-dir <brats-root> \
+  --val-data-base-dir <brats-held-out-root> \
+  --latents-dir <paired-latent-cache> \
+  --num-pairs 8 \
+  --device cuda
+```
+
+The command writes `metrics.json`, `slice_grid_<i>.png`, and `<output>/after_native`. A separate `ComparisonPageBuilder` turns those local artifacts plus optional JiT `metrics.csv` files into a self-contained HTML report; it is not another console entry point. Keep this offline comparison distinct from ADR-0037's accepted in-training monitor, which is planned but not active.
+
 ## Checkpoint and export contract
 
 There are two artifact types:
@@ -93,6 +122,8 @@ manifold-export \
 ```
 
 `--pipeline {jit,paired,controlnet}` selects which inference component tree to write (default `jit`). The ControlNet export additionally requires `--base-native-dir` (the JiT native export the supervised ControlNet was trained against — the ControlNet `.ckpt` registers only the trainable residuals). `--pipeline paired` is currently a stale code reference (the `PairedLatentFlowPipeline` module was deleted alongside the paired-reward pipeline in ADR-0034); do not use it until it is either restored or removed from the `argparse` choices. Inspect `manifold-export --help` for the current flags.
+
+`manifold-eval` invokes this same bridge internally rather than accepting a separate network config. It uses the before native directory to load the probe component structure, bakes the after `.ckpt` to `<eval-output>/after_native`, discards the mutated probe, and reloads both native directories before generation. This prevents the in-place export bake from contaminating the before side and keeps VAE, scheduler, and architecture identical by construction.
 
 EMA training was removed in commit `e89b05d`. `src/manifold/training/export.py` now extracts the raw UNet backbone under the `unet.unet.` state-dict prefix and always reports `unet_state_dict`. Do not pass retired `--ema`/`prefer_ema` options, configure `ema_decays`, or expect `val/fid_avg` and `val/fid_raw`; the single validation metric is `val/fid`, evaluated on the live raw model. Reward and GRPO policy loading follows the same raw-weight contract.
 
@@ -122,3 +153,16 @@ The previous `PairedLatentFlowPipeline` (the 2·C src→tgt UNet paired-JiT infe
 NIfTI writing is outside the pipeline boundary: pipelines return decoded `[B,C,D,H,W]` tensors.
 
 When changing inference, verify that module sampling and pipeline sampling still share the same rollout primitive (`src/manifold/modules/sampler.py`, `controlnet_sampler.py`). Relevant tests are `tests/test_pipeline_inference.py`, `test_controlnet_pipeline_inference.py`, `test_scheduler.py`, and persistence tests.
+
+## Change navigation
+
+| Change area | Where to start | Focused tests | Minimal validation |
+| --- | --- | --- | --- |
+| Cache build / reconstruction | `src/manifold/data/latent_pipeline.py`, `src/manifold/data/paired_latent_dataset.py`, `src/manifold/data/latent_dataset.py` | `tests/test_paired_latent_cache.py`, `tests/test_ddp_warm.py` | `pytest tests/test_paired_latent_cache.py tests/test_ddp_warm.py -q` |
+| Supervised ControlNet stage | `src/manifold/training/controlnet_cli.py`, `src/manifold/modules/controlnet_latent_flow.py`, `configs/train/config_controlnet_supervised.yaml` | `tests/test_controlnet_module_training.py`, `tests/test_controlnet_cli.py` | `pytest tests/test_controlnet_module_training.py tests/test_controlnet_cli.py -q` |
+| Reward + GRPO stages | `src/manifold/training/{reward_cli,grpo_cli}.py`, `src/manifold/modules/{reward,grpo}.py` | `tests/test_reward.py`, `tests/test_reward_pairs.py`, `tests/test_grpo.py` | `pytest tests/test_reward.py tests/test_reward_pairs.py tests/test_grpo.py -q` |
+| `manifold-export` bridge + persistence | `src/manifold/training/export.py`, `src/manifold/training/export_cli.py`, `src/manifold/pipelines/{latent_flow,controlnet_latent_flow}.py` | `tests/test_persistence.py`, `tests/test_controlnet_cli.py` | `pytest tests/test_persistence.py tests/test_controlnet_cli.py -q` |
+| `manifold-eval` paired fidelity + comparison page | `src/manifold/eval/cli.py`, `src/manifold/eval/before_after.py`, `src/manifold/eval/comparison_page.py`, `src/manifold/metrics/paired.py` | `tests/test_paired_fidelity.py`, `tests/test_before_after_eval.py`, `tests/test_eval_cli.py`, `tests/test_comparison_page.py` | `pytest tests/test_paired_fidelity.py tests/test_before_after_eval.py tests/test_eval_cli.py tests/test_comparison_page.py -q` |
+| Native inference pipelines | `src/manifold/pipelines/{latent_flow,controlnet_latent_flow}.py`, `src/manifold/modules/{sampler,controlnet_sampler}.py` | `tests/test_pipeline_inference.py`, `tests/test_controlnet_pipeline_inference.py`, `tests/test_scheduler.py` | `pytest tests/test_pipeline_inference.py tests/test_controlnet_pipeline_inference.py tests/test_scheduler.py -q` |
+
+Scope boundaries: each row maps a workflow seam to one CLI plus its module and pipeline siblings; do not rerun the full suite for a single-row change. New `--pipeline paired` restoration or a new in-training monitor must add the matching test before becoming supported.
