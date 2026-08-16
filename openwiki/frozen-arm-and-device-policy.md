@@ -186,10 +186,9 @@ gets the per-rank device value but does not call `set_device` (which would
 raise). This is the "twice-bitten" guard: never silently fall back, never
 raise on a misconfigured but recoverable launch.
 
-<!-- openwiki: mermaid parse failed and this diagram was converted to a text fence so it does not break rendering. Fix the diagram source and restore the mermaid fence. Parser error: Heuristic: an unescaped angle bracket inside a label breaks rendering; rephrase the label. -->
-```text
+```mermaid
 stateDiagram-v2
-    [*] --> Constructed: __init__ snapshots LOCAL_RANK (missing -> 0)
+    [*] --> Constructed: __init__ snapshots LOCAL_RANK, default 0
     Constructed --> Pinned: pin()
     Constructed --> ReadOnly: device()
     Pinned --> ReadOnly: device()
@@ -198,17 +197,17 @@ stateDiagram-v2
         [*] --> CheckCuda
         CheckCuda --> CudaAvailable: torch.cuda.is_available()
         CheckCuda --> CpuFallback: no CUDA
-        CudaAvailable --> InRange: local_rank < device_count
-        CudaAvailable --> OutOfRange: local_rank >= device_count
-        InRange --> SetDeviceAndReturn: set_device(local_rank), return cuda:local_rank
-        OutOfRange --> ReturnSkipSetDevice: skip set_device, return cuda:local_rank
-        CpuFallback --> ReturnCpu: return cpu (no side effects)
+        CudaAvailable --> InRange: local_rank below device_count
+        CudaAvailable --> OutOfRange: local_rank at or above device_count
+        InRange --> SetDeviceAndReturn: set_device(local_rank), return cuda local rank
+        OutOfRange --> ReturnSkipSetDevice: skip set_device, return cuda local rank
+        CpuFallback --> ReturnCpu: return cpu, no side effects
     }
     state ReadOnly {
         [*] --> CheckCuda2
         CheckCuda2 --> CudaRead: torch.cuda.is_available()
         CheckCuda2 --> CpuRead: no CUDA
-        CudaRead --> ReturnCuda: return cuda:local_rank
+        CudaRead --> ReturnCuda: return cuda local rank
         CpuRead --> ReturnCpu2: return cpu
     }
 ```

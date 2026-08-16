@@ -46,8 +46,10 @@ expose:
 ## Two-phase construction
 
 ADR-0029 splits spec instantiation from callback construction because
-generative callbacks (FID, future PSNR/SSIM) need runtime objects (the VAE,
-inference recipe, feature network) that do not exist at config resolution.
+generative callbacks such as FID need runtime objects (the VAE, inference
+recipe, and feature network) that do not exist at config resolution. ADR-0037
+accepts the same construction shape for an in-training paired PSNR/SSIM
+callback, but no PSNR/SSIM spec is registered yet.
 
 - **`CallbackRegistry.resolve(names, cfg)` (config-time)** — validates the
   requested name list and the per-name knob dict, then returns constructed spec
@@ -128,27 +130,26 @@ rule). The merge order is:
    metric.
 6. Resolve → build → validate_monitor → assemble `pl.Trainer` → `trainer.fit`.
 
-<!-- openwiki: mermaid parse failed and this diagram was converted to a text fence so it does not break rendering. Fix the diagram source and restore the mermaid fence. Parser error: Heuristic: an unescaped angle bracket inside a label breaks rendering; rephrase the label. -->
-```text
+```mermaid
 flowchart TD
-    A["default_names<br/>(per-shell dynamic list)"] --> B["apply callback_cfg<br/>(per-name knob dict)"]
-    B --> C{"callback_names_override<br/>present?"}
+    A["default_names, per-shell dynamic list"] --> B["apply callback_cfg, per-name knob dict"]
+    B --> C{"callback_names_override present?"}
     C -- yes --> D["replace name list"]
     C -- no --> E["keep merged list"]
-    D --> F{"forbidden_callbacks<br/>match any name?"}
+    D --> F{"forbidden_callbacks match any name?"}
     E --> F
-    F -- yes --> G["rank_zero_info + remove"]
-    F -- no --> H{"forbidden_monitors<br/>match monitor_metric?"}
+    F -- yes --> G["log and remove forbidden callback"]
+    F -- no --> H{"forbidden_monitors match monitor_metric?"}
     G --> H
     H -- yes --> X1["raise ValueError"]
-    H -- no --> I["registry.resolve<br/>(name + knob validation)"]
-    I --> J["registry.build<br/>(inject CallbackContext)"]
-    J --> K["extend with extra_callbacks<br/>(e.g. LatentX0MAE)"]
-    K --> L["validate_monitor<br/>(monitor_metric vs logged union)"]
-    L --> M{"ModelCheckpoint<br/>in list?"}
-    M -- no --> X2["raise ValueError<br/>no ModelCheckpoint"]
-    M -- yes --> N["build_trainer(... callbacks)"]
-    N --> O["trainer.fit(...)"]
+    H -- no --> I["registry.resolve, validate names and knobs"]
+    I --> J["registry.build, inject CallbackContext"]
+    J --> K["extend with extra callbacks such as LatentX0MAE"]
+    K --> L["validate_monitor against logged metrics"]
+    L --> M{"ModelCheckpoint in list?"}
+    M -- no --> X2["raise ValueError, no ModelCheckpoint"]
+    M -- yes --> N["build trainer with callbacks"]
+    N --> O["trainer.fit"]
 ```
 *Figure: `TrainingSpine.run` merge order — defaults → knobs → `--callbacks` override → `forbidden_callbacks` / `forbidden_monitors` → resolve → build → validate_monitor → fit.*
 
@@ -172,6 +173,13 @@ ADR-0032).
   `spine.registry.register(...)` block, and add a `train_loss`-style logger
   callback if it logs a monitored metric. Compose `CallbackContext` if the
   spec needs a runtime object not already in the bag.
+- **Implementing ADR-0037:** add the fixed-subset paired callback and spec,
+  pass `CallbackContext.inference_recipe` to the supervised CLI, use the
+  shared `min_max_to_unit` + `PairedFidelityMetrics` path, and keep
+  `val/psnr` / `val/ssim` observe-only. Do not make either scalar a checkpoint
+  monitor, loss term, or a path for the ControlNet-GRPO stage until its
+  separate follow-up is accepted. The full extension surface is tracked in
+  [Before/after GRPO evaluation](evaluation.md#accepted-in-training-monitor-planned-not-active).
 - **Renaming a knob:** rename the dataclass field. `resolve` will start
   rejecting the old name in any recipe that still uses it — that loud
   `ValueError` is the contract's signal that all recipe sites need an update.
