@@ -11,6 +11,10 @@
   PNG every epoch + at fit end (crash-robust on remote DCU).
 - :class:`PairedFidelityMetrics` — 3D PSNR + 3D SSIM of a generated target vs the
   real target (MONAI-backed, ADR-0036); the ControlNet translation-fidelity screen.
+- :class:`PairedFidelityCallback` — the observe-only in-training paired-fidelity
+  monitor (``val/psnr`` / ``val/ssim``) for supervised ControlNet (ADR-0037).
+- :class:`VaeStage` — the VAE-only VRAM stage/restore context manager (composed by
+  ``VramStage``; used directly by the paired-fidelity decode).
 """
 
 from .fid.callback import FIDCallback
@@ -22,6 +26,8 @@ from .fid.rollout import FixedSampleRollout
 from .fid.vram import VramStage
 from .metric_plot_callback import MetricsPlotCallback
 from .paired import PairedFidelityMetrics, PairedFidelityScores
+from .paired_callback import PairedFidelityCallback
+from .vae_stage import VaeStage
 
 __all__ = [
     "FIDCallback",
@@ -29,9 +35,11 @@ __all__ = [
     "FixedSampleRollout",
     "LatentDecoder",
     "MetricsPlotCallback",
+    "PairedFidelityCallback",
     "PairedFidelityMetrics",
     "PairedFidelityScores",
     "SufficientStatsReducer",
+    "VaeStage",
     "VramStage",
     "frechet_distance_unbiased",
     "get_features_2p5d",

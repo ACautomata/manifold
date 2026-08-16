@@ -48,8 +48,9 @@ monitor (that stays `val/x0_mae`) and never a loss term.
 
 ## Consequences
 
-- **Supervised stage (this ADR).** A new registered spec + callback; it reuses `VramStage` (VAE
-  CPU→GPU for the decode, then back to CPU), `LatentDecoder`, `min_max_to_unit`, and
+- **Supervised stage (this ADR).** A new registered spec + callback; it reuses the VAE-only
+  `VaeStage` (the VAE-staging path extracted from, and now composed by, `VramStage`: VAE CPU→GPU
+  for the decode, then back to CPU), `LatentDecoder`, `min_max_to_unit`, and
   `PairedFidelityMetrics`. The `controlnet.num_inference_steps` config knob (default 15 ⇒ 29 UNet
   evals) already exists for this "validation rollout"; a FID-style `every_n_epochs` gate throttles
   cadence. Fills the currently-`None` `CallbackContext.inference_recipe` on the supervised path.

@@ -17,6 +17,7 @@ from manifold.metrics.fid import (
     SufficientStatsReducer,
     VramStage,
 )
+from manifold.metrics.vae_stage import VaeStage
 
 
 # -- VramStage ---------------------------------------------------------------
@@ -172,6 +173,43 @@ def test_vram_stage_respects_cached_feat_dim():
         device_fn=lambda: torch.device("cpu"),
     ) as stage:
         assert stage.feat_dim == 42  # cached, not re-probed
+
+
+# -- VaeStage (the VAE-only staging path, ADR-0037) ------------------------------
+
+
+def test_vae_stage_stages_and_restores_vae_without_feature_net():
+    """VaeStage stages the VAE for a decode and restores it (state + device) on exit —
+    the VAE-only path, with no feature_net / fid-disabled concern (ADR-0037)."""
+    vae = _ToyVAE()
+    with VaeStage(vae, device_fn=lambda: torch.device("cpu")) as stage:
+        assert stage.device == torch.device("cpu")
+        # Mutate the VAE while staged; the exit must restore the snapshotted CPU state.
+        vae._dummy.data.add_(1.0)
+        assert float(vae._dummy.detach()) == 1.0
+    assert float(vae._dummy.detach()) == 0.0, "VAE CPU state was not restored on exit"
+    assert next(vae.parameters()).device.type == "cpu"
+
+
+def test_vae_stage_restores_vae_on_enter_error():
+    """An exception during ``VaeStage.__enter__`` (e.g. a staging OOM) restores the VAE
+    to CPU and re-raises — Python never calls ``__exit__`` when ``__enter__`` raises,
+    so the cleanup is inlined (codex #171 P2)."""
+
+    class _RefusingVAE(_ToyVAE):
+        """Refuses any non-CPU ``.to()`` target (a simulated staging failure)."""
+
+        def to(self, *args, **kwargs):
+            target = args[0] if args else kwargs.get("device")
+            if target is not None and torch.device(target).type != "cpu":
+                raise RuntimeError("simulated staging OOM")
+            return super().to(*args, **kwargs)
+
+    vae = _RefusingVAE()
+    with pytest.raises(RuntimeError, match="simulated staging OOM"):
+        with VaeStage(vae, device_fn=lambda: torch.device("cuda")):
+            pass  # never reached — __enter__ raises on the staged move
+    assert next(vae.parameters()).device.type == "cpu", "VAE left off-CPU after enter error"
 
 
 # -- LatentDecoder -----------------------------------------------------------
