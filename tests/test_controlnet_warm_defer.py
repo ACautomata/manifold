@@ -109,6 +109,10 @@ def test_single_gpu_warm_runs_once_inside_setup(tmp_path):
     trainer, _ = run_controlnet_training(
         module=module, inputs=inputs, model_dir=str(tmp_path / "m"),
         max_epochs=1, devices=1, accelerator="cpu", batch_size=2,
+        # This test scopes to the deferred warm (issue #145), not the default-on
+        # paired-fidelity monitor (ADR-0037) — select the legacy callback set so the
+        # monitor's VAE decode is not exercised here.
+        callback_names=["train_loss", "checkpoint"],
     )
     # setup() ran the warm exactly once (single-GPU parity: one warm, before training).
     assert warm_calls[0] == 1

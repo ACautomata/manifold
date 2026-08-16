@@ -37,6 +37,14 @@ class _DedupValDataModule(spt.data.DataModule):
         self._val_batch_size = batch_size
         self._val_num_workers = num_workers
 
+    @property
+    def val_latent_ds(self):
+        """The held-out val dataset, exposed under the name the paired-fidelity
+        monitor's lazy subset resolution expects (``getattr(dm, "val_latent_ds", dm)``,
+        ADR-0037) — aligning this warm/parity-path datamodule with the cold path's
+        :class:`~manifold.data.warm_datamodule.PairedWarmDataModule` accessor."""
+        return self._val_dataset
+
     def val_dataloader(self) -> DataLoader:
         return _validation_loader(
             self._val_dataset,

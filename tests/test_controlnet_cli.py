@@ -8,12 +8,14 @@ The ``--native-dir`` / ``--latents-dir`` real-path validation is pinned too.
 
 from __future__ import annotations
 
+import math
 from pathlib import Path
 from unittest.mock import MagicMock, call
 
 import pytest
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from torch.utils.data import Dataset
 
 from manifold import (
@@ -21,7 +23,8 @@ from manifold import (
     FlowMatchHeunDiscreteScheduler,
     UNet3DConditionModel,
 )
-from manifold.training.callbacks import CheckpointSpec, TrainLossSpec
+from manifold.modules import ControlNetLatentFlowModule
+from manifold.training.callbacks import CheckpointSpec, PairedFidelitySpec, TrainLossSpec
 from manifold.training.controlnet_cli import (
     ControlNetInputs,
     main as controlnet_main,
@@ -45,6 +48,21 @@ def _controlnet(base: UNet3DConditionModel) -> ControlNet3DConditionModel:
     cn = ControlNet3DConditionModel(num_class_embeds=4, include_spacing_input=True)
     cn.load_base_encoder_weights(base)
     return cn
+
+
+class _ToyVAE(nn.Module):
+    """A VAE-like stand-in for the paired-fidelity decode (ADR-0037): a movable
+    parameter (so ``VaeStage``'s state_dict/to/restore work) + a deterministic decode
+    mapping a ``[N, 4, 8, 8, 4]`` latent to a ``[N, 1, 16, 16, 16]`` image (≥ 11 per
+    side for the MONAI SSIM window)."""
+
+    def __init__(self):
+        super().__init__()
+        self._dummy = nn.Parameter(torch.zeros(1))
+
+    def decode(self, latents):
+        img = latents.float().mean(dim=1, keepdim=True)  # [N, 1, 8, 8, 4]
+        return F.interpolate(img, size=(16, 16, 16), mode="trilinear", align_corners=False)
 
 
 class _ToyPairedDS(Dataset):
@@ -74,6 +92,7 @@ def _provider(cfg, device) -> ControlNetInputs:
         scheduler=FlowMatchHeunDiscreteScheduler(),
         train_ds=_ToyPairedDS(),
         val_ds=_ToyPairedDS(),
+        vae=_ToyVAE(),  # the paired-fidelity monitor decodes through this (ADR-0037)
     )
 
 
@@ -90,6 +109,8 @@ def _write_tiny_configs(tmp_path: Path) -> tuple[str, str, str]:
         "diffusion_unet_train: {batch_size: 2, lr: 1.0e-3, n_epochs: 1, "
         "lr_warmup_steps: 0, lr_ref_batch_size: 8, lr_scale_rule: sqrt}\n"
         "formulation: {p_mean: -0.8, p_std: 0.8, t_eps: 0.05, l1_weight: 0.0}\n"
+        # A short rollout so the default-on paired-fidelity monitor stays cheap on CPU.
+        "controlnet: {num_inference_steps: 2}\n"
         "checkpoint: {save_top_k: 1}\n"
     )
     return str(env), str(train), str(net)
@@ -136,8 +157,9 @@ def test_run_controlnet_training_delegates_to_training_spine(tmp_path, monkeypat
     assert spine.registry.register.call_args_list == [
         call("train_loss", TrainLossSpec),
         call("checkpoint", CheckpointSpec),
+        call("paired_fidelity", PairedFidelitySpec),
     ]
-    assert captured["default_names"] == ["train_loss", "checkpoint"]
+    assert captured["default_names"] == ["train_loss", "checkpoint", "paired_fidelity"]
     assert captured["callback_names_override"] is None
     assert len(captured["extra_callbacks"]) == 1
     assert isinstance(captured["extra_callbacks"][0], LatentX0MAE)
@@ -147,6 +169,9 @@ def test_run_controlnet_training_delegates_to_training_spine(tmp_path, monkeypat
     assert captured["ctx"].vae is vae
     assert captured["ctx"].model_dir == str(tmp_path)
     assert captured["ctx"].seed == 9
+    # The supervised path's inference recipe is now filled from the
+    # controlnet.num_inference_steps knob for the paired-fidelity rollout (ADR-0037).
+    assert captured["ctx"].inference_recipe == {"num_inference_steps": 15}
     assert captured["callback_cfg"] == {
         "checkpoint": {
             "monitor_metric": "val/x0_mae",
@@ -272,6 +297,61 @@ def test_main_runs_end_to_end_with_fake_data(tmp_path):
     assert rc == 0
     ckpts = list(Path(str(tmp_path / "model")).glob("*.ckpt"))
     assert any(p.name == "last.ckpt" for p in ckpts)
+
+
+def test_run_controlnet_training_logs_paired_fidelity(tmp_path):
+    """End-to-end (the primary seam, ADR-0037 / issue #239): a tiny supervised
+    ControlNet ``Trainer.fit`` with the monitor on-by-default records finite
+    ``val/psnr`` + ``val/ssim``, still writes its checkpoint, and keeps the checkpoint
+    monitor on ``val/x0_mae`` (observe-only — adding the monitor changes nothing else).
+    """
+    base = _frozen_base()
+    controlnet = _controlnet(base)
+    scheduler = FlowMatchHeunDiscreteScheduler()
+    module = ControlNetLatentFlowModule(
+        base, controlnet, scheduler,
+        lr=1e-3, lr_warmup_steps=0, num_train_examples=4, train_batch_size=2, n_epochs=1,
+    )
+    inputs = ControlNetInputs(
+        unet=base, controlnet=controlnet, scheduler=scheduler,
+        train_ds=_ToyPairedDS(), val_ds=_ToyPairedDS(), vae=_ToyVAE(),
+    )
+    trainer, ckpt = run_controlnet_training(
+        module=module, inputs=inputs, model_dir=str(tmp_path / "model"),
+        max_epochs=1, devices=1, accelerator="cpu", batch_size=2, num_inference_steps=2,
+    )
+
+    metrics = trainer.callback_metrics
+    assert "val/psnr" in metrics and "val/ssim" in metrics
+    assert math.isfinite(float(metrics["val/psnr"]))
+    assert math.isfinite(float(metrics["val/ssim"]))
+    # Observe-only: the existing latent surrogate still logs alongside the new monitor
+    # (unchanged, AC4), checkpoint selection is untouched, and the fit still writes a ckpt.
+    assert math.isfinite(float(metrics["val/x0_mae"]))
+    assert ckpt.monitor == "val/x0_mae"
+    assert list(Path(str(tmp_path / "model")).glob("*.ckpt"))
+
+
+def test_main_threads_controlnet_num_inference_steps_into_recipe(tmp_path, monkeypatch):
+    """main() reads the existing ``controlnet.num_inference_steps`` knob and threads it
+    to the spine, which fills the path's inference recipe for the monitor (ADR-0037)."""
+    env, train, net = _write_tiny_configs(tmp_path)
+    captured = {}
+
+    def _capture_run(**kwargs):
+        captured.update(kwargs)
+        return object(), object()
+
+    monkeypatch.setattr(
+        "manifold.training.controlnet_cli.run_controlnet_training", _capture_run
+    )
+    rc = controlnet_main(
+        ["-e", env, "-c", train, "-t", net, "-g", "1", "--max-epochs", "1"],
+        data_provider=_provider,
+    )
+    assert rc == 0
+    # The tiny recipe sets controlnet.num_inference_steps: 2; main forwards it verbatim.
+    assert captured["num_inference_steps"] == 2
 
 
 def test_main_native_dirs_default_none_and_validated(tmp_path):

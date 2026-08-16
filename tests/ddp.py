@@ -687,6 +687,10 @@ def controlnet_cold_cache_ddp_worker(
         module=module, inputs=inputs, model_dir=results_dir,
         max_epochs=1, devices=world, accelerator="cpu", batch_size=2,
         limit_val_batches=1.0,
+        # Scoped to the per-rank warm sharding (issue #145), not the default-on
+        # paired-fidelity monitor (ADR-0037) — select the legacy callback set so the
+        # monitor's VAE decode is not exercised in this worker.
+        callback_names=["train_loss", "checkpoint"],
     )
     Path(results_dir, f"r{rank}.json").write_text(json.dumps({
         "rank": rank,
@@ -761,6 +765,10 @@ def controlnet_monitor_ddp_worker(rank: int, world: int, results_dir: str, port:
             module=module, inputs=inputs, model_dir=results_dir,
             max_epochs=2, devices=world, accelerator="cpu", batch_size=2,
             limit_val_batches=1.0,
+            # Scoped to the globally-reduced val/x0_mae monitor (issue #146), not the
+            # default-on paired-fidelity monitor (ADR-0037) — select the legacy callback
+            # set so the monitor's VAE decode is not exercised in this worker.
+            callback_names=["train_loss", "checkpoint"],
         )
         written = sorted(p.name for p in Path(results_dir).glob("*.ckpt"))
         Path(results_dir, f"r{rank}.json").write_text(json.dumps({
