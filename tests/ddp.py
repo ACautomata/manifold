@@ -782,6 +782,138 @@ def controlnet_monitor_ddp_worker(rank: int, world: int, results_dir: str, port:
     finally:
         ddp_fini()
 
+# -- ControlNet paired-fidelity monitor 2-rank worker (issue #240: DDP safety) ----
+
+
+class _FixedPairedLatentDS(Dataset):
+    """Seeded, immutable paired latent dataset for the monitor's DDP fit.
+
+    Unlike ``_ToyPairedCondDS`` (which draws ``randn`` fresh in ``__getitem__``),
+    items are generated ONCE in ``__init__`` from a seeded ``Generator``, so the
+    callback's fixed subset content depends only on the index — cross-rank
+    consistency then rests on exactly the property issue #240 verifies
+    (DDP-synchronized weights + identical fixed input + identical seeded noise),
+    not on global-RNG call-order coincidence across ranks.
+    """
+
+    def __init__(self, n: int = 4, *, seed: int = 0):
+        g = torch.Generator().manual_seed(seed)
+        self.items = [
+            {
+                "src_latent": torch.randn(4, 8, 8, 4, generator=g),
+                "tgt_latent": torch.randn(4, 8, 8, 4, generator=g),
+                "spacing": torch.tensor([1.0, 1.0, 1.0]),
+                "src_label": torch.tensor(1, dtype=torch.long),
+                "tgt_label": torch.tensor(2, dtype=torch.long),
+            }
+            for _ in range(n)
+        ]
+
+    def __len__(self):
+        return len(self.items)
+
+    def __getitem__(self, i):
+        return self.items[i]
+
+
+class _ToyDecodeVAE(nn.Module):
+    """A VAE stand-in for the paired-fidelity decode under DDP (issue #240).
+
+    Same contract as the ``_ToyVAE`` in ``test_controlnet_cli.py``: a movable
+    parameter (so ``VaeStage``'s stage/restore works) + a deterministic decode
+    mapping ``[N, 4, 8, 8, 4]`` latents to ``[N, 1, 16, 16, 16]`` images (channel
+    mean then trilinear upsample — ≥ 11 voxels per side for the MONAI SSIM window).
+    """
+
+    def __init__(self):
+        super().__init__()
+        self._dummy = nn.Parameter(torch.zeros(1))
+
+    def decode(self, latents):
+        img = latents.float().mean(dim=1, keepdim=True)  # [N, 1, 8, 8, 4]
+        return nn.functional.interpolate(
+            img, size=(16, 16, 16), mode="trilinear", align_corners=False
+        )
+
+
+def controlnet_paired_fidelity_ddp_worker(
+    rank: int, world: int, results_dir: str, port: str, _unused: bool
+) -> None:
+    """Run a 2-rank ControlNet fit with the paired-fidelity monitor ON (issue #240).
+
+    Unlike ``controlnet_monitor_ddp_worker``, this worker does NOT select the
+    legacy callback set — the monitor is default-on in ``run_controlnet_training``
+    (ADR-0037), so every rank runs the redundant fixed-subset rollout + the
+    ``module.log`` of the two MeanMetrics; Lightning's metric sync is then the only
+    collective beyond the standard DDP ones. Captures per-rank ``val/psnr`` /
+    ``val/ssim`` (the consistency gate), plus the checkpoint monitor + written
+    ckpts + ``val/x0_mae`` (the rank structure / validation contract gate), and the
+    rank-LOCAL (pre-sync) monitor scores for the direct redundant-evaluation gate.
+    """
+    from manifold import (
+        ControlNet3DConditionModel,
+        FlowMatchHeunDiscreteScheduler,
+        UNet3DConditionModel,
+    )
+    from manifold.metrics.paired_callback import _PSNR_ATTR, _SSIM_ATTR
+    from manifold.modules.controlnet_latent_flow import ControlNetLatentFlowModule
+    from manifold.training.controlnet_cli import ControlNetInputs, run_controlnet_training
+
+    ddp_init(rank, world, port)
+    try:
+        torch.manual_seed(0)
+        base = UNet3DConditionModel(num_class_embeds=4, include_spacing_input=True)
+        for p in base.unet.out.parameters():
+            if p.abs().sum().item() == 0.0:
+                nn.init.normal_(p, std=0.01)
+        controlnet = ControlNet3DConditionModel(num_class_embeds=4, include_spacing_input=True)
+        controlnet.load_base_encoder_weights(base)
+        module = ControlNetLatentFlowModule(
+            base, controlnet, FlowMatchHeunDiscreteScheduler(),
+            lr=1e-3, lr_warmup_steps=0, num_train_examples=4, train_batch_size=2, n_epochs=2,
+        )
+        inputs = ControlNetInputs(
+            unet=base, controlnet=controlnet, scheduler=FlowMatchHeunDiscreteScheduler(),
+            train_ds=_FixedPairedLatentDS(), val_ds=_FixedPairedLatentDS(seed=1),
+            vae=_ToyDecodeVAE(),  # the monitor decodes through this (ADR-0037)
+        )
+        trainer, ckpt = run_controlnet_training(
+            module=module, inputs=inputs, model_dir=results_dir,
+            max_epochs=2, devices=world, accelerator="cpu", batch_size=2,
+            limit_val_batches=1.0,
+            num_inference_steps=2,  # a short Heun rollout keeps the CPU monitor cheap
+        )
+        written = sorted(p.name for p in Path(results_dir).glob("*.ckpt"))
+        # No NaN default (unlike the issue-#146 worker): a None lets the gate
+        # distinguish "missing from callback_metrics" from "logged but not finite".
+        metrics = {k: float(v) for k, v in trainer.callback_metrics.items()}
+        # Rank-LOCAL monitor scores: the module-attached MeanMetric's own state is
+        # this rank's accumulation (torchmetrics' sync context restores the local
+        # state after compute), so its ``mean_value`` reads what THIS rank's
+        # redundant rollout scored — the design claim "identical fixed input +
+        # DDP-synchronized weights => identical result" (ADR-0037), which the metric
+        # sync's averaging would otherwise mask in the logged values.
+        def _local(attr):
+            m = getattr(module, attr, None)
+            return float(m.mean_value) if m is not None else None
+
+        Path(results_dir, f"r{rank}.json").write_text(json.dumps({
+            "rank": rank,
+            "is_global_zero": bool(trainer.is_global_zero),
+            "global_step": int(trainer.global_step),
+            "ckpt_monitor": ckpt.monitor,
+            "ckpt_mode": ckpt.mode,
+            "written_ckpts": written,
+            "val_psnr": metrics.get("val/psnr"),
+            "val_ssim": metrics.get("val/ssim"),
+            "val_psnr_local": _local(_PSNR_ATTR),
+            "val_ssim_local": _local(_SSIM_ATTR),
+            "val_x0_mae": metrics.get("val/x0_mae"),
+        }))
+    finally:
+        ddp_fini()
+
+
 # -- ControlNet device-pin 2-rank worker (issue #206: per-rank pre-PG pin) ------
 
 
@@ -856,5 +988,6 @@ __all__ = [
     "cold_cache_ddp_worker",
     "controlnet_cold_cache_ddp_worker",
     "controlnet_monitor_ddp_worker",
+    "controlnet_paired_fidelity_ddp_worker",
     "controlnet_device_pin_ddp_worker",
 ]
