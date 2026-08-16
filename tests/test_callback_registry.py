@@ -265,6 +265,33 @@ def test_paired_fidelity_spec_keeps_checkpoint_monitor_on_x0_mae():
     assert ckpt.monitor_metric == "val/x0_mae"
 
 
+def test_paired_fidelity_spec_reads_num_inference_steps_from_recipe():
+    """Recipe-primary rollout step count (issue #239): with the per-callback knob unset
+    (``None``), ``build`` reads ``num_inference_steps`` from ``ctx.inference_recipe``
+    (the ``controlnet.num_inference_steps`` knob the supervised spine fills in). An
+    explicit per-callback knob overrides the recipe; with neither, the callback's
+    default (15) applies."""
+    reg = _paired_registry()
+    recipe_ctx = CallbackContext(
+        module=None, vae=None, datamodule=object(),
+        inference_recipe={"num_inference_steps": 7}, model_dir=".", seed=0,
+    )
+    # Knob unset -> the recipe value flows to the callback.
+    [spec] = reg.resolve(["paired_fidelity"])
+    [cb] = reg.build([spec], recipe_ctx)
+    assert cb.num_inference_steps == 7
+    # An explicit per-callback knob overrides the recipe.
+    [spec] = reg.resolve(
+        ["paired_fidelity"], cfg={"paired_fidelity": {"num_inference_steps": 5}}
+    )
+    [cb] = reg.build([spec], recipe_ctx)
+    assert cb.num_inference_steps == 5
+    # No recipe + no knob -> the callback default (15).
+    [spec] = reg.resolve(["paired_fidelity"])
+    [cb] = reg.build([spec], _ctx())  # _ctx() carries inference_recipe=None
+    assert cb.num_inference_steps == 15
+
+
 # -- issue #161: TrainingSpine -------------------------------------------------
 
 

@@ -45,7 +45,12 @@ from ..config import opt
 from ..data.datamodule import build_datamodule
 from ..modules.controlnet_latent_flow import ControlNetLatentFlowModule
 from manifold.config import resolve_callback_names
-from manifold.training.callbacks import CallbackContext, CheckpointSpec, TrainLossSpec
+from manifold.training.callbacks import (
+    CallbackContext,
+    CheckpointSpec,
+    PairedFidelitySpec,
+    TrainLossSpec,
+)
 from manifold.training.core import TrainingSpine
 from manifold.training.metrics import LatentX0MAE
 
@@ -91,15 +96,17 @@ def run_controlnet_training(
     seed: int = 0,
     ckpt_path: str | None = None,
     limit_val_batches: int | float = 1.0,
+    num_inference_steps: int = 15,
     callback_names: list[str] | None = None,
     callback_cfg: dict[str, dict] | None = None,
 ) -> tuple[pl.Trainer, ModelCheckpoint]:
     """Build the paired datamodule, then delegate training to ``TrainingSpine``.
 
     The shell preserves the legacy train-loss, latent-x0-MAE, and monitored
-    checkpoint callback set. ``TrainingSpine`` owns registry resolution, callback
-    construction, ``Trainer`` setup, and ``fit``; this function returns its
-    ``(trainer, ckpt)`` result unchanged.
+    checkpoint callback set, and adds the observe-only in-training paired-fidelity
+    monitor (``val/psnr`` / ``val/ssim``, ADR-0037) to the default registry set.
+    ``TrainingSpine`` owns registry resolution, callback construction, ``Trainer``
+    setup, and ``fit``; this function returns its ``(trainer, ckpt)`` result unchanged.
 
     Args:
         inputs: the frozen base + ControlNet + scheduler + the paired train/val datasets.
@@ -107,6 +114,9 @@ def run_controlnet_training(
             latent-cache warm runs inside ``DataModule.setup()`` (issue #145 — post-PG,
             per-rank sharded); otherwise they are pre-warmed (the smoke/parity path).
         ckpt_path: optional warm-start / resume checkpoint passed to ``fit``.
+        num_inference_steps: Heun steps for the paired-fidelity monitor's validation
+            rollout (the ``controlnet.num_inference_steps`` knob). Fills the path's
+            ``CallbackContext.inference_recipe``; the paired-fidelity spec reads it there.
         callback_names: optional resolved callback-name replacement from YAML or
             ``--callbacks``.
         callback_cfg: optional callback knob overrides merged over shell defaults.
@@ -158,11 +168,16 @@ def run_controlnet_training(
     spine = TrainingSpine()
     spine.registry.register("train_loss", TrainLossSpec)
     spine.registry.register("checkpoint", CheckpointSpec)
+    spine.registry.register("paired_fidelity", PairedFidelitySpec)
     ctx = CallbackContext(
         module=module,
         vae=inputs.vae,
         datamodule=datamodule,
-        inference_recipe=None,
+        # The supervised path now has a generative validation callback (the
+        # paired-fidelity monitor, ADR-0037): fill the previously-None inference
+        # recipe with the rollout step count (the controlnet.num_inference_steps
+        # knob). PairedFidelitySpec.build reads num_inference_steps from here.
+        inference_recipe={"num_inference_steps": int(num_inference_steps)},
         model_dir=model_dir,
         seed=seed,
     )
@@ -170,7 +185,7 @@ def run_controlnet_training(
         module=module,
         datamodule=datamodule,
         ctx=ctx,
-        default_names=["train_loss", "checkpoint"],
+        default_names=["train_loss", "checkpoint", "paired_fidelity"],
         max_epochs=max_epochs,
         model_dir=model_dir,
         devices=devices,
@@ -314,6 +329,9 @@ def main(argv: list[str] | None = None, *, data_provider=None) -> int:
         save_top_k=int(opt(cfg, "checkpoint.save_top_k", 3)),
         seed=seed,
         ckpt_path=args.resume,
+        # The paired-fidelity monitor's rollout step count (ADR-0037) comes from the
+        # existing controlnet.num_inference_steps knob (default 15 ⇒ 29 UNet evals).
+        num_inference_steps=int(opt(cfg, "controlnet.num_inference_steps", 15)),
         callback_names=callback_names,
         callback_cfg=callback_cfg,
     )
@@ -427,9 +445,12 @@ def _real_inputs(
             ds.encode_fn = encode_fn
             ds.scaling_factor = scaling_factor  # the base export's factor (ADR-0021)
             ds.warm_cache(warm_device, show_progress=False)
-            # Free the encoder closure and move the VAE off the training GPU: supervised
-            # validation is latent-only (no decode), so the VAE is only needed for the
-            # warm; a lingering GPU VAE can turn a feasible 3D run into an OOM.
+            # Free the encoder closure and move the VAE off the training GPU to keep
+            # steady-state VRAM low (a lingering GPU VAE can turn a feasible 3D run into
+            # an OOM). Validation is no longer decode-free: the paired-fidelity monitor
+            # re-stages the VAE on demand for its per-epoch decode via VaeStage and
+            # restores it to CPU afterward (ADR-0037), so the CPU resting place here
+            # stays correct — the monitor never holds the VAE on GPU between epochs.
             ds.free_encoder()
         vae.to("cpu")
         rank_zero_info(
