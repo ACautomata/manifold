@@ -14,15 +14,16 @@ from dataclasses import dataclass
 
 import pytest
 
-from manifold.metrics import FIDCallback
+from manifold.metrics import FIDCallback, PairedFidelityCallback
 from manifold.training.callbacks import (
     CallbackContext,
     CallbackRegistry,
     CheckpointSpec,
     FIDSpec,
+    PairedFidelitySpec,
     TrainLossSpec,
 )
-from manifold.training.metrics import TrainLossLogger
+from manifold.training.metrics import LatentX0MAE, TrainLossLogger
 
 
 def _ctx():
@@ -200,6 +201,68 @@ def test_validate_monitor_fails_when_extra_callback_omits_metric():
     specs = reg.resolve(["checkpoint"], cfg={"checkpoint": {"monitor_metric": "val/x0_mae"}})
     with pytest.raises(ValueError, match="monitor_metric 'val/x0_mae'"):
         reg.validate_monitor(specs, module=None, extra_callbacks=None)
+
+
+# -- issue #238: PairedFidelitySpec (ADR-0037) -----------------------------------
+
+
+def _paired_registry():
+    reg = _registry()
+    reg.register("paired_fidelity", PairedFidelitySpec)
+    return reg
+
+
+def test_paired_fidelity_spec_builds_callback_with_knobs():
+    """PairedFidelitySpec.resolve + build yields the callback with its knobs threaded,
+    forwarding the runtime objects (module / vae / paired-subset source) from ctx."""
+    reg = _paired_registry()
+    ctx = _ctx()
+    [spec] = reg.resolve(
+        ["paired_fidelity"],
+        cfg={"paired_fidelity": {"subset_size": 4, "every_n_epochs": 2, "num_inference_steps": 5}},
+    )
+    [cb] = reg.build([spec], ctx)
+    assert isinstance(cb, PairedFidelityCallback)
+    assert cb.subset_size == 4 and cb.every_n_epochs == 2 and cb.num_inference_steps == 5
+    # The paired-subset source is forwarded lazily (resolved to val_latent_ds at the
+    # first gated epoch, F5) — build captures it, never resolves it at build time.
+    assert cb._paired_source is ctx.datamodule
+
+
+def test_paired_fidelity_spec_resolve_fails_fast_on_unknown_knob():
+    """An unknown knob for the paired-fidelity spec fails fast at resolve."""
+    reg = _paired_registry()
+    with pytest.raises(ValueError, match="Unknown knob"):
+        reg.resolve(["paired_fidelity"], cfg={"paired_fidelity": {"bogus_knob": 1}})
+
+
+def test_paired_fidelity_spec_declares_logged_metrics():
+    """The spec declares the two metrics it logs (so they are *validatable* monitors)."""
+    assert PairedFidelitySpec.logged_metrics == frozenset({"val/psnr", "val/ssim"})
+
+
+def test_validate_monitor_accepts_psnr_and_ssim():
+    """val/psnr and val/ssim are both *valid* checkpoint monitors once the paired spec
+    is resolved (a future opt-in switch is possible) — accepted by validate_monitor."""
+    reg = _paired_registry()
+    for monitor in ("val/psnr", "val/ssim"):
+        specs = reg.resolve(
+            ["paired_fidelity", "checkpoint"], cfg={"checkpoint": {"monitor_metric": monitor}}
+        )
+        reg.validate_monitor(specs, module=None)  # must not raise
+
+
+def test_paired_fidelity_spec_keeps_checkpoint_monitor_on_x0_mae():
+    """Observe-only: resolving the paired spec does NOT hijack checkpoint selection —
+    the monitor stays val/x0_mae (logged by the hand-appended LatentX0MAE), and
+    declaring val/psnr / val/ssim as validatable does not displace it."""
+    reg = _paired_registry()
+    specs = reg.resolve(
+        ["paired_fidelity", "checkpoint"], cfg={"checkpoint": {"monitor_metric": "val/x0_mae"}}
+    )
+    reg.validate_monitor(specs, module=None, extra_callbacks=[LatentX0MAE()])  # no raise
+    ckpt = next(s for s in specs if hasattr(s, "monitor_metric"))
+    assert ckpt.monitor_metric == "val/x0_mae"
 
 
 # -- issue #161: TrainingSpine -------------------------------------------------

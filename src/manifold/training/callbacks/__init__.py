@@ -7,11 +7,14 @@
 - :class:`TrainLossSpec` — the ``train/loss_epoch`` logger spec (issue #159);
 - :class:`FIDSpec` — the ``val/fid`` generative-FID spec (issue #160);
 - :class:`CheckpointSpec` — the ``ModelCheckpoint`` spec (issue #160).
+- :class:`PairedFidelitySpec` — the observe-only in-training paired-fidelity
+  (``val/psnr`` / ``val/ssim``) spec for supervised ControlNet (ADR-0037, issue #238).
 """
 
 from manifold.training.callbacks.checkpoint import CheckpointSpec
 from manifold.training.callbacks.context import CallbackContext
 from manifold.training.callbacks.fid import FIDSpec
+from manifold.training.callbacks.paired_fidelity import PairedFidelitySpec
 from manifold.training.callbacks.registry import CallbackRegistry, CallbackSpec
 from manifold.training.callbacks.train_loss import TrainLossSpec
 
@@ -21,5 +24,6 @@ __all__ = [
     "CallbackSpec",
     "CheckpointSpec",
     "FIDSpec",
+    "PairedFidelitySpec",
     "TrainLossSpec",
 ]

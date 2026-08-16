@@ -13,11 +13,14 @@ feature extraction. ``VramStage`` encapsulates that staging/restore cycle::
         ...  # decode, extract features, reduce, log FID
     # VAE + feature_net are back on CPU here
 
-``__enter__`` snapshots the VAE CPU state before moving it, lazy-builds the
-feature_net from the factory (fail-safe), sets it to eval, and probes
-``_feat_dim``. On any exception during ``__enter__``, the VAE is restored to CPU
-before re-raising — Python does NOT call ``__exit__`` when ``__enter__`` raises,
-so cleanup must be inlined.
+The VAE stage/restore cycle is delegated to a composed
+:class:`~manifold.metrics.vae_stage.VaeStage` (the single VAE-staging implementation);
+``VramStage`` adds only the FID-specific concerns on top — the lazy feature_net
+build (fail-safe), eval-mode set, and the ``feat_dim`` probe. ``__enter__`` does the
+VAE move first (via ``VaeStage``, which snapshots the CPU state and restores on its
+own failure), then the feature_net work; on any exception during the feature_net
+work the composed ``VaeStage`` is unwound before re-raising — Python does NOT call
+``__exit__`` when ``__enter__`` raises, so cleanup must be inlined.
 """
 
 from __future__ import annotations
@@ -26,6 +29,8 @@ from typing import Callable
 
 import torch
 from torch import nn
+
+from manifold.metrics.vae_stage import VaeStage
 
 try:
     from lightning.pytorch.utilities.rank_zero import rank_zero_info
@@ -58,14 +63,27 @@ class VramStage:
         device_fn: Callable[[], torch.device],
         feat_dim: int | None = None,
     ) -> None:
-        self.vae = vae
+        # The VAE stage/restore cycle is composed (the single VAE-staging path); this
+        # stage adds only the feature_net / fid-disabled concern on top (ADR-0037).
+        self._vae_stage = VaeStage(vae, device_fn=device_fn)
         self._feature_net = feature_net
         self._feature_net_factory = feature_net_factory
-        self._device_fn = device_fn
         self.feat_dim = feat_dim
         self.fid_disabled: bool = False
-        self._staged: bool = False
-        self._vae_cpu_state: dict[str, torch.Tensor] | None = None
+
+    @property
+    def vae(self) -> nn.Module:
+        return self._vae_stage.vae
+
+    @property
+    def _staged(self) -> bool:
+        """Whether the VAE is staged (delegates to the composed ``VaeStage``).
+
+        ``FIDCallback`` reads this to decide whether a manual ``__exit__`` is needed
+        after a stage error (the error-rendezvous pattern), so it stays de-facto
+        public surface.
+        """
+        return self._vae_stage._staged
 
     @property
     def feature_net(self) -> nn.Module | None:
@@ -74,21 +92,15 @@ class VramStage:
     def __enter__(self) -> "VramStage":
         """Stage the VAE + feature_net to GPU; lazy-build the feature_net.
 
-        On any exception after ``vae.to(device)``, the VAE is restored to CPU
-        before re-raising — Python does not call ``__exit__`` when ``__enter__``
-        raises, so cleanup must be inlined here.
+        The VAE moves first (via the composed ``VaeStage``, which snapshots its CPU
+        state and restores on its own failure). On any exception during the
+        subsequent feature_net work, the composed ``VaeStage`` is unwound (VAE back
+        to CPU) before re-raising — Python does not call ``__exit__`` when
+        ``__enter__`` raises, so cleanup must be inlined here.
         """
-        device = self._device_fn()
-        # Snapshot VAE CPU state BEFORE moving it (so a partial move can be
-        # undone by load_state_dict into a fresh .to("cpu") VAE).
-        self._vae_cpu_state = {k: v.detach().clone() for k, v in self.vae.state_dict().items()}
-        # Staged flag BEFORE any fallible work: if ``vae.to(device)`` fails
-        # partway (e.g., staging OOM), ``_restore_to_cpu()`` moves any already-
-        # moved parameters back instead of being a no-op (codex #171 P2).
-        self._staged = True
+        self._vae_stage.__enter__()
+        device = self._vae_stage.device
         try:
-            self.vae.to(device)
-
             # Lazy feature_net build (fail-safe): a raising factory (bad/corrupt
             # cache, version mismatch) is caught -> feature_net stays None ->
             # FID is skipped gracefully.
@@ -120,8 +132,9 @@ class VramStage:
 
             return self
         except Exception:
-            # Cleanup on error during __enter__: restore VAE to CPU so it
-            # does not occupy training VRAM for the rest of the run.
+            # Cleanup on error during __enter__: restore the VAE to CPU (via the
+            # composed VaeStage) so it does not occupy training VRAM for the rest
+            # of the run.
             self._restore_to_cpu()
             raise
 
@@ -132,10 +145,7 @@ class VramStage:
 
     def _restore_to_cpu(self) -> None:
         """Return VAE + feature_net to CPU (free VRAM for training)."""
-        if self._staged:
-            self.vae.to("cpu")
-            if self._vae_cpu_state is not None:
-                self.vae.load_state_dict(self._vae_cpu_state)
+        if self._vae_stage._staged:
+            self._vae_stage._restore_to_cpu()
             if self._feature_net is not None:
                 self._feature_net.to("cpu")
-            self._staged = False
