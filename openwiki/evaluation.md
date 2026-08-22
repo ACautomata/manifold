@@ -1,36 +1,40 @@
 ---
 type: Playbook
 title: Before/after GRPO evaluation
-description: Shipped workflow and source map for manifold-eval, the same-noise before/after GRPO comparison, 3D paired-fidelity scoring, slice-grid output, and the self-contained comparison page builder. Also records the accepted but not yet implemented in-training paired-fidelity monitor.
-tags: [evaluation, grpo, fidelity, psnr, ssim, console-entrypoint, reporting]
+description: Runtime and source map for the active in-training paired-fidelity monitor and the shipped manifold-eval same-noise before/after workflow, including 3D PSNR/SSIM, slice grids, and the self-contained comparison page builder.
+tags: [evaluation, grpo, fidelity, psnr, ssim, console-entrypoint, reporting, in-training-monitor]
 openwiki:
   roles: [integration, operations, testing, workflow]
   change_kinds: [public-api, public-entrypoint, persistence, metrics]
-  source_paths: [src/manifold/eval/cli.py, src/manifold/eval/before_after.py, src/manifold/eval/slice_grid.py, src/manifold/metrics/paired.py, src/manifold/eval/comparison_page.py, src/manifold/pipelines/pipeline_utils.py, pyproject.toml]
-  symbols: [BeforeAfterEval, PairedFidelityMetrics, ComparisonPageBuilder, min_max_to_unit]
-  test_paths: [tests/test_before_after_eval.py, tests/test_eval_cli.py, tests/test_comparison_page.py, tests/test_paired_fidelity.py]
+  source_paths: [src/manifold/eval/cli.py, src/manifold/eval/before_after.py, src/manifold/eval/slice_grid.py, src/manifold/eval/comparison_page.py, src/manifold/metrics/paired.py, src/manifold/metrics/paired_callback.py, src/manifold/metrics/vae_stage.py, src/manifold/metrics/metric_plot_callback.py, src/manifold/training/callbacks/paired_fidelity.py, src/manifold/training/controlnet_cli.py, src/manifold/pipelines/pipeline_utils.py, pyproject.toml]
+  symbols: [BeforeAfterEval, PairedFidelityMetrics, PairedFidelityCallback, PairedFidelitySpec, VaeStage, ComparisonPageBuilder, min_max_to_unit]
+  test_paths: [tests/test_before_after_eval.py, tests/test_eval_cli.py, tests/test_comparison_page.py, tests/test_paired_fidelity.py, tests/test_paired_fidelity_callback.py, tests/test_callback_registry.py, tests/test_paired_fidelity_ddp.py]
   invariants:
-    - The before and after pipelines receive identical initial noise and conditioning for each evaluation seed.
+    - The in-training monitor uses the same fixed validation pairs, full Heun rollout, decode, normalization, and 3D metric contract as the offline comparison.
     - Paired PSNR and SSIM compare per-volume normalized decoded targets in image space with data range 1.0.
-    - The policy is inferred from the before native artifact rather than supplied through a mode flag.
-    - The in-training paired-fidelity monitor remains observe-only and does not select checkpoints or contribute loss.
-  validation_commands: [pytest tests/test_paired_fidelity.py tests/test_before_after_eval.py tests/test_eval_cli.py tests/test_comparison_page.py -q]
+    - The in-training callback is observe-only by default: it does not contribute loss or optimizer gradients, and the supervised checkpoint monitor remains val/x0_mae.
+    - DDP runs the same small fixed subset redundantly on every rank and synchronizes the two metrics through Lightning; it does not shard the subset.
+    - The offline policy is inferred from the before native artifact rather than supplied through a mode flag.
+  validation_commands: [pytest tests/test_paired_fidelity.py tests/test_before_after_eval.py tests/test_eval_cli.py tests/test_comparison_page.py -q, pytest tests/test_paired_fidelity_callback.py tests/test_callback_registry.py -q]
 ---
 
 # Before/after GRPO evaluation
 
 ## When to use this page
 
-Consult this page when adding or changing the shipped `manifold-eval` entry point, a paired-fidelity scalar, the before/after eval driver, evaluation artifacts, or the report builder. The evaluation workflow composes the [checkpoint-to-native export contract](workflows.md#checkpoint-and-export-contract) and is structurally dependent on the persisted `model_index.json` contract documented in [Architecture and source map](architecture.md#configuration-and-persistence).
+Consult this page when adding or changing either paired-fidelity lifecycle: the default-on observe-only monitor during supervised ControlNet training, or the shipped `manifold-eval` before/after workflow. It covers the [training callback surface](callback-registry.md#paired-fidelity-shipped-surface), composes the [checkpoint-to-native export contract](workflows.md#checkpoint-and-export-contract), and depends on the persisted `model_index.json` contract documented in [Architecture and source map](architecture.md#configuration-and-persistence).
 
-The subsystem has four layers:
+The subsystem has seven ownership layers:
 
-1. `src/manifold/eval/cli.py` owns the `manifold-eval` console entry and infers the policy from the before native artifact.
-2. `src/manifold/eval/before_after.py` owns the policy-agnostic same-noise generation, decode, normalization, scoring, and grid-writing flow.
-3. `src/manifold/metrics/paired.py` owns the MONAI-backed 3D PSNR/SSIM metric for ControlNet pairs.
-4. `src/manifold/eval/comparison_page.py` turns the written metrics and PNGs into a self-contained HTML report. It is library-only, not a console command.
+1. `src/manifold/metrics/paired_callback.py` owns the in-training hook: fixed-subset selection, seeded full rollout, decode, normalization, and metric logging.
+2. `src/manifold/training/callbacks/paired_fidelity.py` owns the registry spec and its config/runtime seam.
+3. `src/manifold/training/controlnet_cli.py` enables the callback by default and injects the supervised module, VAE, datamodule, and rollout recipe.
+4. `src/manifold/eval/cli.py` owns the `manifold-eval` console entry and infers the offline policy from the before native artifact.
+5. `src/manifold/eval/before_after.py` owns the policy-agnostic same-noise generation, decode, normalization, scoring, and grid-writing flow.
+6. `src/manifold/metrics/paired.py` owns the shared MONAI-backed 3D PSNR/SSIM metric used by both lifecycles.
+7. `src/manifold/eval/comparison_page.py` turns the written metrics and PNGs into a self-contained HTML report. It is library-only, not a console command.
 
-The public `manifold.eval` barrel exports `BeforeAfterEval`, `BeforeAfterResult`, `SliceGrid`, `ComparisonPageBuilder`, `JitComparison`, and `ControlNetComparison` from `src/manifold/eval/__init__.py`. The only shipped console surface is `manifold-eval`, registered in `pyproject.toml` as `manifold-eval = "manifold.eval.cli:main"`.
+`PairedFidelityCallback` and `VaeStage` are exported from `manifold.metrics`; `PairedFidelitySpec` is exported from `manifold.training.callbacks`. There is no second generated or publish mirror. The public `manifold.eval` barrel exports `BeforeAfterEval`, `BeforeAfterResult`, `SliceGrid`, `ComparisonPageBuilder`, `JitComparison`, and `ControlNetComparison`; the only offline console surface is `manifold-eval = "manifold.eval.cli:main"` in `pyproject.toml`.
 
 ## Runtime flow
 
@@ -67,6 +71,87 @@ The driver creates a same-noise contract in two ways:
 - **ControlNet / paired:** one noise tensor is drawn for the batch and passed to both `sample_latent` calls. The source latent, real target latent, spacing, contrast labels, and Heun step count stay fixed.
 
 This makes differences attributable to the policy weights rather than random sampling. `BeforeAfterEval` is intentionally injectable: callers can replace its `fidelity` scorer or `grid` renderer, and the CLI can replace real ControlNet data loading with `pairs_provider` in focused smoke tests.
+
+## Active in-training paired-fidelity monitor
+
+`manifold-train-controlnet` enables `PairedFidelitySpec` by default. The callback
+runs at `on_validation_epoch_end` on every gated validation epoch; a CLI/YAML
+`callbacks` override can still remove it. It is a training observation loop, not
+an extra call to `manifold-eval` and not a new checkpoint selector.
+
+```mermaid
+sequenceDiagram
+    participant Registry as Callback registry
+    participant Hook as Validation hook
+    participant Data as Paired validation data
+    participant Module as ControlNet module
+    participant VAE as VaeStage and frozen VAE
+    participant Metric as Paired metric
+    participant Plot as Metrics plot callback
+
+    Registry->>Hook: Build callback with module VAE data and recipe
+    Hook->>Data: Cache seeded fixed subset
+    Data-->>Hook: Source target pairs and conditions
+    Hook->>Module: Run full rollout with fresh seeded noise
+    Module-->>Hook: Return generated target latent
+    Hook->>VAE: Decode and restore VAE
+    VAE-->>Hook: Generated and real volumes
+    Hook->>Metric: Normalize and compute PSNR and SSIM
+    Metric-->>Hook: Batch scores
+    Hook->>Plot: Log synchronized MeanMetrics
+```
+
+*Figure: The active training monitor resolves a fixed paired validation batch once, runs the full ControlNet rollout, reuses the VAE and paired metric, and records observe-only validation metrics.*
+
+The lifecycle ordering and invariants are:
+
+1. **Resolve data late.** `PairedFidelityCallback` receives the datamodule, not a
+   concrete dataset. At the first gated epoch it resolves
+   `datamodule.val_latent_ds` when present, so both the cold `_DedupValDataModule`
+   and `PairedWarmDataModule` point at the post-setup held-out paired cache.
+2. **Cache one fixed subset.** A generator seeded by `seed` chooses
+   `min(subset_size, len(dataset))` indices. `default_collate` produces one
+   source/target batch, and that exact cached batch is reused on later gated
+   epochs. Only the model changes.
+3. **Generate with fresh fixed noise.** Noise has the real target's batched shape,
+   module dtype, and base-UNet device. `ControlNetLatentFlowModule.sample` uses the
+   full ControlNet Heun rollout, so this is not the one-step proxy rejected by
+   ADR-0037. Re-seeding each monitored epoch prevents sampler-state drift.
+4. **Stage and decode the same VAE.** `VaeStage` snapshots the VAE CPU state,
+   moves it to the base UNet's device, and restores state plus CPU placement on
+   exit or enter failure. `LatentDecoder` disables MAISI `norm_float16`, and
+   `VramStage` composes the same `VaeStage` for FID decode.
+5. **Normalize and score in image space.** Generated and real volumes each pass
+   through `min_max_to_unit`, then `PairedFidelityMetrics(..., data_range=1.0)`.
+   The callback resets its two module-attached `MeanMetric`s before the single
+   batch update and logs `val/psnr` and `val/ssim`.
+6. **Keep the default observe-only.** `run_controlnet_training` keeps
+   `val/x0_mae` for `ModelCheckpoint`; the callback adds no loss or optimizer
+   gradient. Registry validation accepts either PSNR or SSIM as a monitor because
+   the spec declares `logged_metrics`, but an explicit checkpoint override would
+   intentionally leave ADR-0037's default contract.
+
+`controlnet.num_inference_steps` is recipe-primary (15 Heun steps by default;
+29 model evaluations). `PairedFidelitySpec` can override it, while
+`subset_size`, `every_n_epochs`, and `seed` default to 8, 1, and 0. Programmatic
+callers can pass these under `callback_cfg["paired_fidelity"]`; the current
+shipped `main()` only forwards the recipe's rollout count, as recorded in the
+[Quickstart backlog](quickstart.md#backlog).
+
+Under DDP, every rank evaluates the same fixed subset and seed redundantly. The
+only monitor-specific reduction is Lightning's synchronization of the two
+module-attached `MeanMetric`s: DDP-synchronized weights, paired inputs, and noise
+produce identical local scores. The small subset is deliberately not sharded;
+sharding it would change the collective lifecycle and the current contract. The
+2-rank proof checks no deadlock, equal local and synchronized values, finite
+metrics, and preservation of the `val/x0_mae` checkpoint monitor.
+
+`MetricsPlotCallback` automatically groups `val/psnr` and `val/ssim` into their
+own small multiples and reads them from Lightning's `metrics.csv`. Its
+`on_train_epoch_end` image lags validation metrics by one epoch because Lightning
+flushes epoch metrics afterward; `on_fit_end` is the complete render. It ignores
+non-finite points, so a legitimate `+inf` PSNR remains in Lightning logs but is
+not a plotted data point.
 
 ## Policy dispatch and artifact contract
 
@@ -133,20 +218,22 @@ Unlike unconditional JiT evaluation, paired fidelity is full-reference: it requi
 
 The page deliberately explains the metric split: JiT is reference-free and uses FID, while ControlNet has a real target and uses PSNR/SSIM. If a ControlNet eval directory is not supplied, the builder emits a clearly marked pending slot rather than inventing a comparison. This API is imported from `manifold.eval`; unlike `manifold-eval`, it is not registered in `[project.scripts]`.
 
-## Accepted in-training monitor: planned, not active
+### The two paired-fidelity lifecycles are complementary
 
-ADR-0037 corrects ADR-0036's training-era silence by accepting an observe-only paired-fidelity monitor. The current tree does **not** yet implement this monitor. Supervised ControlNet validation still logs only the fast latent `val/x0_mae`, and no `PairedFidelityMetrics` training callback is registered.
+The active in-training monitor and `manifold-eval` share `LatentDecoder`,
+`min_max_to_unit`, and `PairedFidelityMetrics`, but they answer different questions
+and have different lifecycles:
 
-The accepted extension seam is explicit:
+| Concern | In-training monitor | Offline `manifold-eval` |
+|---|---|---|
+| Policy snapshot | Current supervised ControlNet at each gated validation epoch | Separate before export and post-GRPO after export |
+| Pairing | One cached fixed-subset batch; fresh seeded noise per monitored epoch | Before/after pairs held under identical noise and conditions |
+| Output | `val/psnr`, `val/ssim`; no loss or checkpoint selection | `metrics.json`, 2.5D slice grids, and optional HTML comparison |
+| DDP | Small subset redundantly evaluated on every rank | Native pipelines are reloaded; no monitor subset is sharded |
 
-1. Register a new callback spec and exported class under `src/manifold/training/callbacks/`.
-2. Register the spec in the supervised `manifold-train-controlnet` callback set and pass a real inference recipe into `CallbackContext`; the current context deliberately passes `inference_recipe=None`.
-3. On a fixed paired validation subset, run the module's `controlnet_rollout`, VAE-decode through the existing `VramStage` and `LatentDecoder`, normalize through `min_max_to_unit`, and score with `PairedFidelityMetrics`.
-4. Gate cadence with the existing `every_n_epochs` idiom and log `val/psnr` and `val/ssim`.
-5. Keep these values observe-only: checkpoint selection remains `val/x0_mae`, and fidelity contributes no loss or gradient.
-6. Add the follow-up to ControlNet-GRPO as a separate change; only unconditional FID is forbidden there. Paired rollout uses the trainable ControlNet, so the FID rationale does not apply.
-
-Treat ADR-0037 as the behavioral contract while this code is absent. Do not add a spec name, metric log, monitor behavior, or test claim to existing registry tables until the corresponding callback is implemented. The registry-specific extension recipe is in [Callback registry and training spine](callback-registry.md#change-guidance).
+Do not route one through the other. The in-training callback is the per-epoch drift
+screen; ADR-0036's before/after comparison remains the checkpoint-to-checkpoint
+fidelity evaluation of record.
 
 ## Change guidance
 
@@ -166,23 +253,46 @@ Treat `BeforeAfterResult.metrics` and the persisted JSON/PNG layout as the sourc
 
 Register the callable in `pyproject.toml` and ensure the executable is exercised from a real subprocess or equivalent installed-command smoke, not only an in-process import. For `manifold-eval`, retain `main(argv=None)` as the consumer seam and keep the before-artifact policy inference free of a mode flag.
 
-### Implement the in-training paired-fidelity monitor
+### Change the active in-training monitor
 
-Complete every layer of the public callback seam: the callback implementation and spec, `callbacks/__init__.py`, `CallbackRegistry` registration in `controlnet_cli.py`, the supervised CLI's `inference_recipe`/`VramStage` wiring, `metric_plot_callback`'s CSV-metric rendering, monitor and checkpoint policy, and focused registry/module/DDP tests. Update the [callback registry](callback-registry.md#change-guidance) only when those symbols exist in source. The ControlNet-GRPO extension remains a separate follow-up with its own lifecycle and tests.
+Keep the shipped surfaces synchronized: `PairedFidelityCallback`,
+`PairedFidelitySpec`, their public barrels, `controlnet_cli.py` registration and
+`CallbackContext`, the shared `VaeStage`/metric/decode helpers, the lazy
+`val_latent_ds` accessor, automatic metric plotting, and the checkpoint default.
+A change to subset execution, cadence, generation noise, or global reduction
+needs both callback-level behavior tests and `tests/test_paired_fidelity_ddp.py`.
+Keep ControlNet-GRPO out of this change unless its own ADR/ticket accepts the
+extension; the current spec is deliberately supervised-stage-only.
 
 ## Focused tests and minimal validation
 
 | Behavior | Existing test anchor |
 |---|---|
 | Metric identity, known PSNR, perturbation monotonicity, 3D input, and shape rejection | `tests/test_paired_fidelity.py` |
+| In-training fixed subset, cadence, metric reset, normalization wiring, inference mode, and observe-only behavior | `tests/test_paired_fidelity_callback.py` |
+| `PairedFidelitySpec` knobs, runtime injection, recipe-primary rollout count, monitor declaration, and checkpoint default | `tests/test_callback_registry.py` |
+| Shared VAE stage/restore and enter-failure cleanup | `tests/test_fid_helpers.py` |
+| 2-rank DDP no-deadlock, rank-local equality, synchronized metrics, and `val/x0_mae` checkpoint preservation | `tests/test_paired_fidelity_ddp.py` |
 | JiT and ControlNet same-seed/same-pipeline identity, normalization, paired columns, scores, and reproducible grids | `tests/test_before_after_eval.py` |
 | Console policy routing, after-export weight bake, held-out data loading, and required inputs | `tests/test_eval_cli.py` |
 | Self-contained HTML, metric explanation, curves, grids, pending slot, and output file | `tests/test_comparison_page.py` |
 
-Run the full focused evaluation surface with:
+Run the offline surface with:
 
 ```bash
 pytest tests/test_paired_fidelity.py tests/test_before_after_eval.py tests/test_eval_cli.py tests/test_comparison_page.py -q
 ```
 
-For a fast first pass, run `pytest tests/test_paired_fidelity.py tests/test_before_after_eval.py -q`; the CLI and report-builder tests are still required when crossing the installed console or artifact/presentation boundary. Also consult [Operations and testing](operations-and-testing.md#standard-checks) for the repository test matrix and the conditions that make broader DDP or packaging checks necessary.
+Run the active in-training callback surface with:
+
+```bash
+pytest tests/test_paired_fidelity_callback.py tests/test_callback_registry.py tests/test_fid_helpers.py tests/test_controlnet_cli.py -q
+```
+
+Run `pytest tests/test_paired_fidelity_ddp.py -q` when changing the monitor's
+DDP execution, metric synchronization, fixed subset, or checkpoint interaction.
+The CLI and report-builder tests remain required when crossing the installed
+console or artifact/presentation boundary. Also consult
+[Operations and testing](operations-and-testing.md#standard-checks) for the
+repository test matrix and the conditions that make broader DDP or packaging
+checks necessary.

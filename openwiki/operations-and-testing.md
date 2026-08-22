@@ -21,8 +21,8 @@ For focused changes, start with the nearest tests:
 | Config and training orchestration | `tests/test_config.py`, `test_training_cli.py`, `test_controlnet_cli.py`, `test_training.py` |
 | Data, warming, and split isolation | `tests/test_data.py`, `test_paired_latent_cache.py`, `test_paired_manifests.py`, `test_ddp_warm.py`, `test_controlnet_warm_defer.py` |
 | Scheduler/module/pipeline behavior | `tests/test_scheduler.py`, `test_module_training.py`, `test_pipeline_inference.py`, `test_controlnet_module_training.py`, `test_controlnet_pipeline_inference.py` |
-| FID and image metrics | `tests/test_fid.py`, `test_fid_helpers.py`, `test_paired_fidelity.py`, `test_metric_plot.py` |
-| Distributed validation | `tests/test_ddp.py`, `test_ddp_detection.py`, `test_ddp_metrics.py`, `test_ddp_val_honesty.py`, `test_controlnet_ddp_monitor.py` |
+| FID, paired fidelity, and image metrics | `tests/test_fid.py`, `test_fid_helpers.py`, `test_paired_fidelity.py`, `test_paired_fidelity_callback.py`, `test_callback_registry.py`, `test_metric_plot.py` |
+| Distributed validation | `tests/test_ddp.py`, `test_ddp_detection.py`, `test_ddp_metrics.py`, `test_ddp_val_honesty.py`, `test_controlnet_ddp_monitor.py`, `test_paired_fidelity_ddp.py` |
 | Reward and policy learning | `tests/test_reward.py`, `test_reward_pairs.py`, `test_grpo.py`, `test_controlnet_module_training.py` |
 | Callback registry and training spine | `tests/test_callback_registry.py`, plus the registry / monitor / `forbidden_callbacks` assertions in `test_training_cli.py` |
 | Frozen-arm contract (register + dual-exclude) | `tests/test_frozen_arm_mixin.py`, `tests/test_controlnet_module_training.py::test_base_is_registered_but_dual_excluded` |
@@ -39,7 +39,7 @@ ADR-0025 supersedes ADR-0016. Current behavior is:
 - **Latent-space x0-MAE (`val/x0_mae`):** every rank computes the cheap reconstruction-MAE on its `DistributedSampler` shard through `LatentX0MAE` (`src/manifold/training/metrics.py`), which attaches a `torchmetrics.MeanMetric` to the module (sample-weighted) so Lightning's DDP reduction produces the true global mean.
 - **FID:** synthetic and real examples are rank-strided. Each plane reduces sufficient statistics `(sum_x, sum_xxT, n)`, reconstructs global moments, and computes unbiased FID without gathering feature matrices. Empty local shards contribute zero statistics; only the global count must be at least two.
 - **GRPO reward:** every rank validates and logs `val/mean_reward` with `sync_dist=True`.
-- **Checkpoint monitors:** configured `val/fid`, `val/x0_mae`, and `val/mean_reward` monitors remain global under DDP. ADR-0037 accepts an in-training paired `val/psnr` / `val/ssim` observer, but no such callback is active yet; when implemented, it must log under synchronized global reduction without entering `monitor_metric` or the loss. The shipped offline comparison instead uses `BeforeAfterEval` + `PairedFidelityMetrics` for a deterministic seed. See [Before/after GRPO evaluation](evaluation.md#accepted-in-training-monitor-planned-not-active).
+- **Paired fidelity monitor:** supervised ControlNet enables the paired callback by default. Every rank redundantly rolls the same seeded fixed subset, `VaeStage` restores the decode VAE to its pre-stage CPU state, and module-attached `MeanMetric`s synchronize `val/psnr` / `val/ssim`. It does not shard the subset, enter the loss, or replace the default `val/x0_mae` monitor; registry validation does accept PSNR/SSIM for an explicit opt-in checkpoint override. The offline comparison remains a separate deterministic seed through `BeforeAfterEval` + `PairedFidelityMetrics`. See the [active in-training monitor](evaluation.md#active-in-training-paired-fidelity-monitor).
 
 Key implementations are `src/manifold/metrics/fid/`, `src/manifold/modules/grpo.py`, and the training callback/CLI paths in `src/manifold/training/`.
 
@@ -71,6 +71,48 @@ pytest tests/test_paired_fidelity.py tests/test_before_after_eval.py tests/test_
 ```
 
 Conditional integration check: if a `pyproject.toml` console entry, package barrel, hatch artifact, or installed `manifold-eval` import path changes, build/install the wheel and run the CLI `main(argv)` smoke rather than relying only on the internal tests. This repository has no generated publish mirror or second eval entry point; the hatch package mirror is derived from `pyproject.toml`.
+
+## In-training paired monitor runbook
+
+The paired monitor is default-on for `manifold-train-controlnet`, so inspect its
+cost before short runs or broad DDP sweeps. It executes the same full Heun
+rollout on the complete fixed subset on every rank, then performs VAE decode
+and MONAI 3D SSIM; the VAE occupies the training device only inside `VaeStage`.
+
+- Defaults are 8 pairs, every validation epoch, 15 rollout steps, and seed 0.
+  The shipped CLI reads `controlnet.num_inference_steps` into the callback. Set
+  `every_n_epochs` above 1 through the programmatic `callback_cfg` seam to
+  reduce cadence; the current console main does not read the other monitor
+  knobs from its recipe, as tracked in the [Quickstart backlog](quickstart.md#backlog).
+- The real CLI supplies the VAE and paired data module. A custom programmatic
+  caller must provide a `ControlNetInputs.vae` and a datamodule whose
+  `val_latent_ds` is the held-out paired latent dataset.
+- A callback-name override can remove `paired_fidelity`, but removing the
+  `checkpoint` name is not allowed. Keep `"train_loss", "checkpoint",
+  "paired_fidelity"` unless intentionally testing a callback-registration seam.
+- The two logged values are observe-only by default. They appear in Lightning
+  metrics, `metrics.csv`, and the automatic small-multiple plot. Legitimate
+  `+inf` PSNR remains logged but is omitted by `MetricsPlotCallback` because
+  the plot reads finite values only; the `on_fit_end` plot is authoritative,
+  while the per-epoch render can lag validation flushing by one epoch.
+- Do not shard the subset under DDP. The current redundant-execution contract
+  assumes identical fixed inputs, seed, and synchronized weights, with
+  Lightning's `MeanMetric` sync as the only monitor-specific reduction.
+
+Focused CPU/unit checks:
+
+```bash
+pytest tests/test_paired_fidelity_callback.py tests/test_callback_registry.py tests/test_fid_helpers.py tests/test_controlnet_cli.py -q
+```
+
+Run the 2-rank smoke when changing any of those assumptions:
+
+```bash
+pytest tests/test_paired_fidelity_ddp.py -q
+```
+
+The latter is conditional because it is a multi-process integration check, not
+part of the default first pass.
 
 ## Distributed validation runbook
 
@@ -110,6 +152,7 @@ The "Sl + log stalled" triad alone is insufficient; do not act on it without con
 - A one-sample local shard is valid and must contribute its first/second-order sums; covariance validity is checked only after global reduction.
 - Do not combine manual `all_reduce` with `sync_dist=True` for the same value.
 - Preserve rank-strided FID seeds (`seed + global_index`) so the distributed sample union matches the requested global sample count rather than multiplying it by world size.
+- Preserve the paired monitor's all-rank redundant subset. Do not add a manual local `all_reduce` or shard the inputs, either of which would change the collective contract; its module-attached `MeanMetric`s own synchronization.
 
 These cases are covered principally by `tests/test_fid.py`, `test_ddp_metrics.py`, and `test_ddp_val_honesty.py`.
 
@@ -117,7 +160,7 @@ These cases are covered principally by `tests/test_fid.py`, `test_ddp_metrics.py
 
 - Noise-to-data production validation is disabled unless a held-out source is wired; the code refuses train-as-validation leakage. In that case checkpointing falls back to periodic/last rather than monitored FID.
 - ControlNet-supervised validation (`manifold-train-controlnet`) should use a nonzero subject-level `val_fraction` (the recipe default is `0.2`); `0` permits a train-as-validation fallback and is not an honest generalization estimate. The shared splitter lives in `src/manifold/data/paired_manifests.py` and supports a native-split directory when `env.val_data_base_dir` is a real BraTS directory.
-- FID callbacks and `BeforeAfterEval` decode in float32 with MAISI `norm_float16` disabled. Before/after evaluation then applies the same per-volume `min_max_to_unit` convention as the ControlNet pipeline and scores PSNR/SSIM with `data_range=1.0`.
+- FID callbacks, the in-training paired monitor, and `BeforeAfterEval` decode in float32 with MAISI `norm_float16` disabled. Both fidelity paths apply per-volume `min_max_to_unit` and `data_range=1.0`; the in-training path uses `VaeStage`, while FID's `VramStage` composes that same stage.
 - Current metrics and native exports use raw optimizer weights. Remove references to EMA arms from automation and dashboards.
 - Export uses full-state deserialization; only process checkpoints produced by a trusted run.
 

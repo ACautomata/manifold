@@ -1,7 +1,7 @@
 ---
 type: Reference
 title: Callback registry and training spine
-description: CallbackRegistry two-phase resolve/build, the spec contract, and TrainingSpine as the single caller that composed the five training CLIs (ADR-0029 + ADR-0032).
+description: CallbackRegistry two-phase resolve/build, the active paired-fidelity spec, and TrainingSpine as the single training callback composition point (ADR-0029, ADR-0032, ADR-0037).
 tags: [callbacks, registry, training-spine, ADR-0029, ADR-0032]
 ---
 
@@ -45,11 +45,11 @@ expose:
 
 ## Two-phase construction
 
-ADR-0029 splits spec instantiation from callback construction because
-generative callbacks such as FID need runtime objects (the VAE, inference
-recipe, and feature network) that do not exist at config resolution. ADR-0037
-accepts the same construction shape for an in-training paired PSNR/SSIM
-callback, but no PSNR/SSIM spec is registered yet.
+ADR-0029 splits spec instantiation from callback construction because generative
+callbacks need runtime objects that do not exist at config resolution. FID injects
+the VAE, feature network, and sampling recipe; the supervised ControlNet
+`PairedFidelitySpec` injects the module, VAE, and datamodule plus the recipe-primary
+rollout step count.
 
 - **`CallbackRegistry.resolve(names, cfg)` (config-time)** — validates the
   requested name list and the per-name knob dict, then returns constructed spec
@@ -93,6 +93,7 @@ below) and behind the `tests/test_callback_registry.py` monitor tests.
 |---|---|---|---|
 | `TrainLossSpec` | (none) | `pl.Callback` logging `train/loss_epoch` | `frozenset({"train/loss_epoch"})` |
 | `FIDSpec` | `num_synth`, `cache_dir`, `device`, `feature_net_factory` (mostly defaults) | `FIDCallback` (rank-strided, lazy feature-net) | `frozenset({"val/fid"})` |
+| `PairedFidelitySpec` | `subset_size=8`, `every_n_epochs=1`, `num_inference_steps=None`, `seed=0` | `PairedFidelityCallback` (fixed-subset, observe-only ControlNet monitor) | `frozenset({"val/psnr", "val/ssim"})` |
 | `CheckpointSpec` | `monitor_metric`, `save_top_k`, `save_last`, `every_n_epochs`, `mode`, `filename` | `pl.callbacks.ModelCheckpoint` (monitored vs unmonitored two branches) | n/a (`validate_monitor` reads `monitor_metric` defensively) |
 
 `CheckpointSpec.build` reproduces the prior `_build_checkpoint` two-branch
@@ -103,6 +104,29 @@ tracks `monitor_metric` top-`k` plus last. The `filename` default picks
 `unet3d-{epoch:03d}-{step}` for the unmonitored path
 (`src/manifold/training/callbacks/checkpoint.py`).
 
+### Paired-fidelity shipped surface
+
+`PairedFidelityCallback` is public from `manifold.metrics`, while
+`PairedFidelitySpec` is public from `manifold.training.callbacks`; there is no
+second generated or publish mirror. The shipped path is
+`src/manifold/training/controlnet_cli.py`: it registers the spec, appends
+`"paired_fidelity"` after `"train_loss"` and `"checkpoint"` in the default
+name list, and builds `CallbackContext` with the module, VAE, datamodule, model
+directory, seed, and `{"num_inference_steps": controlnet.num_inference_steps}`.
+`main()` therefore enables the monitor unless `--callbacks` or a YAML callback
+name list replaces the defaults.
+
+The spec's `subset_size`, `every_n_epochs`, and `seed` knobs, plus an optional
+`num_inference_steps` override, are resolved through the registry. Programmatic
+callers of `run_controlnet_training(..., callback_cfg=...)` can pass a
+`paired_fidelity` mapping directly. In the current shipped `main()`,
+`controlnet.num_inference_steps` is read into the context and therefore takes
+effect, but the other monitor keys are not copied from the composed recipe;
+track that wiring gap in the [Quickstart backlog](quickstart.md#backlog) unless
+CLI support is intended. The default checkpoint still monitors
+`val/x0_mae`; `validate_monitor` merely accepts `val/psnr` and `val/ssim` as
+explicit opt-in monitors.
+
 ## TrainingSpine.run — the merge order
 
 `TrainingSpine.run` is a single method, parameterized by named arguments rather
@@ -110,9 +134,9 @@ than a per-shell subclass (composition, not inheritance — the project's OOP
 rule). The merge order is:
 
 1. Start from `default_names` (the per-shell dynamic default callback list,
-   derived by the CLI from the resolved mode — e.g. the GRPO ControlNet path
-   starts with `["train_loss", "fid", "checkpoint"]`, the reward shell with
-   `["train_loss", "checkpoint"]`).
+   derived by the CLI from the resolved mode — e.g. the supervised ControlNet path
+   starts with `["train_loss", "checkpoint", "paired_fidelity"]`, the reward
+   shell with `["train_loss", "checkpoint"]`).
 2. `callback_cfg` knob dicts are applied to whatever specs resolve from those
    names.
 3. `callback_names_override` **replaces** the name list entirely (the CLI
@@ -173,13 +197,16 @@ ADR-0032).
   `spine.registry.register(...)` block, and add a `train_loss`-style logger
   callback if it logs a monitored metric. Compose `CallbackContext` if the
   spec needs a runtime object not already in the bag.
-- **Implementing ADR-0037:** add the fixed-subset paired callback and spec,
-  pass `CallbackContext.inference_recipe` to the supervised CLI, use the
-  shared `min_max_to_unit` + `PairedFidelityMetrics` path, and keep
-  `val/psnr` / `val/ssim` observe-only. Do not make either scalar a checkpoint
-  monitor, loss term, or a path for the ControlNet-GRPO stage until its
-  separate follow-up is accepted. The full extension surface is tracked in
-  [Before/after GRPO evaluation](evaluation.md#accepted-in-training-monitor-planned-not-active).
+- **Changing the in-training monitor:** keep the callback, spec, both package
+  barrels, supervised CLI registration/defaults, `CallbackContext` fields, and
+  tests synchronized. Reuse `LatentDecoder`, `min_max_to_unit`,
+  `PairedFidelityMetrics`, and `VaeStage` rather than rebuilding a second decode
+  path. Preserve the fixed-subset cache, fresh seeded noise, epoch reset,
+  inference mode, and observe-only default. Changing global reduction or
+  subset execution requires `tests/test_paired_fidelity_ddp.py`; extending the
+  same callback to ControlNet-GRPO remains outside this spec. The runtime
+  contract and accepted behavior are in
+  [Before/after GRPO evaluation](evaluation.md#active-in-training-paired-fidelity-monitor).
 - **Renaming a knob:** rename the dataclass field. `resolve` will start
   rejecting the old name in any recipe that still uses it — that loud
   `ValueError` is the contract's signal that all recipe sites need an update.
@@ -197,7 +224,9 @@ ADR-0032).
 
 - Spec contract + registry: `src/manifold/training/callbacks/registry.py`
 - Runtime objects bag: `src/manifold/training/callbacks/context.py`
-- Built-in specs: `src/manifold/training/callbacks/{train_loss,fid,checkpoint}.py`
+- Built-in specs: `src/manifold/training/callbacks/{train_loss,fid,paired_fidelity,checkpoint}.py`
+- Public callback implementation: `src/manifold/metrics/paired_callback.py`
+- Shared VAE staging: `src/manifold/metrics/vae_stage.py` (`VramStage` composes this)
 - Spec barrel: `src/manifold/training/callbacks/__init__.py`
 - Spine implementation: `src/manifold/training/core.py`
 - CLI callers:
@@ -220,14 +249,28 @@ ADR-0032).
   — codex #170 P2
 - `tests/test_callback_registry.py::test_training_spine_forbidden_callbacks_force_removed_post_merge`,
   `test_training_spine_forbidden_monitor_raises` — ADR-0032 forbidden guards
+- `tests/test_callback_registry.py::test_paired_fidelity_spec_*` — spec knobs,
+  runtime injection, recipe-primary rollout count, and monitor validation
+- `tests/test_paired_fidelity_callback.py` — fixed subset, cadence, reset,
+  normalization, metric wiring, inference mode, and observe-only contract
+- `tests/test_fid_helpers.py::test_vae_stage_*` — VAE state/device restore and
+  enter-failure cleanup
+- `tests/test_paired_fidelity_ddp.py` — conditional 2-rank no-deadlock and
+  rank-consistency proof
 - `tests/test_training_cli.py::test_*` covering CLI × spine integration
 
 ## Minimal validation
 
 ```bash
-pytest tests/test_callback_registry.py -q
+pytest tests/test_callback_registry.py tests/test_paired_fidelity_callback.py -q
 ```
 
 For a knob rename that touches one spec, also run that CLI's focused tests
 (reward → `test_reward_cli.py`, JiT → `test_training_cli.py`, GRPO →
-`test_grpo_cli.py` if present, ControlNet → `test_controlnet_cli.py`).
+`test_grpo_cli.py` if present, ControlNet → `test_controlnet_cli.py`). The
+paired-fidelity DDP test is conditional on changing its redundant execution,
+cadence, or reduction behavior:
+
+```bash
+pytest tests/test_paired_fidelity_ddp.py -q
+```

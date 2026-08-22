@@ -44,6 +44,13 @@ chose the opposite direction: **register** the frozen arm as a normal
 `nn.Module` submodule so Lightning owns its device placement, and **dual-exclude**
 it from the optimizer and the checkpoint through targeted overrides.
 
+That registered base is also the device anchor for the supervised ControlNet
+paired-fidelity monitor: `PairedFidelityCallback` reads the frozen base UNet's
+parameter device before moving the VAE through `VaeStage`. A break in the
+register + dual-exclude contract therefore affects monitor staging as well as
+checkpoint exports; follow the [active monitor lifecycle](evaluation.md#active-in-training-paired-fidelity-monitor)
+when changing the host module.
+
 ### The mixin contract
 
 ```python
