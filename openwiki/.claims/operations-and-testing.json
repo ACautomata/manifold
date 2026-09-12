@@ -1,0 +1,24 @@
+{
+  "schemaVersion": 1,
+  "pageVersion": "sha256:cdebec6914848c6c63422faa5ca9495c64ee56ad5fa1cfc19dca0f0981c069bb",
+  "claims": [
+    {
+      "id": "claim_50afbf830ea842ddaba06bfeaaa0c684",
+      "statement": "ADR-0025 supersedes ADR-0016 (the rank-0-only revert) and defines the all-rank DDP validation policy: latent `val/x0_mae`, `val/fid`, `val/mean_reward`, and the configured checkpoint monitor are global metrics under DDP. `LatentX0MAE` and `TrainLossLogger` use `torchmetrics.MeanMetric` with `weight=batch_size` attached to the module so Lightning's reduction produces the true sample-weighted global mean `sum(loss*B)/sum(B)`.",
+      "evidence": [
+        {
+          "resource": "repo://docs/adr/0025-all-ddp-validation-no-rank0-gate.md",
+          "version": "repo-file-v1:sha256:be3aa13f1684f3fa228e8f6c1b492db6d178048afbea9dd279a0816cc955e782"
+        },
+        {
+          "resource": "repo://src/manifold/training/metrics.py",
+          "version": "repo-file-v1:sha256:20d7e9943c2a5cff271704db536d7adfdaef91cdcbb62387e3146e1692c30bbd"
+        }
+      ]
+    }
+  ],
+  "verification": {
+    "by": "openwiki/0.5.1",
+    "at": "2026-09-12T12:03:27.299Z"
+  }
+}

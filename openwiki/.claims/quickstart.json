@@ -1,0 +1,68 @@
+{
+  "schemaVersion": 1,
+  "pageVersion": "sha256:fe88567ecdcf001579d37833ffe0cfe97a5fec3443d9ab8c64ba29461bb420c5",
+  "claims": [
+    {
+      "id": "claim_62d03cbcfbef4e7e97c319e8eab2fb3b",
+      "statement": "The supervised ControlNet stage ships `PairedFidelitySpec` (ADR-0037) registered only in `manifold-train-controlnet` (`spine.registry.register(\"paired_fidelity\", PairedFidelitySpec)`); it is observe-only — logs `val/psnr` / `val/ssim` while the checkpoint monitor stays `val/x0_mae`. Extending the same monitor to the ControlNet-GRPO policy path is a deliberate ADR-0037 follow-up and is not yet implemented; until then, the GRPO shell's blanket `TrainingSpine.forbidden_callbacks={\"fid\": ...}` (ADR-0032) also excludes the `paired_fidelity` callback.",
+      "evidence": [
+        {
+          "resource": "repo://docs/adr/0037-controlnet-fidelity-in-training-monitor.md#L59-L62",
+          "version": "repo-lines-v1:sha256:38c861b7392de5db9201f4b8eed231089c74f03ac216f6848642e965016a2616:eyJzZWxlY3RlZExpbmVDb3VudCI6NCwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiYjNjYTQyY2VjYzY4ZWJmZWU4ZjcxMTM1OGEyZWU5MGM5YTM4NDg2ZmVmMzI3NzcwNGVlNjdhYWE3MDFkM2YzZiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiYjFlOTU2Mzk2YTY2ZTg3NDM0MGMzMmVhMGJkMzVkNmI2MmJlYTk0YWRhNDQ3ZjAyOGUyYTdiYzMxODQzYjYyZCIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiODFlZWViZDg0MDkxYzlkNjViYTdlYWU2YWQyMGMxMGE2YTM4ZjJmZTc1YWFiNTgxYmI4NWU1MGNkYzM2MTQ1YiIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjIsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiODU3YzIwMzlkMDQ1MjliOTBmMTdmYjliYmQwNDAwZTFhYzZhODIyMmUwY2MwZjJhMjk2YzEyNWRlZTJlYjlmYiJ9"
+        },
+        {
+          "resource": "repo://src/manifold/training/callbacks/paired_fidelity.py#L36-L75",
+          "version": "repo-lines-v1:sha256:2c220edce50b7369395e72c29eca98fc1baeff8a1c5ed61188da0f3ef97a12a3:eyJzZWxlY3RlZExpbmVDb3VudCI6NDAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImY2OWExMzk3NWMyNTZlYzgzMjBlMjAxNjA4M2M5NmRmNjM3Y2EzZDM1YmViZGUyMzE0YmVlM2E0NzExYjU2Y2EiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU5MDlhNTNhNjE4ZDAyOGUxZDMwMDBjMGE3YWJjZWVjYmU1ZmIzN2Y0ZTUxMWVmZTQ2NjQzZmFkNmU2Njg3MmYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjRlY2YwYmE5ZmI2YzQzNWUxODJlMGJmNjRlZjQyYzdhNzg3MmI1OGE0NWYxOGY3NmQ2MmQ0YWIxN2UwM2VkMWIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
+        },
+        {
+          "resource": "repo://src/manifold/training/controlnet_cli.py#L168-L198",
+          "version": "repo-lines-v1:sha256:5446a4872d3a7c262ac18f17012b78d5d9325c828070feb27d14d31fdce070bd:eyJzZWxlY3RlZExpbmVDb3VudCI6MzEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQxNDY3NzExZGVmNzE4MTU5YjIwOGYyNGJmZTdhOTMwMzVmMThkZGU4NjZiZDg2MGQwYjkzODc3MTNlYTI3OGMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjMwYzFmMTg4ZjE0MmVkN2E4MjQ2ODBiMjA3MTcyYzU1MTliYzYxNGE0OGZkYTdjZjE2N2VkYjhkZGY3OTk1NmMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjJkN2NlMGU0OGZjNmRlODA2YTdjMThhNzQzZWM5NzE5OWE4ZTJlYmMxOGFlYzdjNjg1ZDE3YzE2NTg5MDAzZTAiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImQ5OWU0NWJiM2Y4MzZjZWUwZmJkOWI1NWFmZTkxMWI2YzcxYzU0YTIwM2RlODI5YWU0YzcxM2JlOTRmMmJhOWQifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_12aafbba59f74ff7bb603c1fe23e69ed",
+      "statement": "The shipped eval surface is a single console entry `manifold-eval` plus the library-only `manifold.eval` barrel. `manifold-eval` (registered in `pyproject.toml` as `manifold-eval = \"manifold.eval.cli:main\"`) infers JiT vs. ControlNet from the before artifact's `model_index.json` (`pipeline_class`, ADR-0034 artifact-inference convention); `ComparisonPageBuilder` is library-only by design, not a console command.",
+      "evidence": [
+        {
+          "resource": "repo://pyproject.toml#L80-L85",
+          "version": "repo-lines-v1:sha256:17bcac43bbb0d405acdd522f3591668602f0db4ab529176961deff526288d3c3:eyJzZWxlY3RlZExpbmVDb3VudCI6NiwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiZWZmMjNlODIwYTY5NTlhNjVkYzRmZWJkY2QzMDgwZjI3OWQ0OTk0OTZmYzk3ODgxYmMwMTNkZjAzMmM4Y2FjNiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiNGUxNDc2MGVjZmQ4NDExOGQzYWZlNDViMzIxZGNmMjZhMWRkZjk5ZjhjNWMyNjk2ZWUxYTc3NTkwODMwNDIyNSIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiOTQ0Yjg2ZDdkMmUyNTFmMTM4NDc0MzcxYTdjYzNkYjIyZWQwNmI5MGU5ZDk2ODRjZjc5ODNlNDA3ZDZiYmNlYSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiNWRkZGJhNmZmZjRmY2Y4ZjM1ZWUxMjgxNGI5YWNhOWY2YTNhNzkxODUxY2IwNjg0OTZiMTViMmUxNWI3NzZkZiJ9"
+        },
+        {
+          "resource": "repo://src/manifold/eval/__init__.py#L1-L25",
+          "version": "repo-lines-v1:sha256:7e6a996f679b8d4479cf9d565119639002642267ed4aad99447e093544592bea:eyJzZWxlY3RlZExpbmVDb3VudCI6MjUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImVhZDNiMjc1MzE2ZWM3MjRhN2QyNGM3NmMxNzg4ZTZjY2JlODY3MWI4MmJkOGM3NzM4ZWU2M2U0MWYyNjQ0YTYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImY5NDE2ZTA5Zjc4YmEzMTZjMDMyNTY4MjEzYjg1NWVlNzU2ZTQxNTY1ZDkxOGYwOTUxOWM4MWZkNjIwZjQwNjAiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
+        },
+        {
+          "resource": "repo://src/manifold/eval/cli.py#L132-L155",
+          "version": "repo-lines-v1:sha256:3e454e1ecfdc9fd0cc15d78d2eeb311bd13029397d380bc1ea43b383608d58b4:eyJzZWxlY3RlZExpbmVDb3VudCI6MjQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjY0M2YyNWNhZWQ0MTgxODdjZDdhMGJhZWQwOWRiMmM2Y2JkMjE0ZTcwODk1NGE4MWVjNzdjMDBkOTEzM2Y2NmIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjY2NTRlNWVkOWE0YTAxYWViNDgyYWNlYzJlOWY3NjZlYjIxZjg2MzRlODU2NTRhZjg2MGM5ZmQ0ZjFhZjM3MTMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjRkNjcyN2M0Zjc3Y2QwZDM0ZTljOTczNjNmMjM4ZTg2NTliNzJiY2Y1MGI2MjgzN2FmYjM5NmM4MjkwMzlkNTIifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_ae678f6d73f94c0dacd1b69e6811dc68",
+      "statement": "Repo layout puts the offline before/after eval driver under `src/manifold/eval/` (`cli.py`, `before_after.py`, `comparison_page.py`, `slice_grid.py`) and the paired-fidelity metric + supervised-stage in-training callback under `src/manifold/metrics/{paired,paired_callback}.py`. ADR-0037 is the latest accepted ADR; the supervised paired-fidelity monitor ships in the current tree while the ControlNet-GRPO extension is a deliberate follow-up.",
+      "evidence": [
+        {
+          "resource": "repo://docs/adr/0037-controlnet-fidelity-in-training-monitor.md",
+          "version": "repo-file-v1:sha256:d0a3d05b9077e09dec7e27fc81eb94101ac4479942a44c7e3862a97d740383b0"
+        },
+        {
+          "resource": "repo://src/manifold/eval/__init__.py",
+          "version": "repo-file-v1:sha256:7e6a996f679b8d4479cf9d565119639002642267ed4aad99447e093544592bea"
+        },
+        {
+          "resource": "repo://src/manifold/metrics/paired.py",
+          "version": "repo-file-v1:sha256:1a388bde3ad7969aedbd81e1f240df70e48bb327a68f1a08b9b0f83a7078ebd1"
+        },
+        {
+          "resource": "repo://src/manifold/metrics/paired_callback.py",
+          "version": "repo-file-v1:sha256:2d78c68acfbf98d12fd04e32a4f389c475e78b3fecb22202dbb21d1882c221e0"
+        }
+      ]
+    }
+  ],
+  "verification": {
+    "by": "openwiki/0.5.1",
+    "at": "2026-09-12T12:03:27.299Z"
+  }
+}

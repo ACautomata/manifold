@@ -3,6 +3,62 @@ type: Guide
 title: Key Workflows
 description: JiT, supervised ControlNet translator, reward/GRPO training stages, before/after evaluation, inference, checkpoints, and export.
 tags: [workflows, training, inference, checkpoints, export]
+verified:
+  - by: openwiki/0.5.1
+    at: 2026-09-12T12:03:27.299Z
+sources:
+  - id: openwiki-source-12822fdabe7eb1e0e1018719
+    resource: repo://configs/train/config_grpo.yaml
+  - id: openwiki-source-f30679e5671d5ddfc684fd24
+    resource: repo://docs/adr/0006-training-ckpt-lightning-native-via-export.md
+  - id: openwiki-source-74ef7d0214c1ee47aa20a29d
+    resource: repo://docs/adr/0017-latent-warmup-in-datamodule-setup.md
+  - id: openwiki-source-4ee4003f33469f012ed392fe
+    resource: repo://docs/adr/0027-controlnet-supervised-then-grpo-two-stage.md
+  - id: openwiki-source-969b5d5f156d14e4982cd6a3
+    resource: repo://docs/adr/0028-two-mode-grpo-unify-controlnet-delete-bridge.md
+  - id: openwiki-source-bdb26e011dbdfd0846537627
+    resource: repo://docs/adr/0031-device-ownership.md
+  - id: openwiki-source-defeaaf301e82a2c3d2f1442
+    resource: repo://docs/adr/0033-scripts-elimination.md
+  - id: openwiki-source-1b5659f7853fdac71576f4bd
+    resource: repo://docs/adr/0034-one-realism-reward-both-grpo-policies-delete-condition-aware.md
+  - id: openwiki-source-e835c1371b59a53aa9b0005e
+    resource: repo://docs/adr/0036-controlnet-fidelity-offline-3d-psnr-ssim.md
+  - id: openwiki-source-8365865d28bb0a0b9c98e38d
+    resource: repo://src/manifold/data/paired_latent_dataset.py
+  - id: openwiki-source-3748206f6159b3ca8063c053
+    resource: repo://src/manifold/data/warm_datamodule.py
+  - id: openwiki-source-121ee09471abdc662d9d3b48
+    resource: repo://src/manifold/eval/before_after.py
+  - id: openwiki-source-e22b4e5926edbd63eb845214
+    resource: repo://src/manifold/eval/cli.py
+  - id: openwiki-source-425df5dedfde0932318ead5e
+    resource: repo://src/manifold/models/controlnet_3d.py
+  - id: openwiki-source-ffd9f2f79ca81385e197ae7f
+    resource: repo://src/manifold/modules/grpo.py
+  - id: openwiki-source-56674f106efd2c16c47c3e08
+    resource: repo://src/manifold/pipelines/controlnet_latent_flow.py
+  - id: openwiki-source-63410e878c74053bcaeb98f8
+    resource: repo://src/manifold/pipelines/latent_flow.py
+  - id: openwiki-source-041a3584d4049736545ceb90
+    resource: repo://src/manifold/schedulers/scheduling_flow_match_grpo.py
+  - id: openwiki-source-cb9c9c415ab8026b88012d9e
+    resource: repo://src/manifold/training/cli.py
+  - id: openwiki-source-28b61e3219922e44e25b13ad
+    resource: repo://src/manifold/training/controlnet_cli.py
+  - id: openwiki-source-be99bd216fffaa3e1d9212c0
+    resource: repo://src/manifold/training/core.py
+  - id: openwiki-source-bf926767b4a66a5c439a26ca
+    resource: repo://src/manifold/training/export_cli.py
+  - id: openwiki-source-d4e091552e1ad8d0fe58e7b2
+    resource: repo://src/manifold/training/export.py
+  - id: openwiki-source-4bdb3113f633b5c6a86fd01d
+    resource: repo://src/manifold/training/grpo_cli.py
+  - id: openwiki-source-d4a3306929ca8168b983ec89
+    resource: repo://tests/test_grpo.py
+  - id: openwiki-source-5dc7d1ef4e7f3dfdba5f7071
+    resource: repo://tests/test_scheduler.py
 ---
 
 # Key workflows

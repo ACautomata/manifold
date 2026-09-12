@@ -1,0 +1,54 @@
+{
+  "schemaVersion": 1,
+  "pages": {
+    "/openwiki/architecture.md": {
+      "pageVersion": "sha256:7b8fc00520390c1ea65797a14f6c87b01a1a6f667b39f0ab3f17bd62da174fe5",
+      "completedBy": "openwiki/0.5.1",
+      "completedRunId": "c333ca77-737d-4ae2-891d-e1e63c2439c5",
+      "gitHead": "5adac66405717ae4dbca5532b3cfe85bd84ee5b3",
+      "sourceFingerprint": "sha256:7130af13376c87a6cacf70249d66e5a4292e43c3151b6683b0563d56690bdea5"
+    },
+    "/openwiki/callback-registry.md": {
+      "pageVersion": "sha256:87ddf2f62c61eb0d12591a805df7af9e6d565497220febe1bee4a9c783c882a8",
+      "completedBy": "openwiki/0.5.1",
+      "completedRunId": "c333ca77-737d-4ae2-891d-e1e63c2439c5",
+      "gitHead": "5adac66405717ae4dbca5532b3cfe85bd84ee5b3",
+      "sourceFingerprint": "sha256:7130af13376c87a6cacf70249d66e5a4292e43c3151b6683b0563d56690bdea5"
+    },
+    "/openwiki/evaluation.md": {
+      "pageVersion": "sha256:8da2292a59c97ee8a4d08f4b2fd57a2abf500d72e63b888366d48266051d7399",
+      "completedBy": "openwiki/0.5.1",
+      "completedRunId": "c333ca77-737d-4ae2-891d-e1e63c2439c5",
+      "gitHead": "5adac66405717ae4dbca5532b3cfe85bd84ee5b3",
+      "sourceFingerprint": "sha256:7130af13376c87a6cacf70249d66e5a4292e43c3151b6683b0563d56690bdea5"
+    },
+    "/openwiki/frozen-arm-and-device-policy.md": {
+      "pageVersion": "sha256:be06a4b3f9dfe10e1ca887f3e10fb10df47c2cbcdd1c110d2a4d88cf6863e8e4",
+      "completedBy": "openwiki/0.5.1",
+      "completedRunId": "c333ca77-737d-4ae2-891d-e1e63c2439c5",
+      "gitHead": "5adac66405717ae4dbca5532b3cfe85bd84ee5b3",
+      "sourceFingerprint": "sha256:7130af13376c87a6cacf70249d66e5a4292e43c3151b6683b0563d56690bdea5"
+    },
+    "/openwiki/operations-and-testing.md": {
+      "pageVersion": "sha256:cdebec6914848c6c63422faa5ca9495c64ee56ad5fa1cfc19dca0f0981c069bb",
+      "completedBy": "openwiki/0.5.1",
+      "completedRunId": "c333ca77-737d-4ae2-891d-e1e63c2439c5",
+      "gitHead": "5adac66405717ae4dbca5532b3cfe85bd84ee5b3",
+      "sourceFingerprint": "sha256:7130af13376c87a6cacf70249d66e5a4292e43c3151b6683b0563d56690bdea5"
+    },
+    "/openwiki/quickstart.md": {
+      "pageVersion": "sha256:fe88567ecdcf001579d37833ffe0cfe97a5fec3443d9ab8c64ba29461bb420c5",
+      "completedBy": "openwiki/0.5.1",
+      "completedRunId": "c333ca77-737d-4ae2-891d-e1e63c2439c5",
+      "gitHead": "5adac66405717ae4dbca5532b3cfe85bd84ee5b3",
+      "sourceFingerprint": "sha256:7130af13376c87a6cacf70249d66e5a4292e43c3151b6683b0563d56690bdea5"
+    },
+    "/openwiki/workflows.md": {
+      "pageVersion": "sha256:6b6fea567daf53631a95e055a5c8c7b8de9c4d7a031a51a2bbb7703f59be2690",
+      "completedBy": "openwiki/0.5.1",
+      "completedRunId": "c333ca77-737d-4ae2-891d-e1e63c2439c5",
+      "gitHead": "5adac66405717ae4dbca5532b3cfe85bd84ee5b3",
+      "sourceFingerprint": "sha256:7130af13376c87a6cacf70249d66e5a4292e43c3151b6683b0563d56690bdea5"
+    }
+  }
+}

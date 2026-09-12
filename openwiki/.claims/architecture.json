@@ -1,0 +1,244 @@
+{
+  "schemaVersion": 1,
+  "pageVersion": "sha256:7b8fc00520390c1ea65797a14f6c87b01a1a6f667b39f0ab3f17bd62da174fe5",
+  "claims": [
+    {
+      "id": "claim_230b1bb5cf254253b13ca7e33a2e37a3",
+      "statement": "Manifold mirrors the diffusers vocabulary as four decoupled layers: Models (MONAI MAISI VAE / UNet / ControlNet / PatchGAN Reward wrappers), Schedulers (rectified-flow transport + Heun integrator + GRPO SDE), Modules (stable-pretraining training components for JiT / supervised ControlNet / reward / GRPO), and Pipelines (native inference composition with save_pretrained / from_pretrained). The codebase mimics the diffusers layout with its own lightweight base classes — it does not subclass the diffusers library (ADR-0001).",
+      "evidence": [
+        {
+          "resource": "repo://CONTEXT.md",
+          "version": "repo-file-v1:sha256:699cfc96f28ee81cde3fd8f1af0ccf82dd9c755fbce32ffc41633379f7031864"
+        },
+        {
+          "resource": "repo://docs/adr/0001-diffusers-style-foundation.md",
+          "version": "repo-file-v1:sha256:2e98b9ba4b8655f057c03d17b89bf0ffbce99c5bfb816d70f75bbbf39630cf70"
+        },
+        {
+          "resource": "repo://src/manifold/__init__.py",
+          "version": "repo-file-v1:sha256:27e1834aa2e478956fed97aeff717499b56b7769c5bb218e0edb02cf83845de1"
+        }
+      ]
+    },
+    {
+      "id": "claim_f981fa4f3e944c518ab44dca8c787738",
+      "statement": "The `scaling_factor` is owned by the VAE wrapper (`AutoencoderKL`) as a buffer + config: `encode` returns scaled latents and `decode` divides internally, so the training Module and inference Pipeline never reference it; the data stack warms an unscaled cache via `encode_raw`, estimates `1/std(z)` over it, and applies the scale on read.",
+      "evidence": [
+        {
+          "resource": "repo://docs/adr/0003-scale-factor-on-vae-and-native-ckpt.md",
+          "version": "repo-file-v1:sha256:5c85d0e55fa15ee608ee9a721644069033155960b4166e0169eff085405fd717"
+        },
+        {
+          "resource": "repo://src/manifold/models/autoencoder_kl.py",
+          "version": "repo-file-v1:sha256:18e5181422554a97719c4a20cc15874737ec1b8a3eb0496db49560ad2037c439"
+        }
+      ]
+    },
+    {
+      "id": "claim_d7b9b4de141c48f6a4331fdf065adaa4",
+      "statement": "Manifold has two config systems by design (ADR-0004). The OmegaConf experiment config (env → train → network YAML, top-level wholesale replace, `_base_` inheritance inside one file, `???` required paths, CLI/dotlist overrides with dotlist winning) builds components at launch and never persists them. The JSON component config (`config.json` per component, captured by `register_to_config` / `ConfigMixin`) round-trips through `from_pretrained` / `save_pretrained` — the diffusers-style persistence contract, independent of how the component was launched.",
+      "evidence": [
+        {
+          "resource": "repo://docs/adr/0004-omegaconf-layer-above-configmixin.md",
+          "version": "repo-file-v1:sha256:f4fb087ea2719a7fa6de17ffe5808c372d92d4b99c79f554cc8c8f890fd72b98"
+        },
+        {
+          "resource": "repo://src/manifold/config/builder.py",
+          "version": "repo-file-v1:sha256:eaa36daa66715c74e68708eaccee89abec3aead660be66463f69490ad4595276"
+        },
+        {
+          "resource": "repo://src/manifold/config/loader.py",
+          "version": "repo-file-v1:sha256:e36a17846c5402b006ca01668e9dfd6c94e8cc7c2fe9dbd6913e0eccc9b05ec5"
+        },
+        {
+          "resource": "repo://src/manifold/configuration.py",
+          "version": "repo-file-v1:sha256:6df782f13514633642a95857845d01e5699f33a7f74b46accbd05c1b31db2405"
+        }
+      ]
+    },
+    {
+      "id": "claim_cd7df8bfc20545468ecc812e019f91a2",
+      "statement": "The rectified-flow transport `z = t·x + (1−t)·ε` and the true two-evaluation Heun reverse step (predictor + Euler advance + corrector) live on the `FlowMatchHeunDiscreteScheduler`; the training module obtains its noised latent via `scheduler.add_noise` rather than re-deriving it (ADR-0001), so train and inference cannot drift.",
+      "evidence": [
+        {
+          "resource": "repo://docs/adr/0002-true-heun-two-eval.md",
+          "version": "repo-file-v1:sha256:11dee0bca22129019fee46b4ef9d98f2c08014ad0645685f015b6213ad86efaa"
+        },
+        {
+          "resource": "repo://src/manifold/modules/latent_flow.py",
+          "version": "repo-file-v1:sha256:1f0bfaa8cbbdf5247fc3997597d74044fa37e63cb706ef245fec36b81d109375"
+        },
+        {
+          "resource": "repo://src/manifold/schedulers/scheduling_flow_match_heun.py",
+          "version": "repo-file-v1:sha256:d605741daacd1b6f3b1ef9da4f4df72ba95f4a5f85d6e0a6d88d9d53ca535019"
+        }
+      ]
+    },
+    {
+      "id": "claim_a729b52ef18b4717960f40b53c5e75d8",
+      "statement": "Training-time sampling and native inference delegate to the same rollout primitive rather than maintaining parallel integrators (ADR-0005): `LatentFlowModule.sample` and `LatentFlowPipeline.sample_latent` both call `sample_latent_flow`; `ControlNetLatentFlowModule.sample`, `ControlNetLatentFlowPipeline.__call__`, the GRPO ControlNet-policy suffix, and the reward fake-builder all call `controlnet_rollout` / `controlnet_x0`; the GRPO anchor + suffix run through `FlowMatchGRPOScheduler.rollout_range`.",
+      "evidence": [
+        {
+          "resource": "repo://docs/adr/0005-sampler-owned-by-module-pipeline-delegates.md",
+          "version": "repo-file-v1:sha256:1ba2d36caa45748ad526a0691353614ba5248ee28acba6ee6002f891c11ef1ca"
+        },
+        {
+          "resource": "repo://src/manifold/modules/controlnet_sampler.py",
+          "version": "repo-file-v1:sha256:b557d164bdd1b05fb2d98f93889a33c58f67acb48115ecb10686b11554b617db"
+        },
+        {
+          "resource": "repo://src/manifold/modules/sampler.py",
+          "version": "repo-file-v1:sha256:3c094e817888a5a5187249f6e30e1596efd11f69e73b0c82a9cf2f32ae052b62"
+        },
+        {
+          "resource": "repo://src/manifold/schedulers/scheduling_flow_match_grpo.py",
+          "version": "repo-file-v1:sha256:bf84e8e68b0b736ef9f7155df5ef967d40f4602e41405e7d89efa26e4b14190c"
+        }
+      ]
+    },
+    {
+      "id": "claim_9f13a2b35b68491abd1abf7b0f1f7097",
+      "statement": "The ControlNet is a canonical mirror of the base UNet's encoder (`conv_in` + input-embedding path + `down_blocks` + `middle_block`) plus a `controlnet_cond_embedding` conv that maps the source latent `x_src` to the `conv_in` output width and adds it post-`conv_in` (a separate control pathway, not concatenated into `z_t`); its forward emits `(down_block_additional_residuals, mid_block_additional_residual)` that the frozen base consumes through MONAI's native forward args via an out-of-place re-implementation (ADR-0026's corrected hazard).",
+      "evidence": [
+        {
+          "resource": "repo://docs/adr/0026-controlnet-via-monai-native-residual-interface.md",
+          "version": "repo-file-v1:sha256:c11c70c1c81ee5d9e7376eada9af1c120db382caff6e3b01f19a1a66d1312a0a"
+        },
+        {
+          "resource": "repo://src/manifold/models/controlnet_3d.py",
+          "version": "repo-file-v1:sha256:58da29b2336a10aa0db222902aa888762e70cd79a0efa37dfd9e93f84329b73e"
+        },
+        {
+          "resource": "repo://src/manifold/models/unet_3d_condition.py",
+          "version": "repo-file-v1:sha256:a429f8e7c3cc89879299ec8d64a2d896ff86acdef6acc70ab78d1886cae0609a"
+        }
+      ]
+    },
+    {
+      "id": "claim_efa2943a733346f786f9455fe938c494",
+      "statement": "`GRPOModule` trains whichever policy the inputs supply — the JiT UNet, or a ControlNet on a frozen base UNet warm-started from the supervised stage — inferred from the native artifact passed to `--native-dir` rather than a `--grpo-mode` flag. Both paths score the terminal latent `z_K` unconditionally with the same `RewardModel` (a MONAI PatchGAN scorer over partial-denoise preference pairs); the condition-aware paired reward was deleted in ADR-0034.",
+      "evidence": [
+        {
+          "resource": "repo://docs/adr/0028-two-mode-grpo-unify-controlnet-delete-bridge.md",
+          "version": "repo-file-v1:sha256:e1bd55b3afb78ddabccc1211a0879fb6389f24ee07d3f919c5391b993a71a656"
+        },
+        {
+          "resource": "repo://docs/adr/0034-one-realism-reward-both-grpo-policies-delete-condition-aware.md",
+          "version": "repo-file-v1:sha256:ab63de45fe9112825e9a55405cef1eada429f422dd3b18d5297df3df7271fb25"
+        },
+        {
+          "resource": "repo://src/manifold/models/reward_model.py",
+          "version": "repo-file-v1:sha256:b5133b69d07703cbc71c77f32d23f881a93e0d5b3bfd1207d17163dbf34bef3e"
+        },
+        {
+          "resource": "repo://src/manifold/modules/grpo.py",
+          "version": "repo-file-v1:sha256:a6414ab143bb599e8e4a423696e13f5c592c28bd1f51e54251fac5d3ac7e210a"
+        },
+        {
+          "resource": "repo://src/manifold/modules/reward.py",
+          "version": "repo-file-v1:sha256:4c15f5c032f12d1bf4e461ce4079fee733a7157547360c67b82f4803172d232a"
+        }
+      ]
+    },
+    {
+      "id": "claim_80e6604718d14a038f95c92c13718cb5",
+      "statement": "Frozen arms (the supervised/ControlNet-policy base UNet, the reward Module's denoiser, the GRPO reward model and reference policy) are held as normal registered `nn.Module` children — `requires_grad=False` plus `state_dict()` / `load_state_dict()` / `train()` overrides — via `FrozenArmMixin._register_frozen_arm` (ADR-0031 A1). The mixin is the single owner of the register + dual-exclude contract; Lightning's automatic `.to(device)` owns their placement while they stay off the optimizer and off the checkpoint.",
+      "evidence": [
+        {
+          "resource": "repo://docs/adr/0031-device-ownership.md",
+          "version": "repo-file-v1:sha256:c1ef4fc02e93424548faf2d8a94cfe1d95b2ec02bae7c8de00ebfc4c206194b9"
+        },
+        {
+          "resource": "repo://src/manifold/modules/controlnet_latent_flow.py",
+          "version": "repo-file-v1:sha256:9091c6afb6004ba6a75a11076e10cd3338b4ffb1b3c4f1216affcfaa07d5bce8"
+        },
+        {
+          "resource": "repo://src/manifold/modules/frozen_arm.py",
+          "version": "repo-file-v1:sha256:068107b0f47957bc4434604e1bfc4ad85d9c860cd75419940870beb854a903ed"
+        },
+        {
+          "resource": "repo://src/manifold/modules/grpo.py",
+          "version": "repo-file-v1:sha256:a6414ab143bb599e8e4a423696e13f5c592c28bd1f51e54251fac5d3ac7e210a"
+        },
+        {
+          "resource": "repo://src/manifold/modules/reward.py",
+          "version": "repo-file-v1:sha256:4c15f5c032f12d1bf4e461ce4079fee733a7157547360c67b82f4803172d232a"
+        }
+      ]
+    },
+    {
+      "id": "claim_5602e45151f74c7881b3b3d82e04373b",
+      "statement": "Native inference directories are the only pipeline-loadable artifact: each component directory carries its `config.json` (and `diffusion_pytorch_model.pt` for models), and the top-level `model_index.json` self-describes the pipeline via `pipeline_class`. Lightning `.ckpt` files are training state; `export_to_native` is the sole bridge from a training checkpoint to a pipeline-loadable directory (ADR-0006, ADR-0007). The export bakes the raw optimizer weights as the inference UNet (EMA training was removed) and is reused verbatim for the ControlNet export (only `controlnet.*` keys are baked; the frozen base passes through from `--base-native-dir`).",
+      "evidence": [
+        {
+          "resource": "repo://docs/adr/0006-training-ckpt-lightning-native-via-export.md",
+          "version": "repo-file-v1:sha256:7b6dbbe9466e587611a850e4d576a6b5b09418d6bef70685d21165339d83423b"
+        },
+        {
+          "resource": "repo://docs/adr/0007-retire-hope-converter.md",
+          "version": "repo-file-v1:sha256:0a409ed705a12e278bac84f23dc19ed914afc9052a0c241f0c7de490a608e1a9"
+        },
+        {
+          "resource": "repo://src/manifold/pipelines/controlnet_latent_flow.py",
+          "version": "repo-file-v1:sha256:e1dca719a1b723380f9b5189661120ea26b3a4425dc03d821c89eb5457f64384"
+        },
+        {
+          "resource": "repo://src/manifold/pipelines/latent_flow.py",
+          "version": "repo-file-v1:sha256:9097a8a670b502ea987628300d4326f381e991f3629fe71cafcf744499c0e27a"
+        },
+        {
+          "resource": "repo://src/manifold/training/export.py",
+          "version": "repo-file-v1:sha256:d4918c2e41551a8218fef4797b53c15c0a9eb65b0234424303322463df077066"
+        }
+      ]
+    },
+    {
+      "id": "claim_d89d7898b6eb40eab236c96cac29c917",
+      "statement": "`manifold-eval` infers the policy (JiT unconditional vs ControlNet paired) from the before artifact's `model_index.json` `pipeline_class` rather than accepting a mode flag (ADR-0034). It exports the after `.ckpt` through the same checkpoint→native bridge into `<output>/after_native`, reloads both pipelines with `from_pretrained`, runs the same-noise before/after driver, and writes `metrics.json` plus 2.5D slice grids; the paired-fidelity path applies `min_max_to_unit` → `PairedFidelityMetrics(data_range=1.0)` against the real target.",
+      "evidence": [
+        {
+          "resource": "repo://docs/adr/0036-controlnet-fidelity-offline-3d-psnr-ssim.md",
+          "version": "repo-file-v1:sha256:687892e1ea1da16c0db1faa94e8d71a18385adeef23b73a8e6e599d92a0f08c9"
+        },
+        {
+          "resource": "repo://src/manifold/eval/before_after.py",
+          "version": "repo-file-v1:sha256:ff5b7013e86e044b859edc917ce46c246182162a4802fbb05dfdf1f608cfc40f"
+        },
+        {
+          "resource": "repo://src/manifold/eval/cli.py",
+          "version": "repo-file-v1:sha256:601432a7e81289c0d4085783b891798f2d3678e743771da886a207ab58d970ae"
+        },
+        {
+          "resource": "repo://src/manifold/metrics/paired.py",
+          "version": "repo-file-v1:sha256:1a388bde3ad7969aedbd81e1f240df70e48bb327a68f1a08b9b0f83a7078ebd1"
+        },
+        {
+          "resource": "repo://src/manifold/pipelines/pipeline_utils.py",
+          "version": "repo-file-v1:sha256:195ad6c0d4d3bbefca1869405d0cf5e33dff4feafbc48b4dd371fbafca392b10"
+        }
+      ]
+    },
+    {
+      "id": "claim_3d9a42d3ccaa43a98517e64558951d64",
+      "statement": "ADR-0037 accepts an observe-only fixed-subset `val/psnr` / `val/ssim` callback for the supervised ControlNet stage that runs `controlnet_rollout` → VAE decode → `min_max_to_unit` → MONAI 3D PSNR/SSIM, never a checkpoint monitor (which stays `val/x0_mae`) and never a loss term. The callback is not implemented in the current tree; treat the decision and its extension surface as planned work until the spec, registry wiring, and `CallbackContext.inference_recipe` pass-through land.",
+      "evidence": [
+        {
+          "resource": "repo://docs/adr/0037-controlnet-fidelity-in-training-monitor.md",
+          "version": "repo-file-v1:sha256:d0a3d05b9077e09dec7e27fc81eb94101ac4479942a44c7e3862a97d740383b0"
+        },
+        {
+          "resource": "repo://src/manifold/metrics/paired_callback.py",
+          "version": "repo-file-v1:sha256:2d78c68acfbf98d12fd04e32a4f389c475e78b3fecb22202dbb21d1882c221e0"
+        },
+        {
+          "resource": "repo://src/manifold/training/controlnet_cli.py",
+          "version": "repo-file-v1:sha256:ebab163068d957ea1550d2cc769eedcea367ae300b9737b548cb2ef2e91cb361"
+        }
+      ]
+    }
+  ],
+  "verification": {
+    "by": "openwiki/0.5.1",
+    "at": "2026-09-12T12:03:27.299Z"
+  }
+}

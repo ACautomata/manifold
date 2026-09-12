@@ -3,6 +3,29 @@ type: Reference
 title: Frozen arms and per-rank device policy
 description: FrozenArmMixin (register + dual-exclude off the optimizer / checkpoint) and DevicePolicy (the per-rank CUDA device decision that replaced resolve_warm_device and the pre-PG set_device twin).
 tags: [frozen-arm, device-policy, ADR-0031, ADR-0035]
+verified:
+  - by: openwiki/0.5.1
+    at: 2026-09-12T12:03:27.299Z
+sources:
+  - id: openwiki-source-bdb26e011dbdfd0846537627
+    resource: repo://docs/adr/0031-device-ownership.md
+  - id: openwiki-source-0b3288e3dba4430c1bb2668c
+    resource: repo://docs/adr/0035-devicepolicy-per-rank-device.md
+  - id: openwiki-source-aefad772862dded74740a681
+    resource: repo://src/manifold/modules/controlnet_latent_flow.py
+  - id: openwiki-source-487431944da97854e8cb6d33
+    resource: repo://src/manifold/modules/frozen_arm.py
+  - id: openwiki-source-ffd9f2f79ca81385e197ae7f
+    resource: repo://src/manifold/modules/grpo.py
+  - id: openwiki-source-82594a5d307aebca75251b76
+    resource: repo://src/manifold/modules/reward.py
+  - id: openwiki-source-deca8f8f4a3d2dbbba47ac16
+    resource: repo://src/manifold/training/device_policy.py
+  - id: openwiki-source-6db58ef83ad3e6a34ce75117
+    resource: repo://tests/test_ddp_warm.py
+  - id: openwiki-source-54aad16b0d9e880d1e1286dc
+    resource: repo://tests/test_device_policy.py
+generated: { by: "openwiki/0.5.1", at: "2026-09-12T12:03:27.299Z" }
 ---
 
 # Frozen arms and per-rank device policy
@@ -14,10 +37,11 @@ concern that every training CLI has to get right:
   shared "register + dual-exclude" implementation that keeps a frozen arm off
   the optimizer and off the checkpoint while letting Lightning own its device
   placement through the standard submodule machinery. Used by `GRPOModule`
-  (frozen `unet` arm on the ControlNet policy path; frozen `reward_model` and
-  frozen reference policy on the GRPO reward path), by
-  `ControlNetLatentFlowModule` (frozen `unet` arm), and by `RewardModule`
-  (frozen `reference_unet`).
+  (always: frozen `reward_model`; on the ControlNet policy path: additionally
+  frozen `unet` base; when KL is enabled: additionally frozen `reference_unet`
+  and, on the ControlNet policy, frozen `reference_controlnet`), by
+  `ControlNetLatentFlowModule` (frozen `unet` base), and by `RewardModule`
+  (frozen `denoiser` — the JiT x0-denoiser held for the online rollout).
 - **`DevicePolicy`** (`src/manifold/training/device_policy.py`, ADR-0035) — the
   per-rank CUDA device decision. Replaces both the duplicated pre-PG
   `set_device` twin that lived in every training `main()` and the

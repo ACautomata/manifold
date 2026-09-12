@@ -1,0 +1,214 @@
+{
+  "schemaVersion": 1,
+  "pageVersion": "sha256:6b6fea567daf53631a95e055a5c8c7b8de9c4d7a031a51a2bbb7703f59be2690",
+  "claims": [
+    {
+      "id": "claim_d5a04b16743d4afa9fb0e5d25cb2c6de",
+      "statement": "manifold-train composes the experiment config, builds a cold data bundle whose VAE-encode warm is deferred to DataModule.setup() so it runs after the distributed process group is initialized and the per-rank i % world == rank sharding activates, then trains LatentFlowModule and writes full-state Lightning checkpoints. The resulting .ckpt requires the manifold-export bridge to become a native inference directory.",
+      "evidence": [
+        {
+          "resource": "repo://docs/adr/0017-latent-warmup-in-datamodule-setup.md",
+          "version": "repo-file-v1:sha256:bafcd34aa0e97db7bb16058396fd184261e34c8e7360618fed92bbb4b5e8c41a"
+        },
+        {
+          "resource": "repo://src/manifold/data/warm_datamodule.py#L126-L248",
+          "version": "repo-lines-v1:sha256:169d56c98ce35e86ec1338027ee186c97442f29fffd7704d8497519d65d12635:eyJzZWxlY3RlZExpbmVDb3VudCI6MTIzLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiI5YTNkNmQ0NWVmZThkNGNmYzZjZjE4NzEzZDUwNmM3OWFiMmEyNGQ2NzcxY2FiZWY0MDkwZDA5OTA5NDNiNTZmIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiJmNmUyYzM4M2VjMTNiMmQ0NWMyODQ5YjNjNTZmZGE0YzkxZjFmZTY3MTdhYWVhOGQyZTExNDVjNzRjMmYzMTRjIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiJjNzY3MGNlZTk0OTJiOGNjNmE0NDIzZWIyOWFkMTEzZGVlZjgwNGEyMjdlZWM3ZjRkMjdmMzgxY2IyNGQyOTAwIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiJhZGU3YzEzMGJhNWNlMjAyYTY1MmQ1NGNhYmYxNGMyYmRiY2NkMmY2MzliZDEwNDcyODI2YTNkMzQ0MzVhNjI4In0"
+        },
+        {
+          "resource": "repo://src/manifold/training/cli.py#L367-L482",
+          "version": "repo-lines-v1:sha256:1e90d0e8435717df7da81c6579fe6c1fe4bc7984ebc3962384234d92811c389a:eyJzZWxlY3RlZExpbmVDb3VudCI6MTE2LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiJmOWZmYTY5MTg3YWE1NGE4ZWNhZjBkYWE4OWZjNTg3ZTMxYzYyMTUwMzJlNzI1ZGFlYzNiM2ZjMTk2ODczMGU3IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiIxNjIzM2IzZmZlYTMyYTIzZGY1MzA2NTM0MzQ4ZjJkZWU3NzZhNWE2Zjc0ZmI1MzMxNzVkZGM1MzlhOGZlNDY0IiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI2NjU0ZTVlZDlhNGEwMWFlYjQ4MmFjZWMyZTlmNzY2ZWIyMWY4NjM0ZTg1NjU0YWY4NjBjOWZkNGYxYWYzNzEzIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiIyNWQ5YTU0NjYzOTk0ZmE0OTk0MmMwY2Y0ZTJiYzczZDAyY2FiM2FlY2VkODY0ZmM3MTdjNjQxZTI1MWQ2MGY5In0"
+        }
+      ]
+    },
+    {
+      "id": "claim_31ed77ba65864d49bfc06a5d6b3a1cf0",
+      "statement": "manifold-train-controlnet is the supervised paired translator (ADR-0027 stage 1) that loads a frozen JiT native export via --native-dir, warms per-volume latents through the shared PairedLatentDataset, and trains a trainable ControlNet on the frozen base UNet through ControlNetLatentFlowModule. The frozen base is held unregistered by the Module (off the optimizer and the checkpoint) per FrozenArmMixin (ADR-0031 A1), and the supervised native export becomes the stage-1 input to manifold-train-grpo for the ControlNet policy path.",
+      "evidence": [
+        {
+          "resource": "repo://docs/adr/0027-controlnet-supervised-then-grpo-two-stage.md",
+          "version": "repo-file-v1:sha256:97503c626a258eb852e94045824a0f8f63743a628ab318b78c6276f4f7bedb85"
+        },
+        {
+          "resource": "repo://src/manifold/data/paired_latent_dataset.py#L72-L273",
+          "version": "repo-lines-v1:sha256:c36e2d9463cd5f0961c981914c481c77baf56898ebeebeeace0a32050b1e2227:eyJzZWxlY3RlZExpbmVDb3VudCI6MjAyLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiI5MjA4YjJiNzFkNzM0YmU5NWQ0NjEyNDEyODRjYjBmMWU5YWE5NmY0MDIwYzIxYWM3MGRkM2NmYzQwYWE4ZmRkIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiIwMWJhNDcxOWM4MGI2ZmU5MTFiMDkxYTdjMDUxMjRiNjRlZWVjZTk2NGUwOWMwNThlZjhmOTgwNWRhY2E1NDZiIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI4ZWUzYTQ1YjM1ZWEwZWQ1YjU1NWNkN2Q3ZjdmOWRlNTA5ZTA5NjllODA4YmVmZDkyMjQwMjk1YjI0ZWFhNjY2IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MiwiZm9sbG93aW5nQ29udGV4dEhhc2giOiIyNjhiMGI2MTVmODBhZGUyMGJmNjAyN2E1NTBkYjg4MjZjMDIzODc1YWQwNTVkYjg3ODVhOTQ2ZGM5NjUzNjMyIn0"
+        },
+        {
+          "resource": "repo://src/manifold/training/controlnet_cli.py#L342-L471",
+          "version": "repo-lines-v1:sha256:dc09650a0eb67e79bee4841c434999000d38f4133fc009a9e706e03b0bdd19b2:eyJzZWxlY3RlZExpbmVDb3VudCI6MTMwLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiIyZDllZTQ1ODFkN2U0MWI0MmU0NzJiOTUwMWZmM2RjN2FjYTBlZDVhZGIxMjZlMTFhNGYxZGM4M2FmMzM2YmZmIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiIzMGMxZjE4OGYxNDJlZDdhODI0NjgwYjIwNzE3MmM1NTE5YmM2MTRhNDhmZGE3Y2YxNjdlZGI4ZGRmNzk5NTZjIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiIwNTcyMmI4YzRmMjgzMWEwOGE2ZmYxNjhkMTY1MTE0YjZmZGJhY2Y5ODQyMTUzNjYyNzc2OTNiZGNiM2JkMDIwIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MCwiZm9sbG93aW5nQ29udGV4dEhhc2giOiJlM2IwYzQ0Mjk4ZmMxYzE0OWFmYmY0Yzg5OTZmYjkyNDI3YWU0MWU0NjQ5YjkzNGNhNDk1OTkxYjc4NTJiODU1In0"
+        }
+      ]
+    },
+    {
+      "id": "claim_64c855060d28492eaa148cfbfb812096",
+      "statement": "manifold-train-grpo trains either the UNet policy or a supervised ControlNet policy through one recipe (configs/train/config_grpo.yaml) and one module (GRPOModule); the policy is inferred from the native artifact passed to --native-dir — a raw JiT export trains the UNet, a supervised ControlNet export trains the ControlNet on the frozen base — with no --grpo-mode flag. grpo_train.lr is the UNet default; optional controlnet.lr applies only on the ControlNet path and falls back to grpo_train.lr when absent.",
+      "evidence": [
+        {
+          "resource": "repo://configs/train/config_grpo.yaml",
+          "version": "repo-file-v1:sha256:84fcdfe444eea9c0b0fd7cf5e6c1417c29b88208cbbb58a505a81911d4309910"
+        },
+        {
+          "resource": "repo://docs/adr/0034-one-realism-reward-both-grpo-policies-delete-condition-aware.md",
+          "version": "repo-file-v1:sha256:ab63de45fe9112825e9a55405cef1eada429f422dd3b18d5297df3df7271fb25"
+        },
+        {
+          "resource": "repo://src/manifold/training/grpo_cli.py#L266-L458",
+          "version": "repo-lines-v1:sha256:2f00623c83fe84fbd027691645ec3caffca938c49b0d2d3501b58348afd75177:eyJzZWxlY3RlZExpbmVDb3VudCI6MTkzLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiJiNDQ0NTA5NzlmZGYwMWNmNThkMmNkYjRkYjEyZDU5ZDg0MDVkMDYzNmE1NmQ0Njk4ZGU0OWU3ZGE1YWMzMDIxIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiIxNjIzM2IzZmZlYTMyYTIzZGY1MzA2NTM0MzQ4ZjJkZWU3NzZhNWE2Zjc0ZmI1MzMxNzVkZGM1MzlhOGZlNDY0IiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiJiMzA2ZDdlZWUwNTQ5NWI5NDA4NmRiYzBiZTM0YmI2YmUwNWVlNDU5NGNmZGFhOGQ3NGU3MDkwN2NkYjBkMTQ3IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiJiMmRlNjllZWRjNWUzNjM4ZGMyZjNjYWUzNjY2YjQxMzFjZTRkNTlhZDEwZmJjMGMxZjEzMTUzYzY2ZGJiZjA0In0"
+        }
+      ]
+    },
+    {
+      "id": "claim_73a47b84e8974620adb6854308a26a4c",
+      "statement": "Both GRPO policy paths score the terminal latent z_K with the shared unconditional realism reward (RewardModel, mode-agnostic PatchGAN trained on partial-denoise preference pairs). For the ControlNet path the unconditional FID callback is suppressed post-merge via TrainingSpine.run(..., forbidden_callbacks={\"fid\": ...}, forbidden_monitors={\"val/fid\": ...}), so a YAML or --callbacks override cannot re-enable it and checkpoint selection uses val/mean_reward.",
+      "evidence": [
+        {
+          "resource": "repo://docs/adr/0034-one-realism-reward-both-grpo-policies-delete-condition-aware.md",
+          "version": "repo-file-v1:sha256:ab63de45fe9112825e9a55405cef1eada429f422dd3b18d5297df3df7271fb25"
+        },
+        {
+          "resource": "repo://src/manifold/training/core.py#L59-L131",
+          "version": "repo-lines-v1:sha256:1e99e1921a8f8029f36453ed2ae9ec46d5a8941ff9c0e599d6126ff6f263bbe1:eyJzZWxlY3RlZExpbmVDb3VudCI6NzMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImNjNWJlZjI1MzMxMDAwMmYwN2I1MmIyODFiNzlhY2Y5MzFmMGM4ZjUyOTY0ZjNiZWNlYTQ0YmVlODQ4Mzg1MzUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjUxMDM0ODFjNTdkMGYwZGMwZjc2Y2QyY2M4YjM2MDRjNGU4Mjk2ZGE0MTIyYWRkMTllODE3NDVkYzdlMzMxYTYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImQwNGE3MjU2YmUxZGE0NDc5YjFmNTQyNzYzZDZiNWYwYjlkMDY3M2M4ZDEyOWVlMDZjMWUwNTdmYTg1YmVlNWIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImNhMGYxN2U2NGVjZjZkMTVjZmViNWNjOGNmZDY0ZDM0NzcyZTQ3OWEwYzY2MmQ4MDFiMWI5OWM2ZmM3MmM0ZjYifQ"
+        },
+        {
+          "resource": "repo://src/manifold/training/grpo_cli.py#L226-L260",
+          "version": "repo-lines-v1:sha256:5f499e62e2e43d4f54bdab8cd87804d4ba6460f9a6f2deec81a931ca46260144:eyJzZWxlY3RlZExpbmVDb3VudCI6MzUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImMwODVjY2RhYTQ1ZTBkZjcyYmIwNmU4YWU5OWM3YWIxNTk1NDNjM2RiMDkwOTU1ZmJmYWY0NjAyYmQ5YzRhZmUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjMwYzFmMTg4ZjE0MmVkN2E4MjQ2ODBiMjA3MTcyYzU1MTliYzYxNGE0OGZkYTdjZjE2N2VkYjhkZGY3OTk1NmMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImNkNzJlNTIzMjE2MTdjMjZmMWJmMGIzMDdhZTRlZDdjMGI0ZWVjZWI4MzMxZTkzYmFhYmM2NTY1ODU5YWU2MWEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImQ5OWU0NWJiM2Y4MzZjZWUwZmJkOWI1NWFmZTkxMWI2YzcxYzU0YTIwM2RlODI5YWU0YzcxM2JlOTRmMmJhOWQifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_24a04565741a42ada7100736a3620b85",
+      "statement": "The GRPO rollout walks two slices per branch — the anchor slice 0 → max_k (one Heun trajectory across the deterministic prefix, shared by every sibling) and the per-sibling suffix slice k+1 → n (the stochastic branch that produces the GRPO group) — both routed through FlowMatchGRPOScheduler.rollout_range, a method on the GRPO scheduler rather than a free function in grpo.py. PartialFlowMatchHeunScheduler and FlowMatchGRPOScheduler both inherit heun_rollout from FlowMatchHeunDiscreteScheduler by identity.",
+      "evidence": [
+        {
+          "resource": "repo://src/manifold/modules/grpo.py#L88-L219",
+          "version": "repo-lines-v1:sha256:e43c984ced5f2552ae706b1f0ed84a1ab17e78485518cbb611d82fb3db004c3d:eyJzZWxlY3RlZExpbmVDb3VudCI6MTMyLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiIwY2JkYmEyMTVkMjIyZWQyMThjZDU2ZWYxYjVhMGJkZTE4ZTQ5NGIwYjQ3ZjVkM2NjNDk4NDFjYThhOTE5MDRjIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiJkYmNjODU0YjBlYWFjMzQwMzAwZDA4NTRmNDNmMTRhMjAwZGI1YjAzMGZmNDcxNWE1OWNkNzk2MTM5NWZkYzMzIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI3NTgxMWFlYzI5NzVhODJmYmE5OTIxMmE0YWY0MWVmZWIzMTRiNzBmMTU2YWViYjI5NzllZDE1ZTIwNTQ1M2IxIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiJlN2Q2MjlkNGFiOThlNTlkN2Q5NDcxYmZiYWVmOTRiY2I5Y2RkMjljZDdlYzAxMmQ1MDdiYzdhMGRhMWNlMmYzIn0"
+        },
+        {
+          "resource": "repo://src/manifold/schedulers/scheduling_flow_match_grpo.py#L74-L120",
+          "version": "repo-lines-v1:sha256:0291f42c9c3584ee16762c5ec474d9fa78caed6d78eba5e8c3e4c300ff860b7c:eyJzZWxlY3RlZExpbmVDb3VudCI6NDcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImFiYjliYTQ1MWY0ZDcxN2M2Y2U5N2YxOWQ5ODkwYTZlYjg0YjZmZWMxNzMxNWE0OGY0ZGRmMmI2MjA1OGMwYTkiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijc5MmNlNDU3OTIwZDNlMTQ2NzUwMzk3Nzk3YmU0ZDIyODdkYWNiMzk1MTlmOTE5ODVkY2NjNGM0OWFmNjU1MmUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjJjOGE2NjQ1NTdkYjExMzNmMTk1MTBmNDFkODE2Yzg1NzdjNjg5YjU0NDU3ZjQ5NzAzNDVjZjRmZTM0MzVkNGUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjdkOTAxZWI2MmIxNDA0N2JkYjA2NWJlN2VmYWUzMmVjMDQwYzU0ZWJhNDMwYzkyYjQ3OTAyMzcwZTg3Mzk0ZmIifQ"
+        },
+        {
+          "resource": "repo://tests/test_grpo.py#L201-L217",
+          "version": "repo-lines-v1:sha256:35d44e450bfa7e2060dd1adf686b4de13be8acd52cdaf6abaf921dcd0b529836:eyJzZWxlY3RlZExpbmVDb3VudCI6MTcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQwYThiZGQ5ZjVlOGMwYzMwZjI5MDFiMDk1NjZkZmUyNWRkMGYzOGE1ZmEzNmIzZTEzNjhkM2MzNzRlMzNhODEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImU5MzVhYWRkZmQxYjc5ZmM5Y2RiN2YwYTJmODFlYmM5OWJhZjlkZDI3NDY4YzRiOTMwMDUzZDdhNGQ4OGUzYWIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjFkMDFhZWM4OWY4ZGNmMzlkMWQ2NjNmNTkxZjc4MjI1NTczNGUyNGRmMjJkOWM0ZjQ4NWM5MWRjZWM2YjhkNDUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUwNGFmYWYwYzg0NDJmMzk2MDRiYmI4YzU2NjA0NTFjNzMzNjc4MWUwMGJjZmQ1MWE3Y2RkNTBlYjE3ODdhZGMifQ"
+        },
+        {
+          "resource": "repo://tests/test_scheduler.py#L207-L217",
+          "version": "repo-lines-v1:sha256:3eabb133a0be69597446e19ac09e9a48931e604754a3115f8c627676aefbe811:eyJzZWxlY3RlZExpbmVDb3VudCI6MTEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImRjYjNjNmNlOWI1MDg4YzNlODNhMmJiMjRhNTI3ZmIyYjExODg0MzI3MzVjZjM0MjQwMmIwYjczNmMxM2NiMjYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjkxOTI5MmM0OWU3ZTM0YjViZDRkYWI4ZGY3NjE0N2E2NTA3MmNlNDJjNGM2NzUzMGQxMjNiMjM2MjJhN2VmNzQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijc3NzExODdjYjQ1NmZkZWFkNzI5ZWM5MGQxZDUxYzEzNzJjZTE4ZGI3MTUyMWNjNzhhZDBiNzE3ZTE2NjEyMmUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImExNzNiZjlhYTM4YjdlZTg1ZGM5NWYyMTk4MzA2YTBlODgyYzIyMzFjMGU1ZTYyMzdjZWZkNTE4MWZhMzcxNGQifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_117354b1464340e8b9b842e181089071",
+      "statement": "There are two artifact types: training .ckpt (full Lightning state for resume and selection) and native inference directory (deployable UNet/ControlNet/VAE/scheduler components loaded by a pipeline). Export is the sole supported bridge, via manifold-export with --pipeline {jit, paired, controlnet}; --pipeline paired is a stale reference because the PairedLatentFlowPipeline module was deleted alongside the paired-reward pipeline in ADR-0034.",
+      "evidence": [
+        {
+          "resource": "repo://docs/adr/0033-scripts-elimination.md",
+          "version": "repo-file-v1:sha256:d744e2736c7dabb517609c29f3dffa072281afa5ebf7670c23f3375412795bc2"
+        },
+        {
+          "resource": "repo://docs/adr/0034-one-realism-reward-both-grpo-policies-delete-condition-aware.md",
+          "version": "repo-file-v1:sha256:ab63de45fe9112825e9a55405cef1eada429f422dd3b18d5297df3df7271fb25"
+        },
+        {
+          "resource": "repo://src/manifold/training/export.py#L39-L117",
+          "version": "repo-lines-v1:sha256:5efd7fa3512932f29c2b344e1527ee11d83558e6bff2fe025ca052f19e3f82cb:eyJzZWxlY3RlZExpbmVDb3VudCI6NzksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImVkNjliMWQ1MGE3YzU4Y2M4NDQyODI0YjZmMjlhYzE4YTFmYTJkYWE0MGQzYWY2NGEwNzdmNDVkNzBmYmUyN2EiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjM5NjgxMjM0YjBlZDQ2ZTRmZDBmNTU2N2Y5NWM1MWIwZjkyYjkzMThkYjY5ZGMyMzhlMWZmYjZmYzUxNmRlYzUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijc5NzIyOThhOTkxZTViZWM3OTlmNTc3MGUzMjExOTA2NzQwZmUzNzU1MGU5MTJmM2FiMTU1YWM0NjkwOGRkNDIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
+        },
+        {
+          "resource": "repo://src/manifold/training/export_cli.py#L46-L179",
+          "version": "repo-lines-v1:sha256:9701d74d5d5cbd517f8cd724ef27073c1446d8b5e6276bcc884973a12a19c927:eyJzZWxlY3RlZExpbmVDb3VudCI6MTM0LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiI1NDQwYWJmNGQzNzZlYjRlM2FlMWYzYmQ1N2NhYWI5YTE4NThiZTIwYzU3ZTc0ZjdmMDRhMThkNTUyOGRmZjFjIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiIxNjIzM2IzZmZlYTMyYTIzZGY1MzA2NTM0MzQ4ZjJkZWU3NzZhNWE2Zjc0ZmI1MzMxNzVkZGM1MzlhOGZlNDY0IiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiJhNWU4M2UwNjA5MTAyZmY4YTg2NzMyMjViMjg0ZjliOGJiMTMxNWFiODEwOWJjZDMzYjg4ZTQxZGIzZTJkMjliIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiIzZDQxMzQwY2MyMzlhMTU5Y2U5YjYwMjJlOWY2MzIyODMyZTJlYWQ3NmNhZTllNDc1NGQyMTBlYjhmYjZkNWU4In0"
+        }
+      ]
+    },
+    {
+      "id": "claim_542dc5fbbd624c8f909b41f2a98b215d",
+      "statement": "EMA training was removed (ADR-0006 addendum). The export bakes raw UNet weights under the unet.unet. state-dict prefix and always reports \"unet_state_dict\". Reward and GRPO policy loading follow the same raw-weight contract; the single validation metric on the JiT path is val/fid, evaluated on the live raw model.",
+      "evidence": [
+        {
+          "resource": "repo://docs/adr/0006-training-ckpt-lightning-native-via-export.md",
+          "version": "repo-file-v1:sha256:7b6dbbe9466e587611a850e4d576a6b5b09418d6bef70685d21165339d83423b"
+        },
+        {
+          "resource": "repo://src/manifold/training/export.py#L24-L117",
+          "version": "repo-lines-v1:sha256:c26cbc79724b0d2de4f8c4c0c0b32dc1207ad113703867b13169554b21d4dce8:eyJzZWxlY3RlZExpbmVDb3VudCI6OTQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjczZjAxOTk0OGI2NjhjNzczNDZiMDU0ZmY4MmI1OGRjNDU4ODU3YzNkNWQzYTg2N2Y5YjAzM2NkYjJkM2E2ZGEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjM5NjgxMjM0YjBlZDQ2ZTRmZDBmNTU2N2Y5NWM1MWIwZjkyYjkzMThkYjY5ZGMyMzhlMWZmYjZmYzUxNmRlYzUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjQ2YTBlZmZlNjdiN2ZjYTliNjBmZjRlNDQ0YzQ5NzUxOTc2MWUwNzAzOWUyYTEwMTE0NzA0NWUyOTQyOTg2NjEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_3475477b68664e1ca3d0066651c05499",
+      "statement": "A supervised ControlNet .ckpt carries only controlnet.* keys: the frozen base UNet is registered so Lightning owns device placement, but stripped from the state_dict and the checkpoint by FrozenArmMixin's state_dict override and load_state_dict's allow-list. Export bakes those controlnet.* keys into a fresh ControlNet built from the network config and restores the frozen base from --base-native-dir (the JiT native export the supervised stage trained against). A missing or unexpected controlnet.* key raises — there is no blanket strict=False.",
+      "evidence": [
+        {
+          "resource": "repo://docs/adr/0031-device-ownership.md",
+          "version": "repo-file-v1:sha256:c1ef4fc02e93424548faf2d8a94cfe1d95b2ec02bae7c8de00ebfc4c206194b9"
+        },
+        {
+          "resource": "repo://src/manifold/training/export.py#L27-L105",
+          "version": "repo-lines-v1:sha256:2e9ddceae01b6c5ab40e3fd290fffb1f97c636f31ecb77125fafc62dea21bf0c:eyJzZWxlY3RlZExpbmVDb3VudCI6NzksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjljNTNiNmY2NzJiODk4Yzk3MjNiYWNhN2ZkMjU0NjY2MmExM2RiMTQ1NzMzMzU1MWUyNmQ3MjYzYzdkNjg1MjgiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImZjZjNkYjg2Zjg4ODAyMmJmZmYwNjYzYjQwMzg2MGU1NzNhYjNmNjJmZWE0MTIxM2FjMDZhZmMyOTU4NGRmODQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjQ4Zjk5ODkxZTUyNTczYjhiNzg2OTA1ZDkwMzZlZjE0NGNlYzU5OGYzZmJmODYwMzBiMTU1NjQ2OTY5NjUzYWMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjU5MjI0Yjk5N2JiNjVlNGYzOGE0YTE2YTVjNTYxNWUyNzg1NzhiNTQxYTllZGU4NDJkMmEzNDUxMDE1YWNkNTUifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_e40ef6b601264cafa687c5f898998c7c",
+      "statement": "There are two native inference pipelines: LatentFlowPipeline (JiT noise-to-data UNet + VAE + scheduler) and ControlNetLatentFlowPipeline (frozen JiT base UNet + trainable ControlNet + VAE + scheduler). The previous PairedLatentFlowPipeline (the 2·C src→tgt UNet paired-JiT inference pipeline) was retired with the paired-reward pipeline in ADR-0034. The JiT and ControlNet pipelines share the per-component save_pretrained / from_pretrained contract and delegate sampling to the shared modules/{sampler, controlnet_sampler}.py primitives (ADR-0005).",
+      "evidence": [
+        {
+          "resource": "repo://docs/adr/0034-one-realism-reward-both-grpo-policies-delete-condition-aware.md",
+          "version": "repo-file-v1:sha256:ab63de45fe9112825e9a55405cef1eada429f422dd3b18d5297df3df7271fb25"
+        },
+        {
+          "resource": "repo://src/manifold/pipelines/controlnet_latent_flow.py",
+          "version": "repo-file-v1:sha256:e1dca719a1b723380f9b5189661120ea26b3a4425dc03d821c89eb5457f64384"
+        },
+        {
+          "resource": "repo://src/manifold/pipelines/latent_flow.py",
+          "version": "repo-file-v1:sha256:9097a8a670b502ea987628300d4326f381e991f3629fe71cafcf744499c0e27a"
+        }
+      ]
+    },
+    {
+      "id": "claim_4ba52514060341f8b26c6e217ec6fbce",
+      "statement": "manifold-eval infers the policy from the before artifact's model_index.json (LatentFlowPipeline vs ControlNetLatentFlowPipeline), exports the after .ckpt through the same checkpoint-to-native bridge into <output>/after_native, reloads both pipelines, and runs the same-seed before/after generation: identical initial noise and conditioning → frozen-VAE decode → min-max normalization to [0, 1] → 2.5D slice grids and a metrics JSON. On the ControlNet path the paired PSNR/SSIM vs the real target is also recorded.",
+      "evidence": [
+        {
+          "resource": "repo://docs/adr/0036-controlnet-fidelity-offline-3d-psnr-ssim.md",
+          "version": "repo-file-v1:sha256:687892e1ea1da16c0db1faa94e8d71a18385adeef23b73a8e6e599d92a0f08c9"
+        },
+        {
+          "resource": "repo://src/manifold/eval/before_after.py#L60-L254",
+          "version": "repo-lines-v1:sha256:b5ef549c01545a7726f5ee94f47809bbe77c415f55303af4095e8879fee64aa0:eyJzZWxlY3RlZExpbmVDb3VudCI6MTk1LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiJiNmVhM2Y1NTE1NTU3ZWI2OTQzZjExMzVjYTEyNDlhMmJlZTJiMzJmNzg4MTU0NmE2N2Y0OWU4OTE4MDQ5YTk5IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiJiYzgwMThjMmRlYzlkMTcyYzBkOWU2MTU0ZmM2MDA0YmI3YjAzM2FiMjUwYWY3ZmY0MTMwYmQ2YzczZDA0NGUyIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI4OWU5OWE1MGZkMThiN2I5MjYzM2RmMjgzOGQ0ZGMzMjk0YzMxY2Y0N2U4ZjZiNGUzMjAwNjAzZmY0YTY3MzE5IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MSwiZm9sbG93aW5nQ29udGV4dEhhc2giOiIzMWJjZmZjOGM3YzhmZjExYjc4ZWY2MjEzZGIwYTc4NTczNDBlYTQ3NzIyYjM2MDBlODA0ODdmMDQ4MTk3NTM2In0"
+        },
+        {
+          "resource": "repo://src/manifold/eval/cli.py#L132-L341",
+          "version": "repo-lines-v1:sha256:2e56a8bbf8582cf7bd4b2ff222fc5302e5c751a2ea903549ef1f1fb26031f644:eyJzZWxlY3RlZExpbmVDb3VudCI6MjEwLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiI2NDNmMjVjYWVkNDE4MTg3Y2Q3YTBiYWVkMDlkYjJjNmNiZDIxNGU3MDg5NTRhODFlYzc3YzAwZDkxMzNmNjZiIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiIxNjIzM2IzZmZlYTMyYTIzZGY1MzA2NTM0MzQ4ZjJkZWU3NzZhNWE2Zjc0ZmI1MzMxNzVkZGM1MzlhOGZlNDY0IiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI2NjU0ZTVlZDlhNGEwMWFlYjQ4MmFjZWMyZTlmNzY2ZWIyMWY4NjM0ZTg1NjU0YWY4NjBjOWZkNGYxYWYzNzEzIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiIzZDQxMzQwY2MyMzlhMTU5Y2U5YjYwMjJlOWY2MzIyODMyZTJlYWQ3NmNhZTllNDc1NGQyMTBlYjhmYjZkNWU4In0"
+        }
+      ]
+    },
+    {
+      "id": "claim_037124edcf24479aa510092c6cba716a",
+      "statement": "The ControlNet's direction conditioning is a learned MLP that combines source and target contrast embeddings via concat([embed(src), embed(tgt+offset)]) with the optional paired_direction_offset shifting the target embedding row to break A↔B symmetry. The base UNet sees only the target-contrast label; the ControlNet carries the translation direction.",
+      "evidence": [
+        {
+          "resource": "repo://docs/adr/0028-two-mode-grpo-unify-controlnet-delete-bridge.md",
+          "version": "repo-file-v1:sha256:e1bd55b3afb78ddabccc1211a0879fb6389f24ee07d3f919c5391b993a71a656"
+        },
+        {
+          "resource": "repo://src/manifold/models/controlnet_3d.py#L20-L100",
+          "version": "repo-lines-v1:sha256:45a31ad84a3a6c288671c234c040d0a0d1552d60cf42d73681318ce33631a5d2:eyJzZWxlY3RlZExpbmVDb3VudCI6ODEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImU4ZmUwN2I4ZThjMGUzODMyYWE0OWIyNGU5NmQxOTVkZjliMTlhY2VmODIzZTBjNmJjOTNmMGNiMjBiMmZiODAiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImFhZjkzNTRjMWQ3MmZhNmYwNzEzZDQzMTM2ZTUwYjlkZTIyZDI3MmE3OTA0NWY4MzI0MzM0ZDgxZGY5NTAxOTciLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijg0ZTQ3MmVkNmYwMjM1MTZmNjIzZDllYTQ3YWNjMzdmOGIyNDFmMWZjNDBmZDEwN2Y5OGQxOWMwOWU5MzIyNDciLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImY4YjUwNDY1ZGJkYWVmNmYwYTI5ZDIzNTZjYmM2NzhlZWVjMGEzOGIzMTBmZmUyMDRlNTQxYmE5YmFhOWE0ZWEifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_d318092a5d5845f492244a9e5737a9d8",
+      "statement": "manifold-eval refuses to estimate a new VAE scaling factor: it uses the before export's vae.scaling_factor verbatim for both sides, and the ControlNet path requires a held-out val split and a warmed paired latent cache (no empty val or cache-miss fallback). The eval refilters pairs by --src-label / --tgt-label, caps at --num-pairs, and writes metrics.json plus slice_grid_<i>.png.",
+      "evidence": [
+        {
+          "resource": "repo://src/manifold/eval/cli.py#L176-L241",
+          "version": "repo-lines-v1:sha256:ba5c509c9677d61909fbc2dbb59ce8de6eaf9c5ba32f9e6fbf1834692ef9b293:eyJzZWxlY3RlZExpbmVDb3VudCI6NjYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImM4MTVhNjRmYmM1MTkzNDY3YzEwODM3ODUwOWQwMTJhZGE0ZTA3ZjE2MDdlMDJmMWMxZGY5NGI3MTIyOTk5ZGEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImFlNmEyOWJkOTMyOTkwMzZhMWQ3MGVjZDQyNGUzMjY3ZTQzMTYyODhkOTVmNTk5MzM0YTljZDQyZmZmMDVkOGQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjJlZDVhYWI0Mjg4ZDQ5YWMzOTg1Y2MwZTg2NmJiMWQxN2ZjM2IzNjA1MWQyN2YxNDU1OTg0NGYyODE2OGJiZmMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjY3NzUzYTJiNWFkNzZmMmMxNTE4NWEyNWQxN2RjOWEzMzMyNjNkMGQ2ZjBjOGI4ZWE5MmYxMzRjNThjYmNlMDUifQ"
+        }
+      ]
+    }
+  ],
+  "verification": {
+    "by": "openwiki/0.5.1",
+    "at": "2026-09-12T12:03:27.299Z"
+  }
+}
