@@ -1,0 +1,142 @@
+{
+  "schemaVersion": 1,
+  "pageVersion": "sha256:5dbf8dab8c9f2d6a98c0cf62f9990240f88e0c06e623617cec8611cd50487e37",
+  "claims": [
+    {
+      "id": "claim_1b306a3eec35481ea402cfb901bc0918",
+      "statement": "The supervised ControlNet training stage ships the observe-only `PairedFidelityCallback` (registered as `PairedFidelitySpec` in `src/manifold/training/callbacks/paired_fidelity.py`) as the in-training paired-fidelity monitor per ADR-0037. The callback runs the module's full Heun `controlnet_rollout` on a small fixed paired subset under fixed seeded noise, VAE-decodes both the generated and real target latents, normalizes them through the shared `min_max_to_unit` helper, and logs `val/psnr` / `val/ssim` through module-attached `torchmetrics.MeanMetric` instances.",
+      "evidence": [
+        {
+          "resource": "repo://src/manifold/metrics/paired_callback.py#L1-L218",
+          "version": "repo-lines-v1:sha256:ca5eef87bc78283982ff62c0630dba342153618f106adb4928089702e81bffa6:eyJzZWxlY3RlZExpbmVDb3VudCI6MjE4LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiIxMGQ0ZWRjNjBjNzJiZDI0ZGNmNzE2YjVmZmY3MjA0OTQ3MGRjNTZlNTc2ZGYxZDE0Njk3MzZhNzZiM2RkOTJiIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiIwMWJhNDcxOWM4MGI2ZmU5MTFiMDkxYTdjMDUxMjRiNjRlZWVjZTk2NGUwOWMwNThlZjhmOTgwNWRhY2E1NDZiIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MCwicHJlY2VkaW5nQ29udGV4dEhhc2giOiJlM2IwYzQ0Mjk4ZmMxYzE0OWFmYmY0Yzg5OTZmYjkyNDI3YWU0MWU0NjQ5YjkzNGNhNDk1OTkxYjc4NTJiODU1IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MiwiZm9sbG93aW5nQ29udGV4dEhhc2giOiI4NjJjOWExZGE5YzhjM2FhYmFiNjliYTQyMzAyMGMzNjgzOGE0Zjg3OTdiZjFhYzVhMTM2YzcxZTNmYTIwMDAxIn0"
+        },
+        {
+          "resource": "repo://src/manifold/training/callbacks/paired_fidelity.py#L36-L75",
+          "version": "repo-lines-v1:sha256:2c220edce50b7369395e72c29eca98fc1baeff8a1c5ed61188da0f3ef97a12a3:eyJzZWxlY3RlZExpbmVDb3VudCI6NDAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImY2OWExMzk3NWMyNTZlYzgzMjBlMjAxNjA4M2M5NmRmNjM3Y2EzZDM1YmViZGUyMzE0YmVlM2E0NzExYjU2Y2EiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU5MDlhNTNhNjE4ZDAyOGUxZDMwMDBjMGE3YWJjZWVjYmU1ZmIzN2Y0ZTUxMWVmZTQ2NjQzZmFkNmU2Njg3MmYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjRlY2YwYmE5ZmI2YzQzNWUxODJlMGJmNjRlZjQyYzdhNzg3MmI1OGE0NWYxOGY3NmQ2MmQ0YWIxN2UwM2VkMWIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
+        },
+        {
+          "resource": "repo://src/manifold/training/controlnet_cli.py#L168-L188",
+          "version": "repo-lines-v1:sha256:944cb6e1cc0d0c339d50f767d103dc5428e22850faa595393f4705d07393abd0:eyJzZWxlY3RlZExpbmVDb3VudCI6MjEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQxNDY3NzExZGVmNzE4MTU5YjIwOGYyNGJmZTdhOTMwMzVmMThkZGU4NjZiZDg2MGQwYjkzODc3MTNlYTI3OGMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImJjMTZiN2YzZjAxMTVkMDU5OTU0NTg5OTAzZDM3YjU5ODM1YjQ3OGEwNmZhYzM5MDhjMjM0N2Q0ZWJmYWI2OTYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjJkN2NlMGU0OGZjNmRlODA2YTdjMThhNzQzZWM5NzE5OWE4ZTJlYmMxOGFlYzdjNjg1ZDE3YzE2NTg5MDAzZTAiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjdjNmYxMmM2MTQ2Y2I5NDFhMmNlNzc0NTMxN2NjMTcwM2Q5NDdkM2RlOGM0MTY2Y2QxMmNmMDY0ODcxYjE0ZmIifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_021e150e31d0421b816095139872a317",
+      "statement": "`FIDCallback` enforces collective-count invariance under DDP (ADR-0030) by performing an error-flag `all_reduce(MAX)` rendezvous before each reduction-bearing step in `on_validation_epoch_end`. Any rank-local exception sets the flag locally, the rendezvous fires, and every rank takes the same abort branch together (`val/fid=+inf`); a rank-local exception cannot strand peers in a missing `all_reduce`. The number and order of collectives is identical on every rank in every code path.",
+      "evidence": [
+        {
+          "resource": "repo://docs/adr/0030-fid-callback-split.md#L129-L146",
+          "version": "repo-lines-v1:sha256:49533f4dbd7d04347bd88195a6191cdd0f680fe474e300774b8b0ce1f2119093:eyJzZWxlY3RlZExpbmVDb3VudCI6MTgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImEzOGIzNDRjMzU4NzY4NTExNWVjZWI1NmJlNTdjMWE5MThhMTUwYWY3MzgzMGVmYmE1YjE1ZmNlNGRmMDkyMmUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjZiM2YyNGUwMWRhNTFiMTBlZmViOThmM2M1NDkyOTFiNjcyZTM3ZDFmOWRlZGMwNzM5MDFiNzA1YzIyZjEzYWQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjU0MmUzY2Y2ZDE3NTEzMmE2ODk4YjZmM2QwNGE4MjNjMTExMzZmMzVlNTU5MDkwYWIxZjk2NTg5ZWM1MTMyNjEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjM2OWM4MjFmYTE0ODkyNjcwZDEzZWQ3NTA3NzQyOWFlYjJiZTUyOTQ3N2QwZmE5ZmQ0NTQ0OTZjMGU1OTc2NDcifQ"
+        },
+        {
+          "resource": "repo://src/manifold/metrics/fid/callback.py#L215-L386",
+          "version": "repo-lines-v1:sha256:1e4e4650b702ab4868ee3927c47f157aa9d149c5e818a51b62053ab71a4cabe5:eyJzZWxlY3RlZExpbmVDb3VudCI6MTcyLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiJmYzU3MGI0YzI0MzRhNzVkYTVhNTNiY2E0Mzg3ZjRhM2I1NGZiYmZhYTQzYWJlZGUyM2Q3YzcyZGRkZjY1ODU5IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiJhNjc1NmQ2OTUxNTJmZDNiM2Q1MjkwM2E5YWFlNmQ3MjEwYjRjNTNkYjBjZmE4MzEyMDYxN2YxOWE4ODRkM2M0IiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI4ZjJhYzkzMWM2YzNlZDk2YjkyOTg0ZjI3MTUxYzZkNjgwNzVjZGFjNDQ2ODJhZGI3ZjRkODc0MGQ0YWM4Zjc5IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiIxMmYyYzczYTkxMDQ2NjFlN2IyYWQzOWUyNjRiODY0OWI4MjE0ZWI1Zjc0YzM3YzU0M2ZkOWI3NTExMjg2NzVjIn0"
+        },
+        {
+          "resource": "repo://tests/test_fid_helpers.py",
+          "version": "repo-file-v1:sha256:c25cb14fb82c2691896515aa5753a4c8e611e9d72ca395ae5d090373922d94ae"
+        }
+      ]
+    },
+    {
+      "id": "claim_08ca78080291414fba442877c3a4c975",
+      "statement": "`PairedFidelityCallback` DDP evaluation is redundant (not sharded): every rank evaluates the same fixed paired subset under the same seeded noise on DDP-synchronized weights, so the per-rank result is identical and the cross-rank reduction is just Lightning's `torchmetrics` sync on the two module-attached `MeanMetric` instances. There is no FID-style sharding and no error-rendezvous machinery on this path — collective-count invariance holds trivially.",
+      "evidence": [
+        {
+          "resource": "repo://src/manifold/metrics/paired_callback.py#L23-L28",
+          "version": "repo-lines-v1:sha256:ba6a13830858b38c8b9c8557d0b6a81db7e3310eca473cc171473a75217acf4d:eyJzZWxlY3RlZExpbmVDb3VudCI6NiwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiNWI1NTEzMDE0NzM5YzkxNTg0NmRhOWJhNTgzOTE3NGExODk1YzVjZDVjZWQ3M2YwYjJhZWY1NDNkM2JhZDUxNiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiODk2YmJjOTRkZDY3YWM1ZWM3ZmZkOWUzNTgzMTkyZmIzMWRhOWFiZDRiMjFhNzMyMmZkYWJkMTg0N2I4YzRmYiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiYjE5NDIwNDc5NTVmMGQ3ZDA1ODE5ZDFlMWQ2MjRkNDAxNGU3NGVkZDEzNjVhMWI5MWFkOGVhNGRkZThjYTZhOCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiMWFhZjc2MzdjYjZlN2U1ZGI4NWQ2MzQyNzQ2MDE0ZGYwNDFjY2Q1NThhOTIwYjI5ZWI2YWM3MTlkN2JhZjVjMiJ9"
+        },
+        {
+          "resource": "repo://tests/test_paired_fidelity_ddp.py#L19-L70",
+          "version": "repo-lines-v1:sha256:bb1a558ae1294084763ac1a15733c0dc9035300d5a32efe9a6fbb4cd3506d73c:eyJzZWxlY3RlZExpbmVDb3VudCI6NTIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImRhMWJkMDBkZTBiZTJiNmUwMGJkMmNhOTE4MDMzMjgzMWVmMzE1Y2M2ZmZkZmVlMjQzNDM3NjFiY2Q3MTZkNzYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjYxYzg4NDc5Y2U3MGEyYTZlZGQwOGZhOTcwOTAzMGZhMTc5NTExN2Y0OTNmNTVkNzMyNzc5NWI5NmJmZjQxYTQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijg5ZTk0NDRjOWRhN2MxMGM0NjdhMzQ0MzMxMWQxYTAxYmJhNTRiYTFjYzQwZTQ0ZDA5MjY2ZmViYWE2NzlmMTQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_dc088453f71f4493bda140685d9b1cf9",
+      "statement": "The `PairedFidelityCallback` monitor is observe-only: it never drives checkpoint selection (`monitor_metric` stays `val/x0_mae` per the supervised ControlNet CLI), never enters the loss, and never touches the optimizer or EMA. The `paired_fidelity` spec is registered on the supervised ControlNet CLI's default callback list but remains forbidden on the ControlNet-GRPO path until the deliberate ADR-0037 GRPO-stage follow-up lands.",
+      "evidence": [
+        {
+          "resource": "repo://docs/adr/0037-controlnet-fidelity-in-training-monitor.md#L19-L62",
+          "version": "repo-lines-v1:sha256:9ea50cdb5dedadfb8deee4979aaacd43e017fe93d53bf90bf274e886ae0b50d4:eyJzZWxlY3RlZExpbmVDb3VudCI6NDQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImJhYzBhZWIwMTc4ZGVjMWRmNzQ5NGE3OTk2MGM1NzJmZjQzZDU2YzQyN2ZkZmQyZDkyNWNjZjQzYTgzZjU1NWEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImIxZTk1NjM5NmE2NmU4NzQzNDBjMzJlYTBiZDM1ZDZiNjJiZWE5NGFkYTQ0N2YwMjhlMmE3YmMzMTg0M2I2MmQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijk5ZWYwNjA5MzRiN2UyNjlmN2EwNjEwNWRlMDAzMTAxZjM3MmNhYWI1NzhjOWExOGZiZTUzNWU2ZjYwODU0NjUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjoyLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6Ijg1N2MyMDM5ZDA0NTI5YjkwZjE3ZmI5YmJkMDQwMGUxYWM2YTgyMjJlMGNjMGYyYTI5NmMxMjVkZWUyZWI5ZmIifQ"
+        },
+        {
+          "resource": "repo://src/manifold/training/callbacks/paired_fidelity.py#L10-L13",
+          "version": "repo-lines-v1:sha256:4f685e75d4493676a4b35af94e817b6c0b8e3f4448b18fb8879c72761b4a24fe:eyJzZWxlY3RlZExpbmVDb3VudCI6NCwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiNjFhNGYyMmFlOTc2YzIyYTUyN2MyMTYxMjhkMjJkNzc4N2Y5M2IxY2U4NWVhM2Q1ZWFiNjZmMjM1NTA2Y2ZiMyIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiYWY1M2Q1ZmUyNjEwODk1Yzk2OTNiZjZkMGUzNTE0ZDIwNmQ0OGEzYzZkYTcwYTRlNzhkN2YzN2E3NWFkMDI2OCIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiYTEwMGEyZDFhYWFjYjMzMjhiNDZjYTg1MDc0ZWQ5Y2NiMTFmODY0MmExZDBkYjJiNGM4ZmFhMmUwN2UwMzk0ZCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiYjE4YWJiMTk5OWIwNDQ2NGQ5MTFkMjNiZTZjMzI1YThmMGE0ZjllODNjNjgxMmQ0MzcxNTEwMzhjYTA4ZjA4YiJ9"
+        },
+        {
+          "resource": "repo://src/manifold/training/controlnet_cli.py#L168-L188",
+          "version": "repo-lines-v1:sha256:944cb6e1cc0d0c339d50f767d103dc5428e22850faa595393f4705d07393abd0:eyJzZWxlY3RlZExpbmVDb3VudCI6MjEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQxNDY3NzExZGVmNzE4MTU5YjIwOGYyNGJmZTdhOTMwMzVmMThkZGU4NjZiZDg2MGQwYjkzODc3MTNlYTI3OGMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImJjMTZiN2YzZjAxMTVkMDU5OTU0NTg5OTAzZDM3YjU5ODM1YjQ3OGEwNmZhYzM5MDhjMjM0N2Q0ZWJmYWI2OTYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjJkN2NlMGU0OGZjNmRlODA2YTdjMThhNzQzZWM5NzE5OWE4ZTJlYmMxOGFlYzdjNjg1ZDE3YzE2NTg5MDAzZTAiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjdjNmYxMmM2MTQ2Y2I5NDFhMmNlNzc0NTMxN2NjMTcwM2Q5NDdkM2RlOGM0MTY2Y2QxMmNmMDY0ODcxYjE0ZmIifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_f9a06d89726744a1b8503269a7a66522",
+      "statement": "Manual `all_reduce` and `sync_dist=True` must never be combined for the same value: the two reductions double-count and yield a mean-of-rank-means (or worse), not the true sample-weighted global mean. `train/loss_epoch` and `val/x0_mae` migrated to module-attached `torchmetrics.MeanMetric` (weighted by batch sample count) for this reason — naive `sync_dist=True` would be exact only under equal per-rank batch counts, which DDP padding happens to guarantee today but a future non-padding sampler would break.",
+      "evidence": [
+        {
+          "resource": "repo://docs/prd/ddp-correctness.md#L78-L83",
+          "version": "repo-lines-v1:sha256:a8ef3794967cc5c3da4730ff1020c213191d822555c4bb18ac17e0d63357482a:eyJzZWxlY3RlZExpbmVDb3VudCI6NiwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiNjQzYzZmZjZhOWZkYmRjZDhhZDFhMTYyYTg0YTFkZDM2YmZjNzVkMjRmMjkwNjEzMDIzZDg5OTQwODA2ZmY1YiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiOGI1NjQ3YzI0MDg0YWIxNGUzNWU4NGFjNmYzZDM2YTAzZWZiNzUzYTQxZTFkZjMxZDcyOTBiNzhkYzUxNjdjMSIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiOWQ1YTU0YWYyOWM3ZjQ4MmM3ZmVkNzRhYTIwZThkYjFjMjE1M2VhZmExMzIyNDg3NmMwZTY4Njk0OWMzNDdmNCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiODJhOWVhYmFjNTM4ZGM0OWEwNDdlMmFhMmM2NmE3ZDNlYjJhZjg0NDk2MTEwN2E2NDdmYjY1NWEzMjlhODlhOSJ9"
+        },
+        {
+          "resource": "repo://src/manifold/training/metrics.py#L15-L107",
+          "version": "repo-lines-v1:sha256:01d6d0e381cf3721703196b860b94dc581a9ac67e6b477548e205695314d4bba:eyJzZWxlY3RlZExpbmVDb3VudCI6OTMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijc4NzU5ZGU5NzBkYTRlZDNmYzMxNTEzM2I0NTIwYjY1OGI2MGE2ZTM4ZjQ0NTE0N2M2NzQzNTRkYjIyZDJiNjkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjVkZjM0OWVlOWI0MzgwMzY4ZDczMjk4NTQwNDJiNjY2YTZiNmJmMDEwNjViYjYwNzQ0MWM5ODNkODU2MmRmYWUifQ"
+        },
+        {
+          "resource": "repo://tests/test_ddp_metrics.py#L31-L70",
+          "version": "repo-lines-v1:sha256:d8c247b2a4a6b1cb03d3458c57b03c7d5963122bfffbe1b8bd3aee57ecb35460:eyJzZWxlY3RlZExpbmVDb3VudCI6NDAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjNlZTM1YmIzOGQyOWQ5NDAwMDQ1YjhkMDMzZDk5YjVlN2E4OWUwMWRlZjM2NmQ5YTVkOTZiOTE4YzQ1Y2FlYTciLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImE2YTcxNTI1NzJlZTg0ZjEwOTA2Yzc0YjlmMmE5MjQzNGRkYWIwZTNjNDI4MTNiMDRlNTk3ZWZjZWM5NTFiMjYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjNhOTE0MWQwYWU2MjM3NTU1YjdjMTBkNTllODdkNDE3ODc4ODUyNmM3NjZkOTVkYjNjODk0NTY0MWQyNmExZDgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6Ijg3MjE1ZTkxNWI2ZmFiN2Y1OWNmNmY1ZDEyNThjNTc3Nzg4M2E5YWE3OWM0Y2VjMjhhZTEyODRhNDQyYTQ4NzYifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_337e9aeacb5f4140ba7716c5b3091ab9",
+      "statement": "Empty FID shards contribute zero sufficient statistics `(sum_x, sum_xxT, n=0)` of the probed `_feat_dim` rather than skipping the per-plane `all_reduce`; the collective cannot deadlock, and covariance validity is checked only after the global reduction (the global count must be at least 2 for a plane's FID to be computed). One-sample local shards remain valid and must contribute their first/second-order sums — the unbiased covariance's `n-1` denominator depends on the global count, not the local count.",
+      "evidence": [
+        {
+          "resource": "repo://docs/adr/0025-all-ddp-validation-no-rank0-gate.md#L26-L34",
+          "version": "repo-lines-v1:sha256:5683edfd0bb3492dd386d1310c74d53aaa2cf72d750340cec373127755bdebdc:eyJzZWxlY3RlZExpbmVDb3VudCI6OSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiZjZkZWJiZmY4Y2JhMjU2NWY2ZTkyNjNlNmEzOGRhYmJiYzExYzI5NWNkNjM0NGU3NjkzYzU2ZThjYTZkYjZhMSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiNTEwYzA5NzZjZGJhNDlhMDBlMDIwMjAxNmNjN2ZlZDUyYTJkZDk5YzI0YzdmYjA0MDVhZmVjZjJiNzlmOWU1MCIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiYzU4MzU0Nzc2YWRlZjc0M2NhMjFmMTYxODJjMzc3Njc4ZjI5N2I3MGI4ZjZjMjRjNWI0ZDNlODJiY2JjYTk2MiIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiMDc1N2EyNzM1MmI1YTQ2YzM2YjgxZWQ4OGNiNDFlYzUxZjM3ZjI0ZTUzM2VhNmViNjc2ZWNmNjllMmE1YzhhMyJ9"
+        },
+        {
+          "resource": "repo://src/manifold/metrics/fid/callback.py#L182-L205",
+          "version": "repo-lines-v1:sha256:a97800061d4d20bf30357995b3ea5937c9cd9ab90213257f3f6b58a105d22508:eyJzZWxlY3RlZExpbmVDb3VudCI6MjQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ5Y2I5ODlkNzdiNzA5ZGM1ZjU0MzdhNWQzMTEzZTNhMzgzZjkwNzIyMGQ1NmVmZTRhZTA1NGFhYzRlNDQ5YWIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImIwY2IyMTI3MWM3NmYxZTgzYmUwMDA5MTMzNWEwMDM0YTZkMDVlOTllYmZlYTU0MDM3YmE0NjUxYWJjNWEyOTYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImU2MjEyYjhlOTE2ZjQ1MDEwN2Q1MDBiYmIyMWY2YzgwY2IxZDBlNGUwZTE0ZWE3NWZlODg0ZTc1NzRhNWYyNGEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImZkYWI1NWFiZDRjYTVhZTQ4ZGQxMmE4MDYzMzg0OWMwZmQ1MTA4NDJjOWU4NTQ5MTFlNGJjNmI3Njg5MTdkOGUifQ"
+        },
+        {
+          "resource": "repo://src/manifold/metrics/fid/callback.py#L295-L362",
+          "version": "repo-lines-v1:sha256:c6a61b91912f6aa7f4398a48f6f2e77162adfd0b30ef67fbe6a099dc1b5aa1b3:eyJzZWxlY3RlZExpbmVDb3VudCI6NjgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjM1YjE2ODk2MWVmNjZmZTNjYzI0ZjNmMDI3YzdjYjA3ZTgyNjU2MTVhYjQyNWZhM2U5OTkyMDkwYjQxM2MxYzIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjIyMGI5YmI4YmU0MWU5OWZmYWU5NWViNjJjZmI4MDk5MWM5N2ZhZjAyNWQ1YTYyMzk2Y2M2YjI0MDgzMjZlYmMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImViOWEyM2M2NDViMDI1NGE3ZDMxZTBkMzE1ZjdiNjliNDhhYjEzYTBjMjk0YThiODRkZmQyNDA3NWJmNjA2ODUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjY5YjI4MTUzNTljYjUwZTEwNzNjYTQ3NTgyMGQyOGExMzVhZTJmNDEwY2Y1NzRlZjMxYWY4ODdjMmNmYjVmZjEifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_0f78b8fc1cf34065a2c912fc7ca156a2",
+      "statement": "Rank-strided FID seeds (`FixedSampleRollout` uses `seed + i` for `i % world == rank`) ensure the global synth set is the union across ranks rather than `world ×` rank 0; a non-strided seed would generate `num_synth * world` volumes per rank and silently distort `val/fid`.",
+      "evidence": [
+        {
+          "resource": "repo://docs/adr/0025-all-ddp-validation-no-rank0-gate.md#L36-L38",
+          "version": "repo-lines-v1:sha256:e7e13a5ff038be58300c530886fa36ff9b8d28394e587a3e50b5b5854f7576f7:eyJzZWxlY3RlZExpbmVDb3VudCI6MywiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiY2VmMDNmMmRhODg2MmNhMmQxNTFmNmJiMjExZGRjY2JiYWY0NjM0MzFiZTc0ODY3YTE3MzQ0N2VmNzQxYmQzOSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiYjY1NmEwODM2ZWNlMTlmYTRkOWQ1NTY4YTY1MzA0NjY1YzM3MTExOTEzMmIyNjA1MmYyMGUxM2E2OTBhMWY0MiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiZTA4MWQ1Mjk0N2ZiNDRhMzRkOTA3ZjI0YWY4NjZlZmIyNzQxNzc1NjgwNTRiMzliN2UxZTE2ZTE5NmJjMjU3NyIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiMTVmNzgzYjk1NGU1M2Y1MGM0MDAyMDc2YmRhOGQ4YzVhNTY2M2I3ZWEzNWU5ZTIyYzI1YjEzYWJmMWZjOGMwZiJ9"
+        },
+        {
+          "resource": "repo://src/manifold/metrics/fid/rollout.py",
+          "version": "repo-file-v1:sha256:da16f9e2b3942ab44164e2c4caa3e03d40dec732b6ba55df9179395371802e01"
+        }
+      ]
+    },
+    {
+      "id": "claim_e89838c2aba94034bd782dffa9308ca2",
+      "statement": "The in-training `val/psnr` / `val/ssim` monitor and the offline `metrics.json` PSNR/SSIM share the same metric (`PairedFidelityMetrics`), the same per-volume `min_max_to_unit` normalization to `[0, 1]`, and the same float32 decode with MAISI `norm_float16` disabled. A change that breaks one side without the other is a comparison bug and crosses `src/manifold/pipelines/pipeline_utils.py`, `src/manifold/metrics/paired.py`, `src/manifold/metrics/paired_callback.py`, and `src/manifold/eval/before_after.py`.",
+      "evidence": [
+        {
+          "resource": "repo://src/manifold/eval/before_after.py#L82-L94",
+          "version": "repo-lines-v1:sha256:321a8fdec1fc36142709a26b0755561321573b61e005bbc81a77b60d56696667:eyJzZWxlY3RlZExpbmVDb3VudCI6MTMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxYWJjZDBjYzY5MTNkNGY1MWViMjFlNGY1YWZjMmU5MGY4NmQzNmE0NTBiYjQyY2IwNWM2ZjNlMGQ3MDZmOGMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjY0YmM3YjQ0NzE5YzVkNDBiOGNhNDViYTAzZTQ5ZWM4YWQ1MjQ0ZTIxYjdmYmQxMjUyZGQ3ZjY5ODA2ZWIzMWIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijc3ZThkYmI3MWQzNmQ5M2JmYjA3NWY1ZGJhYWE1MTkyNjdhN2Q1Y2IyZmE2MTExOWJiNjgwMmMyY2M5NzU0MzMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImJkZmM0MDVkNDJmZjgwMGIyODEzNDNmNTk3MzRjZTc1ZWM2Njk0YzQzMDExMzY2ZGFlMTc1NzU4NThkZjRmZGYifQ"
+        },
+        {
+          "resource": "repo://src/manifold/metrics/paired_callback.py#L201-L217",
+          "version": "repo-lines-v1:sha256:e3c6f2c6456c40a2ff7a6d5ef6b17c0e5951660490dd43f8b0056ff331a80601:eyJzZWxlY3RlZExpbmVDb3VudCI6MTcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImU1YzAwNzQ1ZGNmZTJlNTlkN2ExNzlhNGFiY2FkMDE1ODZkNzg1ZGFlNDEwMTYyYjNmMmE1MDRkYTIxYzk2NzgiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImVhMDNiZWU4ZjU0OTcwNjA0NzRlNDQzNWJmOGViZjNlZTVkOTM3Zjc3MzU1YTkwYjU4YTgzNmQ3ZDQ2MDljNTkiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImZiMWZlZDQ0ZDgxNjZmNzkyZGI4MDI5ZTQ4NmJlYjc5YjgzZjFiNmQ0NTdiZDQ3NzVlOTZiYTg0MDRkZTgxZTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImNlNWQ2NWM2NTk5ZDE4M2FkODJjZjZkYjc2NWZiZjk0YjkwZDVhNDNiYjVhNmJjNjc1MWE4YTI3NzQ3ZDc1YWEifQ"
+        }
+      ]
+    }
+  ],
+  "verification": {
+    "by": "openwiki/0.7.0",
+    "at": "2026-10-03T13:11:49.042Z"
+  }
+}

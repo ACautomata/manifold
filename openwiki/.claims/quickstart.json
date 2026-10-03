@@ -1,0 +1,96 @@
+{
+  "schemaVersion": 1,
+  "pageVersion": "sha256:14ee75f559d50dcb2e90e8f07f337e7d322619c651f5ccd68c95fc1403f7314f",
+  "claims": [
+    {
+      "id": "claim_1ff39422b0554ea9bdfdc6db496a6e9e",
+      "statement": "The Manifold repository declares exactly six console scripts in `pyproject.toml` `[project.scripts]`: `manifold-train`, `manifold-train-reward`, `manifold-train-grpo`, `manifold-train-controlnet`, `manifold-export`, and `manifold-eval`; `pyproject.toml` is the single source of truth that paired-reward deletion guards and the `manifold-eval` install-facing workflow read from.",
+      "evidence": [
+        {
+          "resource": "repo://pyproject.toml#L61-L85",
+          "version": "repo-lines-v1:sha256:0ff970cf451dffa6d971122b8f979de9802cfa3a7a99459731418d1c16c9490c:eyJzZWxlY3RlZExpbmVDb3VudCI6MjUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjRlYWI0ZWM2M2RlNTE3ZGE0Y2Q4ZTVjODMwN2ZiMmM3NzM3ZDM5MTkwYWI2OWYzMmE1ZTllZjgxZWE0NDE2ZGUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjRlMTQ3NjBlY2ZkODQxMThkM2FmZTQ1YjMyMWRjZjI2YTFkZGY5OWY4YzVjMjY5NmVlMWE3NzU5MDgzMDQyMjUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjZmYWY3YjU0NDA2NGFiMTYyYTgwZTNjZmQzMTA2MDRiYjRmOTYyZmRmOWYwZGM1OWVmZDk0NTQ1MDdlODRjYTMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjVkZGRiYTZmZmY0ZmNmOGYzNWVlMTI4MTRiOWFjYTlmNmEzYTc5MTg1MWNiMDY4NDk2YjE1YjJlMTViNzc2ZGYifQ"
+        },
+        {
+          "resource": "repo://tests/test_paired_reward_deleted.py",
+          "version": "repo-file-v1:sha256:fc91d77b049c1a6391077577f9c79179d141851c8e09dfede7415044bb6de5b9"
+        }
+      ]
+    },
+    {
+      "id": "claim_db5c728167a942678da7b62e53305bc7",
+      "statement": "ADR-0037's observe-only in-training paired-fidelity monitor is shipped on the supervised ControlNet CLI: `controlnet_cli.py` registers `PairedFidelitySpec` under the `paired_fidelity` name on its `CallbackRegistry`, lists it in the default callback-name set alongside `train_loss` and `checkpoint`, and wires the recipe-primary rollout step count through `CallbackContext.inference_recipe[\"num_inference_steps\"]`; the built `PairedFidelityCallback` logs `val/psnr` / `val/ssim` but never drives checkpoint selection (`val/x0_mae` remains the monitor), never enters the loss, and never touches the optimizer or EMA.",
+      "evidence": [
+        {
+          "resource": "repo://src/manifold/metrics/paired_callback.py",
+          "version": "repo-file-v1:sha256:2d78c68acfbf98d12fd04e32a4f389c475e78b3fecb22202dbb21d1882c221e0"
+        },
+        {
+          "resource": "repo://src/manifold/training/callbacks/__init__.py",
+          "version": "repo-file-v1:sha256:3e2503a398c5a63ab7253b340a43cfdaacc71de9747848a4fde7a2c41b53b5c0"
+        },
+        {
+          "resource": "repo://src/manifold/training/callbacks/paired_fidelity.py",
+          "version": "repo-file-v1:sha256:09c5b8bb0451cd41f6c98d678177eb1d52639198fcd4bd89a0a29b6af1339273"
+        },
+        {
+          "resource": "repo://src/manifold/training/controlnet_cli.py#L168-L198",
+          "version": "repo-lines-v1:sha256:5446a4872d3a7c262ac18f17012b78d5d9325c828070feb27d14d31fdce070bd:eyJzZWxlY3RlZExpbmVDb3VudCI6MzEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQxNDY3NzExZGVmNzE4MTU5YjIwOGYyNGJmZTdhOTMwMzVmMThkZGU4NjZiZDg2MGQwYjkzODc3MTNlYTI3OGMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjMwYzFmMTg4ZjE0MmVkN2E4MjQ2ODBiMjA3MTcyYzU1MTliYzYxNGE0OGZkYTdjZjE2N2VkYjhkZGY3OTk1NmMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjJkN2NlMGU0OGZjNmRlODA2YTdjMThhNzQzZWM5NzE5OWE4ZTJlYmMxOGFlYzdjNjg1ZDE3YzE2NTg5MDAzZTAiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImQ5OWU0NWJiM2Y4MzZjZWUwZmJkOWI1NWFmZTkxMWI2YzcxYzU0YTIwM2RlODI5YWU0YzcxM2JlOTRmMmJhOWQifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_9fe3da57ed554536be16715a7776d2e4",
+      "statement": "`manifold-export`'s `--pipeline` argparse still exposes a `paired` choice in `src/manifold/training/export_cli.py` that references a now-deleted module (`manifold.pipelines.paired_latent_flow.PairedLatentFlowPipeline`); ADR-0034 retired the paired-reward pipeline, so `jit` and `controlnet` are the only supported `--pipeline` choices and `paired` survives only as a stale historical reference.",
+      "evidence": [
+        {
+          "resource": "repo://src/manifold/pipelines/controlnet_latent_flow.py",
+          "version": "repo-file-v1:sha256:e1dca719a1b723380f9b5189661120ea26b3a4425dc03d821c89eb5457f64384"
+        },
+        {
+          "resource": "repo://src/manifold/pipelines/latent_flow.py",
+          "version": "repo-file-v1:sha256:9097a8a670b502ea987628300d4326f381e991f3629fe71cafcf744499c0e27a"
+        },
+        {
+          "resource": "repo://src/manifold/training/export_cli.py#L59-L68",
+          "version": "repo-lines-v1:sha256:5e8a092f021d1236d8b90726fa25aef43a32995cb40eda5c2ab8c07e13b5386f:eyJzZWxlY3RlZExpbmVDb3VudCI6MTAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjZiZTQzOWE0NzUwMzQyN2E0Yzc5ZjliZDNjM2MzZmMxZjkzZmQxZTdiNGM3YTE1MWQ1YWZhZDA0MDJkMWE4ZWEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjMwYzFmMTg4ZjE0MmVkN2E4MjQ2ODBiMjA3MTcyYzU1MTliYzYxNGE0OGZkYTdjZjE2N2VkYjhkZGY3OTk1NmMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjNkMDNjMjEyNzZmZDQ0N2U0NzI4NzhiNDM2NTdjMzdhNjg0N2U4ZDNjNTU1Y2U2ZWE1MDQ3ZWMxYTA2NzUyZTEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjZkZWE5Njk3NTM3YWQzMWU1MjRmM2QwYjk4OTc2NTcxMGQyNmNlNjhjNzYwMWJkYzYwYzlkZThkMzFmMGU2NDEifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_46bc152ddf0b4d8f8f6e7016d00873e0",
+      "statement": "The `CallbackRegistry` two-phase construction (resolve → build) plus the `TrainingSpine.run` merge order (defaults → knobs → `--callbacks` override → `forbidden_callbacks` / `forbidden_monitors` → resolve → build → `validate_monitor` → fit) is the single source of truth for which callbacks fire and which checkpoint monitors are allowed across every training CLI, with the GRPO ControlNet path passing `forbidden_callbacks={\"fid\": ...}` and `forbidden_monitors={\"val/fid\": ...}` to drop FID regardless of YAML or `--callbacks` overrides.",
+      "evidence": [
+        {
+          "resource": "repo://src/manifold/training/callbacks/registry.py",
+          "version": "repo-file-v1:sha256:2c7eba43a15c1783f59d856a19ba24795a7ae3305b376368de28b760fceeb023"
+        },
+        {
+          "resource": "repo://src/manifold/training/core.py",
+          "version": "repo-file-v1:sha256:54bcae1a877efee42ef18e4c063d85729c9321274f982816cf484862a1f4e9f9"
+        },
+        {
+          "resource": "repo://src/manifold/training/grpo_cli.py",
+          "version": "repo-file-v1:sha256:bd476544148229bbc306ead99268def05e8b706beb9fb0681dc99f3ae9080053"
+        }
+      ]
+    },
+    {
+      "id": "claim_3c36e939fb0e422dbf87e658f765d9a5",
+      "statement": "Frozen-arm wiring is owned by `FrozenArmMixin._register_frozen_arm` (register + dual-exclude, ADR-0031 A1) and per-rank CUDA device resolution is owned by `DevicePolicy` (`pin` pre-PG, `warm_device` post-PG, ADR-0035); these are the canonical replacements for the previous `object.__setattr__` bypass, the inline `set_device` twin, the bare `torch.device(\"cuda\")` in the controlnet CLI, and `manifold.data.latent_pipeline.resolve_warm_device`.",
+      "evidence": [
+        {
+          "resource": "repo://src/manifold/modules/frozen_arm.py",
+          "version": "repo-file-v1:sha256:068107b0f47957bc4434604e1bfc4ad85d9c860cd75419940870beb854a903ed"
+        },
+        {
+          "resource": "repo://src/manifold/training/device_policy.py",
+          "version": "repo-file-v1:sha256:73dd0cbd546bb9c58774780abbc5d9a519ae26bd16e2f18c29535785d4881276"
+        }
+      ]
+    }
+  ],
+  "verification": {
+    "by": "openwiki/0.7.0",
+    "at": "2026-10-03T13:11:49.042Z"
+  }
+}

@@ -3,6 +3,21 @@ type: Reference
 title: Frozen arms and per-rank device policy
 description: FrozenArmMixin (register + dual-exclude off the optimizer / checkpoint) and DevicePolicy (the per-rank CUDA device decision that replaced resolve_warm_device and the pre-PG set_device twin).
 tags: [frozen-arm, device-policy, ADR-0031, ADR-0035]
+verified:
+  - by: openwiki/0.7.0
+    at: 2026-10-03T13:11:49.042Z
+sources:
+  - id: openwiki-source-487431944da97854e8cb6d33
+    resource: repo://src/manifold/modules/frozen_arm.py
+  - id: openwiki-source-deca8f8f4a3d2dbbba47ac16
+    resource: repo://src/manifold/training/device_policy.py
+  - id: openwiki-source-6db58ef83ad3e6a34ce75117
+    resource: repo://tests/test_ddp_warm.py
+  - id: openwiki-source-54aad16b0d9e880d1e1286dc
+    resource: repo://tests/test_device_policy.py
+  - id: openwiki-source-9c5f114a4443114e6c506f09
+    resource: repo://tests/test_frozen_arm_mixin.py
+generated: { by: "openwiki/0.7.0", at: "2026-10-03T13:11:49.042Z" }
 ---
 
 # Frozen arms and per-rank device policy
@@ -15,9 +30,9 @@ concern that every training CLI has to get right:
   the optimizer and off the checkpoint while letting Lightning own its device
   placement through the standard submodule machinery. Used by `GRPOModule`
   (frozen `unet` arm on the ControlNet policy path; frozen `reward_model` and
-  frozen reference policy on the GRPO reward path), by
+  the optional frozen reference policy on the GRPO path), by
   `ControlNetLatentFlowModule` (frozen `unet` arm), and by `RewardModule`
-  (frozen `reference_unet`).
+  (frozen `denoiser`).
 - **`DevicePolicy`** (`src/manifold/training/device_policy.py`, ADR-0035) — the
   per-rank CUDA device decision. Replaces both the duplicated pre-PG
   `set_device` twin that lived in every training `main()` and the
@@ -285,12 +300,21 @@ keep the prior call patterns from sneaking back in.
 - Hosts that consume the mixin: `src/manifold/modules/grpo.py`,
   `src/manifold/modules/controlnet_latent_flow.py`, `src/manifold/modules/reward.py`
 - Device policy implementation: `src/manifold/training/device_policy.py`
-- CLI shells that call `pin()`: `src/manifold/training/grpo_cli.py`,
-  `src/manifold/training/reward_cli.py`, `src/manifold/training/controlnet_cli.py`,
-  `src/manifold/training/cli.py` (JiT)
+- CLI shells that call `pin()` (pre-PG, on the real path; the
+  `data_provider` CPU smoke branch is `DevicePolicy`-free per ADR-0035):
+  `src/manifold/training/grpo_cli.py`,
+  `src/manifold/training/reward_cli.py`,
+  `src/manifold/training/controlnet_cli.py`.
+  The JiT shell (`src/manifold/training/cli.py`) does **not** call `pin()`:
+  it builds the VAE on CPU pre-PG and routes only the post-PG warm through
+  `warm_device()`, so no pre-PG `set_device` is needed.
 - VAE-warm closures that call `warm_device()`:
-  `src/manifold/training/cli.py::_warm_data`,
-  `src/manifold/training/controlnet_cli.py::_real_inputs`
+  `src/manifold/training/cli.py::_warm_data` (JiT; the `fallback` is the
+  bare `cuda:0` from main, which `warm_device` resolves to
+  `cuda:{local_rank}` post-PG),
+  `src/manifold/training/controlnet_cli.py::_real_inputs` (the `fallback`
+  is already `cuda:{local_rank}` from main's `pin()`; `warm_device` returns
+  the same device)
 
 ## Focused tests
 

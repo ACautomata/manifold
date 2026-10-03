@@ -1,0 +1,198 @@
+{
+  "schemaVersion": 1,
+  "pageVersion": "sha256:848977eecb3435213dd18d9cd4f911f25da273751c672c901a90b484efd79e98",
+  "claims": [
+    {
+      "id": "claim_f7e3be43273946228d6543403a6a4586",
+      "statement": "The shipped manifold-eval workflow exports the after checkpoint through the existing bridge, reloads both before and after pipelines from native, runs same-noise generation, decodes through the shared LatentDecoder (float32 with norm_float16 disabled) plus min_max_to_unit, scores with PairedFidelityMetrics for the paired policy, and writes metrics.json plus one slice_grid_*.png per sample under --output. The policy is inferred from the before native artifact's pipeline_class; there is no mode flag.",
+      "evidence": [
+        {
+          "resource": "repo://src/manifold/eval/before_after.py",
+          "version": "repo-file-v1:sha256:ff5b7013e86e044b859edc917ce46c246182162a4802fbb05dfdf1f608cfc40f"
+        },
+        {
+          "resource": "repo://src/manifold/eval/cli.py",
+          "version": "repo-file-v1:sha256:601432a7e81289c0d4085783b891798f2d3678e743771da886a207ab58d970ae"
+        }
+      ]
+    },
+    {
+      "id": "claim_3094fef7a7934f32980bbf789e034977",
+      "statement": "The observe-only in-training paired-fidelity monitor (ADR-0037) is now shipped: PairedFidelityCallback lives at src/manifold/metrics/paired_callback.py and is registered on the CallbackRegistry via PairedFidelitySpec at src/manifold/training/callbacks/paired_fidelity.py, exported from manifold.training.callbacks alongside TrainLossSpec, FIDSpec, and CheckpointSpec.",
+      "evidence": [
+        {
+          "resource": "repo://src/manifold/metrics/__init__.py",
+          "version": "repo-file-v1:sha256:b241a8831d8d03f88dbda2d35e0fcc2e91f92893a4648aa45b77725d306d7782"
+        },
+        {
+          "resource": "repo://src/manifold/metrics/paired_callback.py",
+          "version": "repo-file-v1:sha256:2d78c68acfbf98d12fd04e32a4f389c475e78b3fecb22202dbb21d1882c221e0"
+        },
+        {
+          "resource": "repo://src/manifold/training/callbacks/__init__.py",
+          "version": "repo-file-v1:sha256:3e2503a398c5a63ab7253b340a43cfdaacc71de9747848a4fde7a2c41b53b5c0"
+        },
+        {
+          "resource": "repo://src/manifold/training/callbacks/paired_fidelity.py",
+          "version": "repo-file-v1:sha256:09c5b8bb0451cd41f6c98d678177eb1d52639198fcd4bd89a0a29b6af1339273"
+        }
+      ]
+    },
+    {
+      "id": "claim_363081985e2142ec9be2fa60d800f7df",
+      "statement": "The supervised ControlNet CLI ships with the monitor default-on: it registers paired_fidelity on its TrainingSpine registry, includes it in default_names=[train_loss, checkpoint, paired_fidelity], and constructs CallbackContext with inference_recipe={'num_inference_steps': int(num_inference_steps)} filled from the controlnet.num_inference_steps recipe knob. LatentX0MAE remains the hand-appended extra_callbacks member so the checkpoint can still monitor val/x0_mae.",
+      "evidence": [
+        {
+          "resource": "repo://src/manifold/training/controlnet_cli.py",
+          "version": "repo-file-v1:sha256:ebab163068d957ea1550d2cc769eedcea367ae300b9737b548cb2ef2e91cb361"
+        }
+      ]
+    },
+    {
+      "id": "claim_a6ee486b755741fdaaa5f924790e0c47",
+      "statement": "min_max_to_unit is the single shared normalization contract across three sites: the ControlNet inference pipeline's __call__ decode path, BeforeAfterEval._decode_normalize, and PairedFidelityCallback.on_validation_epoch_end. All three sites call the same per-volume min-max normalization and the resulting [0, 1] volumes are scored by PairedFidelityMetrics with data_range=1.0, so the in-training val/psnr / val/ssim and the offline metrics.json are directly comparable.",
+      "evidence": [
+        {
+          "resource": "repo://src/manifold/eval/before_after.py",
+          "version": "repo-file-v1:sha256:ff5b7013e86e044b859edc917ce46c246182162a4802fbb05dfdf1f608cfc40f"
+        },
+        {
+          "resource": "repo://src/manifold/metrics/paired.py",
+          "version": "repo-file-v1:sha256:1a388bde3ad7969aedbd81e1f240df70e48bb327a68f1a08b9b0f83a7078ebd1"
+        },
+        {
+          "resource": "repo://src/manifold/metrics/paired_callback.py",
+          "version": "repo-file-v1:sha256:2d78c68acfbf98d12fd04e32a4f389c475e78b3fecb22202dbb21d1882c221e0"
+        },
+        {
+          "resource": "repo://src/manifold/pipelines/controlnet_latent_flow.py",
+          "version": "repo-file-v1:sha256:e1dca719a1b723380f9b5189661120ea26b3a4425dc03d821c89eb5457f64384"
+        },
+        {
+          "resource": "repo://src/manifold/pipelines/pipeline_utils.py",
+          "version": "repo-file-v1:sha256:195ad6c0d4d3bbefca1869405d0cf5e33dff4feafbc48b4dd371fbafca392b10"
+        }
+      ]
+    },
+    {
+      "id": "claim_43831debce8e41118f62765aa5d158a6",
+      "statement": "The monitor's rollout step count is recipe-primary: PairedFidelitySpec.num_inference_steps defaults to None, PairedFidelitySpec.build reads num_inference_steps from ctx.inference_recipe['num_inference_steps'] (the supervised spine fills it from controlnet.num_inference_steps), an explicit per-callback value overrides the recipe, and a literal default of 15 applies when neither is set.",
+      "evidence": [
+        {
+          "resource": "repo://src/manifold/training/callbacks/paired_fidelity.py",
+          "version": "repo-file-v1:sha256:09c5b8bb0451cd41f6c98d678177eb1d52639198fcd4bd89a0a29b6af1339273"
+        },
+        {
+          "resource": "repo://src/manifold/training/controlnet_cli.py",
+          "version": "repo-file-v1:sha256:ebab163068d957ea1550d2cc769eedcea367ae300b9737b548cb2ef2e91cb361"
+        }
+      ]
+    },
+    {
+      "id": "claim_b0c67bf3a4014aa69f53e5f17ae4d62b",
+      "statement": "The fixed paired subset is resolved lazily at the first gated epoch (F5): PairedFidelitySpec.build forwards ctx.datamodule and PairedFidelityCallback._paired_dataset reads getattr(source, 'val_latent_ds', source) at first use, so the cold-path datamodule's post-setup() replacement of val_latent_ds (issue #145 / ADR-0017) is honored without capturing the dataset at build time. The subset itself is a seeded randperm prefix of subset_size collated and cached, so the same subjects are scored every gated epoch.",
+      "evidence": [
+        {
+          "resource": "repo://src/manifold/metrics/paired_callback.py",
+          "version": "repo-file-v1:sha256:2d78c68acfbf98d12fd04e32a4f389c475e78b3fecb22202dbb21d1882c221e0"
+        },
+        {
+          "resource": "repo://src/manifold/training/callbacks/paired_fidelity.py",
+          "version": "repo-file-v1:sha256:09c5b8bb0451cd41f6c98d678177eb1d52639198fcd4bd89a0a29b6af1339273"
+        }
+      ]
+    },
+    {
+      "id": "claim_a858f388f3f346f4b531e9325f5c6e18",
+      "statement": "Under DDP the monitor uses redundant evaluation: every rank evaluates the same fixed subset under DDP-synchronized weights and identical seeded noise, so the per-rank result is identical and Lightning's torchmetrics sync on the two module-attached MeanMetric instances is the only cross-rank reduction. There is no FID-style sharding and no error-rendezvous machinery. The 2-rank DDP gate in tests/test_paired_fidelity_ddp.py locks both the no-hang and the identical per-rank value claims (reading the rank-LOCAL mean_value directly off the module-attached MeanMetric).",
+      "evidence": [
+        {
+          "resource": "repo://src/manifold/metrics/paired_callback.py",
+          "version": "repo-file-v1:sha256:2d78c68acfbf98d12fd04e32a4f389c475e78b3fecb22202dbb21d1882c221e0"
+        },
+        {
+          "resource": "repo://tests/ddp.py",
+          "version": "repo-file-v1:sha256:9dc66f0ff934a9f9b8a93f2c166627e23e02bfb0dbe3b7ad596b2e07b7393eed"
+        },
+        {
+          "resource": "repo://tests/test_paired_fidelity_ddp.py",
+          "version": "repo-file-v1:sha256:cc8f0743bf83fa5a93ef7607cf485eb72f8c8a5454d7e89f933ac62f133817a7"
+        }
+      ]
+    },
+    {
+      "id": "claim_7761c4bc695f4b469fe26e5b5a5e48b1",
+      "statement": "The in-training monitor is observe-only by contract: the supervised ControlNet CLI's monitor_metric stays val/x0_mae (emitted by the hand-appended LatentX0MAE extra callback), the rollout runs under torch.inference_mode() so no gradient is ever formed, the monitor never enters the loss and never touches the optimizer / EMA. PairedFidelitySpec.logged_metrics declares frozenset({'val/psnr', 'val/ssim'}) so validate_monitor accepts them as validatable monitors, but no shell sets monitor_metric=val/psnr or val/ssim. Releasing the blanket forbidden_callbacks={'fid'} for this monitor on the ControlNet-GRPO path is a deliberate follow-up (ADR-0037 §GRPO stage), not part of this change.",
+      "evidence": [
+        {
+          "resource": "repo://src/manifold/metrics/paired_callback.py",
+          "version": "repo-file-v1:sha256:2d78c68acfbf98d12fd04e32a4f389c475e78b3fecb22202dbb21d1882c221e0"
+        },
+        {
+          "resource": "repo://src/manifold/training/callbacks/paired_fidelity.py",
+          "version": "repo-file-v1:sha256:09c5b8bb0451cd41f6c98d678177eb1d52639198fcd4bd89a0a29b6af1339273"
+        },
+        {
+          "resource": "repo://src/manifold/training/controlnet_cli.py",
+          "version": "repo-file-v1:sha256:ebab163068d957ea1550d2cc769eedcea367ae300b9737b548cb2ef2e91cb361"
+        },
+        {
+          "resource": "repo://tests/test_callback_registry.py",
+          "version": "repo-file-v1:sha256:936d6ae013589455a7ae3c7710a77b7d6f24087747ba52404f80e7883c4cf71b"
+        }
+      ]
+    },
+    {
+      "id": "claim_d8e9b430a496420c9a32c816fee98fbc",
+      "statement": "ComparisonPageBuilder is library-only: there is no manifold-build-page console entry and the pyproject.toml [project.scripts] table does not list it (ADR-0033). The builder reads metrics.json, optionally reads JiT val/fid and val/mean_reward series from Lightning metrics.csv files via MetricsPlotCallback._read_series, and embeds both generated curves and slice grids as base64 PNG data URIs through _data_uri. The assembled HTML carries no script, link, or http(s):// reference and is written atomically via .tmp + os.replace. When no ControlNetComparison is supplied, the builder emits a clearly marked pending slot rather than inventing a comparison.",
+      "evidence": [
+        {
+          "resource": "repo://pyproject.toml",
+          "version": "repo-file-v1:sha256:ee3e990f787914b9a07bfc469146e3989ea306ad82f2542e4ea4a36b47b62b45"
+        },
+        {
+          "resource": "repo://src/manifold/eval/comparison_page.py",
+          "version": "repo-file-v1:sha256:67cf2eb537944d31e213c59e938c4762dd28283618541b968ea7ae9ab66c9b73"
+        }
+      ]
+    },
+    {
+      "id": "claim_ad9de269352c4910a79a2b0fd9169850",
+      "statement": "BeforeAfterEval creates the same-noise contract in two ways: for JiT / unconditional each pipeline receives a fresh torch.Generator(device).manual_seed(seed) so both start noises are identical; for ControlNet / paired the driver draws one noise tensor from torch.Generator(device).manual_seed(seed) and passes the same tensor to both sample_latent calls while holding the source latent, real target latent, spacing, contrast labels, and Heun step count fixed. Differences are therefore attributable to the policy weights rather than sampling stochasticity.",
+      "evidence": [
+        {
+          "resource": "repo://src/manifold/eval/before_after.py",
+          "version": "repo-file-v1:sha256:ff5b7013e86e044b859edc917ce46c246182162a4802fbb05dfdf1f608cfc40f"
+        }
+      ]
+    },
+    {
+      "id": "claim_0e1b3b62d672449f988fa52000f444e2",
+      "statement": "The eval policy is inferred from the before native artifact's pipeline_class: _pipeline_class_of reads model_index.json and maps LatentFlowPipeline to run_unconditional (taking --latent-shape, --num-samples, --modality, --spacing, and a fixed seed) and ControlNetLatentFlowPipeline to run_paired (taking held-out src/tgt latent pairs, spacing, contrast labels, and a fixed seed). There is no mode flag. The CLI loads a probe pipeline from the before export, bakes the after ckpt into /after_native via the existing export bridge (so the ControlNet frozen base is reused and only the trainable controlnet.* weights are baked), then reloads both native exports into fresh pipelines.",
+      "evidence": [
+        {
+          "resource": "repo://src/manifold/eval/before_after.py",
+          "version": "repo-file-v1:sha256:ff5b7013e86e044b859edc917ce46c246182162a4802fbb05dfdf1f608cfc40f"
+        },
+        {
+          "resource": "repo://src/manifold/eval/cli.py",
+          "version": "repo-file-v1:sha256:601432a7e81289c0d4085783b891798f2d3678e743771da886a207ab58d970ae"
+        }
+      ]
+    },
+    {
+      "id": "claim_c1a768b778ea45b58a3002fd90fea338",
+      "statement": "ADR-0037 marks releasing the blanket forbidden_callbacks={'fid'} for paired fidelity on the ControlNet-GRPO path as a deliberate follow-up: paired fidelity uses controlnet_rollout, so the FID rationale (unconditional rollout ignores the ControlNet) does not apply. The supervised stage lands first; the GRPO ControlNet path's paired_fidelity registration remains out of scope until that follow-up is filed.",
+      "evidence": [
+        {
+          "resource": "repo://docs/adr/0037-controlnet-fidelity-in-training-monitor.md",
+          "version": "repo-file-v1:sha256:d0a3d05b9077e09dec7e27fc81eb94101ac4479942a44c7e3862a97d740383b0"
+        }
+      ]
+    }
+  ],
+  "verification": {
+    "by": "openwiki/0.7.0",
+    "at": "2026-10-03T13:11:49.042Z"
+  }
+}

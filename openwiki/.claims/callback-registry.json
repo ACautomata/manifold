@@ -1,0 +1,156 @@
+{
+  "schemaVersion": 1,
+  "pageVersion": "sha256:5819c99d5843bcccfa0fcc83a8d06ca815b27a7eec181414b6992ff62b55be22",
+  "claims": [
+    {
+      "id": "claim_1f78622f04e04265b01f9678c67765d1",
+      "statement": "A callback registered with CallbackRegistry (src/manifold/training/callbacks/registry.py) is a @dataclass whose fields are the config knobs and which exposes a build(ctx: CallbackContext) -> pl.Callback method. Specs match the CallbackSpec Protocol structurally (no inheritance); an optional logged_metrics: frozenset[str] declares metrics for monitor validation, and only CheckpointSpec declares monitor_metric. resolve() raises KeyError on an unknown name and ValueError on an unknown knob for a known name, using the field names of fields(spec_cls) as the knob allow-list.",
+      "evidence": [
+        {
+          "resource": "repo://src/manifold/training/callbacks/registry.py",
+          "version": "repo-file-v1:sha256:2c7eba43a15c1783f59d856a19ba24795a7ae3305b376368de28b760fceeb023"
+        },
+        {
+          "resource": "repo://src/manifold/training/callbacks/registry.py#L73-L108",
+          "version": "repo-lines-v1:sha256:4b2443053e896efe4a367a1e257a081625d88a47057e11c5419312bacb7dd091:eyJzZWxlY3RlZExpbmVDb3VudCI6MzYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjM1NGU4MTU0OTIwNTIwZWEwNDBmYmU4YjA5ZjJkM2JmYjg5ZmRjZDI0ZGNmZGRmYzdlNDRkMDczYTQ3NDE2MDIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU2MjJiNzc0YjExYTI1NGRlOTU1MmMyMWIxOTYxMWE3MTg1NzY1YTIxMDZmY2QzOTJkZTQ1YWZjYWMwMzk5ODgiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImU5MDM5MzM1YWU1YmZiMmY1Y2JmNzI3NDE1MjlmM2YyOWQ0NWU4ZDYwOWJkNWVkZTZmMWVkYzA5MWEyNDMwMjIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImI3YWJjZGI5ODA2YWFiZGEzM2E4ZWRjZDQ1ZjY0MGJhY2FlNjZiYWQ5Y2JjMmE3OTNjMTVlZGJhMjk4ZDJiNzYifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_db8e343916d24748aae82ebbe088a1dd",
+      "statement": "CallbackRegistry construction is split into two phases: resolve(names, cfg) (config-time) validates the requested name list and per-name knob dict, returning constructed spec instances in names order; build(specs, ctx) (fit-prep) injects the runtime CallbackContext — module, vae, datamodule, inference_recipe, model_dir, seed, optional lazy feature_net_factory, optional real_latents — and returns the constructed pl.Callback list. The split exists because generative callbacks (FID, paired fidelity) need runtime objects unavailable at config resolution, and the resolved list is required to be rank-symmetric across DDP ranks.",
+      "evidence": [
+        {
+          "resource": "repo://src/manifold/training/callbacks/context.py",
+          "version": "repo-file-v1:sha256:4a4f9526087b7ba05a9f493a285cbd8a892439d7a8047e644b9a5029f2f2058b"
+        },
+        {
+          "resource": "repo://src/manifold/training/callbacks/registry.py#L73-L112",
+          "version": "repo-lines-v1:sha256:3d7771a57cea33ba534cb829e7c7670a61e39a7a9d581c893f0fc2a14e6f8289:eyJzZWxlY3RlZExpbmVDb3VudCI6NDAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjM1NGU4MTU0OTIwNTIwZWEwNDBmYmU4YjA5ZjJkM2JmYjg5ZmRjZDI0ZGNmZGRmYzdlNDRkMDczYTQ3NDE2MDIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjY3Y2IwMjg2NGEwNGQ2ZDY4NGM5YTYxOWVmY2EzNzU4ZDQ0NWRhN2YyM2VmYTQyNDRhNDJiOTQ5NTQzNDU5NTkiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImU5MDM5MzM1YWU1YmZiMmY1Y2JmNzI3NDE1MjlmM2YyOWQ0NWU4ZDYwOWJkNWVkZTZmMWVkYzA5MWEyNDMwMjIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjI3YTI0ZWZjNmNhNDhhZmYxODJhNjMzYmIxMGMzOTQ4NmMyYTBjNzlmYWZlMGYzMjIzYmZjZjIwZjc5MzFhOWEifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_42259d5c5dcc4fad84eca5f1db71f52f",
+      "statement": "CallbackRegistry.validate_monitor(specs, module, extra_callbacks=None) runs after resolve/build and before trainer construction. It is a no-op when no checkpoint spec is present or when the resolved CheckpointSpec.monitor_metric is None (the unmonitored fallback). Otherwise the monitor_metric must appear in the union of (a) every spec's logged_metrics (registry path), (b) module.logged_metrics (Module-declared path: val/mean_reward for GRPO, val/gen_pair_acc for reward), and (c) every extra_callbacks member's logged_metrics (the hand-appended path: LatentX0MAE's val/x0_mae). A monitor logged by nobody raises ValueError naming the available set so Lightning never errors mid-fit on an unlogged monitor.",
+      "evidence": [
+        {
+          "resource": "repo://src/manifold/training/callbacks/registry.py#L114-L154",
+          "version": "repo-lines-v1:sha256:af95f5276d1be7a22b7e75a5b7011bdbe4161b0dcf37dda3ba850149d5855b7e:eyJzZWxlY3RlZExpbmVDb3VudCI6NDEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjMyMjg1YzZmNTk1YjNjNzlhMjUyZjYyZjNiYjAyNGU2MmEyODUzNjA4NDc1ODE1OTQ4NzQwNTQ2NjU4YWM1OTAiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU1MDMyZTk2NGQwOTMyMzUxZTVkMTg1MjY5MjgxYjE3MWEzYTA5YjA4YjI4NmU2NjFlYTQ3MDMyM2M4MmViNGQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImQzMGFhNjgyMDE4OWFkZDA2ODVjOWU4MTJmNTFiZmU0YzlmY2Q4MGUyZjczY2MxYmI0ZjFmMDFhNmY1MjA2YzUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_c4908082a8384d008a90d7f0a72064b1",
+      "statement": "The built-in registry specs are TrainLossSpec (no knobs, frozenset({train/loss_epoch})), FIDSpec (num_synth / every_n_epochs / center_slices_ratio / cov_ridge knobs, frozenset({val/fid})), CheckpointSpec (monitor_metric / save_top_k / save_last / every_n_epochs / mode / filename knobs, monitor_metric read defensively for validation), and PairedFidelitySpec (subset_size / every_n_epochs / num_inference_steps / seed knobs, frozenset({val/psnr, val/ssim})) exposed from src/manifold/training/callbacks/__init__.py. CheckpointSpec.build implements the two-branch ModelCheckpoint construction: monitor_metric=None keeps save_top_k=1 plus last.ckpt at every_n_epochs (JiT production fallback), otherwise tracks monitor_metric top-k plus last.",
+      "evidence": [
+        {
+          "resource": "repo://src/manifold/training/callbacks/__init__.py",
+          "version": "repo-file-v1:sha256:3e2503a398c5a63ab7253b340a43cfdaacc71de9747848a4fde7a2c41b53b5c0"
+        },
+        {
+          "resource": "repo://src/manifold/training/callbacks/checkpoint.py#L42-L64",
+          "version": "repo-lines-v1:sha256:d2c33beb89b47b3d9556ee790d31610d241a54ae2f21f84daa7a5bd6197b2adc:eyJzZWxlY3RlZExpbmVDb3VudCI6MjMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImI3NDY4MmQzOTY0NDAwZjA0NDIwZmI5YTE2MjYwMTk3OTE2MDUwMTcyMmI4YzQ2ODk1NTQ0NzY4ODg3OGRlMDUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU5MDlhNTNhNjE4ZDAyOGUxZDMwMDBjMGE3YWJjZWVjYmU1ZmIzN2Y0ZTUxMWVmZTQ2NjQzZmFkNmU2Njg3MmYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjdmNWZjNzA2MmUzYmI0ZTdlN2Q2ZWI2ZWMzZjQ1ZTlkMmI5OWViNTk3YjAwOGNiYzYxY2RjYjY5ZmQzNjU3ZDQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
+        },
+        {
+          "resource": "repo://src/manifold/training/callbacks/fid.py",
+          "version": "repo-file-v1:sha256:03d19dbe671d2f31b6a4a16064bb060cc3f7006f60ac95fd32c209065b035062"
+        },
+        {
+          "resource": "repo://src/manifold/training/callbacks/paired_fidelity.py",
+          "version": "repo-file-v1:sha256:09c5b8bb0451cd41f6c98d678177eb1d52639198fcd4bd89a0a29b6af1339273"
+        },
+        {
+          "resource": "repo://src/manifold/training/callbacks/train_loss.py",
+          "version": "repo-file-v1:sha256:d94df1a022aec73fad267aaaa34bec6e53b3039b0699093c04199227fe4dc8b3"
+        }
+      ]
+    },
+    {
+      "id": "claim_2f87ed820ff64aa59cd232a7ddd5868a",
+      "statement": "PairedFidelitySpec (ADR-0037 / issue #238) is mounted on the supervised ControlNet path exactly like FIDSpec — knobs as dataclass fields, build(ctx) injecting module / vae / paired-subset source from ctx.datamodule, logged_metrics declared so validate_monitor accepts val/psnr and val/ssim as validatable monitors. The rollout step count is recipe-primary: num_inference_steps defaults to None and build reads it from ctx.inference_recipe[num_inference_steps] (the controlnet.num_inference_steps knob the supervised spine fills in), with an explicit per-callback knob overriding the recipe. The paired-subset source is resolved lazily at the first gated epoch (F5) via getattr(datamodule, \"val_latent_ds\", datamodule) so the cold path's post-setup() replacement is honored. Generation is gated by torch.inference_mode(), so the callback never enters the loss or touches the optimizer / EMA (observe-only contract).",
+      "evidence": [
+        {
+          "resource": "repo://src/manifold/metrics/paired_callback.py",
+          "version": "repo-file-v1:sha256:2d78c68acfbf98d12fd04e32a4f389c475e78b3fecb22202dbb21d1882c221e0"
+        },
+        {
+          "resource": "repo://src/manifold/training/callbacks/paired_fidelity.py",
+          "version": "repo-file-v1:sha256:09c5b8bb0451cd41f6c98d678177eb1d52639198fcd4bd89a0a29b6af1339273"
+        },
+        {
+          "resource": "repo://src/manifold/training/controlnet_cli.py#L171-L188",
+          "version": "repo-lines-v1:sha256:1083dfd5c8085e27f87837ce060b48e303ca933fc42586f13ed352fadcb75a15:eyJzZWxlY3RlZExpbmVDb3VudCI6MTgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijc0YmI2OTg5Y2JhMGFiOTE3NmQ2ZTQ0MmJkYTExN2NiY2FjYjhmMzM0NTJlNTQ4NGZhOTQ4MGVjMjIwZDUwOTYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImJjMTZiN2YzZjAxMTVkMDU5OTU0NTg5OTAzZDM3YjU5ODM1YjQ3OGEwNmZhYzM5MDhjMjM0N2Q0ZWJmYWI2OTYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImY0ZWU2OTZmZjFlZjVmMDE0NWY3ZGEwYjM2OTUwNjgyYjkyZTQ1ZTUxYmM1NjY0NjJhZjExM2Y2ZTY2MDFlNGUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjdjNmYxMmM2MTQ2Y2I5NDFhMmNlNzc0NTMxN2NjMTcwM2Q5NDdkM2RlOGM0MTY2Y2QxMmNmMDY0ODcxYjE0ZmIifQ"
+        },
+        {
+          "resource": "repo://src/manifold/training/controlnet_cli.py#L180-L180",
+          "version": "repo-lines-v1:sha256:b4b0232f701a2e8a4ba0157fa3ca5fa3c2f9d6ff1712bb52f9ea5997459256f0:eyJzZWxlY3RlZExpbmVDb3VudCI6MSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiYjRiMDIzMmY3MDFhMmU4YTRiYTAxNTdmYTNjYTVmYTNjMmY5ZDZmZjE3MTJiYjUyZjllYTU5OTc0NTkyNTZmMCIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiYjRiMDIzMmY3MDFhMmU4YTRiYTAxNTdmYTNjYTVmYTNjMmY5ZDZmZjE3MTJiYjUyZjllYTU5OTc0NTkyNTZmMCIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiMTRkZjZiYjNjYTM4NzUwNTFhMDA2Mjk4ZDFiMjljNWUxMjMzOGFiN2M5MWEzNWI0YTk2ZmE4MmU1OTIxZmZlYyIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiMjM3ZDkxYmI1MDAyZTE4OWNmMWE1MGQwODk3MzM3YjlhODgwN2MyYTM0ZDU3OTFhODEwMGI0Yzc2ODBjYWY1OCJ9"
+        }
+      ]
+    },
+    {
+      "id": "claim_96a607092975448bb1a621cb39a03657",
+      "statement": "TrainingSpine.run (src/manifold/training/core.py) is the single caller of the CallbackRegistry and owns the canonical callback merge order: start from per-shell default_names; apply the callback_cfg knob overrides; then either replace the list with callback_names_override (the --callbacks CLI flag) or keep the merged list; then apply forbidden_callbacks (force-removing any name with a rank_zero_info log); then check forbidden_monitors against the merged checkpoint monitor_metric and raise ValueError on match; then resolve(specs), build(callbacks), extend with extra_callbacks (LatentX0MAE for the supervised ControlNet val/x0_mae monitor), call validate_monitor, locate the ModelCheckpoint (raising ValueError with the resolved names if none survived the merge), build_trainer, and trainer.fit.",
+      "evidence": [
+        {
+          "resource": "repo://src/manifold/training/core.py#L42-L162",
+          "version": "repo-lines-v1:sha256:1dd42fd3ea9705af9c779b202fadfc2e98f98f7fb61f231634d6540dc59a9535:eyJzZWxlY3RlZExpbmVDb3VudCI6MTIxLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiIwMDhjZDk3OTY5Yjk0ZjdjYWJkOWFiODUyY2RlY2RjOWNlOTllNTJkNzJlYzFjZDE4YjhhZWNhMjlhOWUyYmUyIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI1NTA0NDMyNmUzZDQ3YTM0NWE1Nzc1MDUyMGFkYzA1YzllMmI0YWM1NTQ3ZjllZjc4MWYyNmI2NDllZDY2ZjljIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiJhN2JmYmFhODlmNThlOWJjZWE1Nzk1MzkyNGRiZWNjOWZlMWU5OTE1Y2ZkMDUzZmE3OThmZmJjYTM3ZGZmMjI2IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MCwiZm9sbG93aW5nQ29udGV4dEhhc2giOiJlM2IwYzQ0Mjk4ZmMxYzE0OWFmYmY0Yzg5OTZmYjkyNDI3YWU0MWU0NjQ5YjkzNGNhNDk1OTkxYjc4NTJiODU1In0"
+        }
+      ]
+    },
+    {
+      "id": "claim_35e317ec11d74b11a5b5f144a11320f8",
+      "statement": "forbidden_callbacks and forbidden_monitors are post-merge override-resistant guards: forbidden_callbacks force-removes named entries from the merged list (logging rank_zero_info) AFTER callback_names_override is applied, so a YAML callbacks: block or a --callbacks CLI flag cannot re-enable a forbidden callback; forbidden_monitors rejects a monitor_metric set in callback_cfg[checkpoint] BEFORE resolve. The GRPO ControlNet path passes forbidden_callbacks={\"fid\": \"constant frozen-base metric\"} and forbidden_monitors={\"val/fid\": ...} because Module.sample() ignores the trainable ControlNet, making an unconditional FID a constant frozen-base metric independent of the policy. The forbidden guards live generically in the spine and carry no GRPO-specific vocabulary.",
+      "evidence": [
+        {
+          "resource": "repo://src/manifold/training/core.py#L108-L131",
+          "version": "repo-lines-v1:sha256:baa9a087d3738075b46be0830580e8b61797158d76daabfd0edccac6f3d2955a:eyJzZWxlY3RlZExpbmVDb3VudCI6MjQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ2YzNmM2U3OGE1ZDFlNjE3NTYxMzU0OTI4Y2Y4NjQ2ODE3NWI1N2Q0ODAwNGFmNTdlMDY1NzljYTY2YTM0NjciLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjUxMDM0ODFjNTdkMGYwZGMwZjc2Y2QyY2M4YjM2MDRjNGU4Mjk2ZGE0MTIyYWRkMTllODE3NDVkYzdlMzMxYTYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImE1NjAzNmU5NmY1ZDU1ZjQ5YjNlZWQ2MmI0NDczNjg2NjM0ZTY3YWU5MDQ5YTA2YWJiMjMxYWNjODQ1MWJkYmUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImNhMGYxN2U2NGVjZjZkMTVjZmViNWNjOGNmZDY0ZDM0NzcyZTQ3OWEwYzY2MmQ4MDFiMWI5OWM2ZmM3MmM0ZjYifQ"
+        },
+        {
+          "resource": "repo://src/manifold/training/grpo_cli.py#L226-L259",
+          "version": "repo-lines-v1:sha256:9344c8944d34d366b070d3a6244b7b56d528afe47bb4f22ddcf4d995db7dd20e:eyJzZWxlY3RlZExpbmVDb3VudCI6MzQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImMwODVjY2RhYTQ1ZTBkZjcyYmIwNmU4YWU5OWM3YWIxNTk1NDNjM2RiMDkwOTU1ZmJmYWY0NjAyYmQ5YzRhZmUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjcxMmRmOTQyZGFjNDViODgzZTJmMmMwYTMxZWQ1YzI1MmM3MDNmY2M0ZjI0ZDM0ZGZlM2Y1YzFmYTc1ZGYyMzYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImNkNzJlNTIzMjE2MTdjMjZmMWJmMGIzMDdhZTRlZDdjMGI0ZWVjZWI4MzMxZTkzYmFhYmM2NTY1ODU5YWU2MWEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjhjYzRhN2QxY2M3OTZhYmEzZTQ2NzIzMzI3ZjUxN2U5ZjgxMTk4MmQyNTBmMDcwMjk4NmU0YjU3NjRhZDk1ODkifQ"
+        },
+        {
+          "resource": "repo://tests/test_callback_registry.py#L333-L399",
+          "version": "repo-lines-v1:sha256:ce44dea5270e8e5e0acf1f1ac954c92d401555b6c957fb268cf4348802c55d71:eyJzZWxlY3RlZExpbmVDb3VudCI6NjcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjFmMDQxZjNiMzZiZGY4YTdiMzZhN2YyMmQ3OWVmMjBlZDg3NTMxYzdiNzIxYTU1NmQ2MzQxZDg2ZWJlMzUyYzciLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjRjMWVhMWJhNTc0MDY1OTdkOTcxYzk1NGYwZTc2OTVkOTY2Njg4NTIwYWFjOTE3ODNlM2YzMTg1OGM1ZWU4MGUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImY4MmJjYzkzODgxYzMyNmEwMzAxNGNlNmQ0YmY3MGI2YzhjMWJhNDhhNDA2MzM1NWM1ZmUyYmQ0ZjU5YTFkZDEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjFjYTUyYjM5MjNiMTE0NTBkYmIyMTBkMDQyMWZkODU3M2JlZTA1ZjU0YzI5OTI2ODYwYTAzZmE0NjJhYjZlNDEifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_4f1b1dc0a2604fa5bcfeb29e17abe486",
+      "statement": "TrainingSpine.run fails fast with ValueError('TrainingSpine.run: the resolved callback list has no ModelCheckpoint (names=...)') when an override drops the checkpoint entry, instead of letting next(...) raise StopIteration deeper in the call (codex #170 P2; tests/test_callback_registry.py::test_training_spine_fails_fast_without_checkpoint). A checkpoint callback is required by the run_* return contract.",
+      "evidence": [
+        {
+          "resource": "repo://src/manifold/training/core.py#L141-L151",
+          "version": "repo-lines-v1:sha256:bef2e4037c4ac5cd3263067f9cb3ad3b0ddabd53facc2500ffb73e853370a886:eyJzZWxlY3RlZExpbmVDb3VudCI6MTEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQzNjBhMTAxYWEwNTEwOWE3Yzc2NWZjNzdmMThjOWM1ZjQ1OTAwM2VjMGZhYjE4MGQ1NDcxNzNiYzgzZjM0YmQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU1MDMyZTk2NGQwOTMyMzUxZTVkMTg1MjY5MjgxYjE3MWEzYTA5YjA4YjI4NmU2NjFlYTQ3MDMyM2M4MmViNGQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjE2ZGE4Yzg2ZGE0MWQ1ZWMyN2I5MmM0MzRhNjQ5ZGY5Mzc2MmIyYjU3MjVkZGY5MTViZGFiOTRjYjVkOTU0MzgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImJlYWUxYzM1MjAwMDdlNzhjOGU5MDA4ZTE0NGI2NmVkODBkNjYxNmJmZDNmMjVlMWRlODlmYTg5ZWJkNzcyZDgifQ"
+        },
+        {
+          "resource": "repo://tests/test_callback_registry.py#L298-L327",
+          "version": "repo-lines-v1:sha256:a0633ffcd83a00ddf6d99dc25efcefd9e43fb7381189c308267f0fc3fa00665d:eyJzZWxlY3RlZExpbmVDb3VudCI6MzAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjcwYzkzMDYwYjNmY2U1MGNkY2NlMDZiYzRlNmRmMzE5ZjJjMmRlYTQ5MjE4MTRiNTkyYTUzOTg2ZWE4N2NlNWQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU5MDlhNTNhNjE4ZDAyOGUxZDMwMDBjMGE3YWJjZWVjYmU1ZmIzN2Y0ZTUxMWVmZTQ2NjQzZmFkNmU2Njg3MmYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjEyMmY5Nzg3NzZjMzYwOTNiZWFiY2ViMmNhYmQ1OGRhNTEyNDc1ZDMzNjViMWVlODk5OTNlZDdiOTcxMzc0ZTYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjEwY2FlNzk4Y2E0ZTc0YmY3OGQ0NzBmNzBiY2RmNGViMDE3NzFiNzgzMjU3ZmI5ZGI0ZjA0N2MzYzhjM2Q2YWQifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_690eb1974df6472391798b36dd8db98b",
+      "statement": "Adding a registry callback requires a @dataclass spec under src/manifold/training/callbacks/, exposure from src/manifold/training/callbacks/__init__.py, and a spine.registry.register(name, SpecCls) call in each CLI that wants it. Renaming a dataclass field is load-bearing: resolve then rejects any recipe that still uses the old name with a loud ValueError, which is the contract's signal that every recipe site needs an update. A new monitored metric must be declared as a spec's logged_metrics, the module's logged_metrics, or an extra_callbacks member's logged_metrics, otherwise validate_monitor rejects any checkpoint that monitors it. Dropping a callback for one policy should use forbidden_callbacks rather than hard-coding the absent name into default_names — the forbidden map is the post-merge, override-resistant path.",
+      "evidence": [
+        {
+          "resource": "repo://src/manifold/training/callbacks/registry.py#L114-L154",
+          "version": "repo-lines-v1:sha256:af95f5276d1be7a22b7e75a5b7011bdbe4161b0dcf37dda3ba850149d5855b7e:eyJzZWxlY3RlZExpbmVDb3VudCI6NDEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjMyMjg1YzZmNTk1YjNjNzlhMjUyZjYyZjNiYjAyNGU2MmEyODUzNjA4NDc1ODE1OTQ4NzQwNTQ2NjU4YWM1OTAiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU1MDMyZTk2NGQwOTMyMzUxZTVkMTg1MjY5MjgxYjE3MWEzYTA5YjA4YjI4NmU2NjFlYTQ3MDMyM2M4MmViNGQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImQzMGFhNjgyMDE4OWFkZDA2ODVjOWU4MTJmNTFiZmU0YzlmY2Q4MGUyZjczY2MxYmI0ZjFmMDFhNmY1MjA2YzUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
+        },
+        {
+          "resource": "repo://src/manifold/training/callbacks/registry.py#L73-L108",
+          "version": "repo-lines-v1:sha256:4b2443053e896efe4a367a1e257a081625d88a47057e11c5419312bacb7dd091:eyJzZWxlY3RlZExpbmVDb3VudCI6MzYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjM1NGU4MTU0OTIwNTIwZWEwNDBmYmU4YjA5ZjJkM2JmYjg5ZmRjZDI0ZGNmZGRmYzdlNDRkMDczYTQ3NDE2MDIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU2MjJiNzc0YjExYTI1NGRlOTU1MmMyMWIxOTYxMWE3MTg1NzY1YTIxMDZmY2QzOTJkZTQ1YWZjYWMwMzk5ODgiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImU5MDM5MzM1YWU1YmZiMmY1Y2JmNzI3NDE1MjlmM2YyOWQ0NWU4ZDYwOWJkNWVkZTZmMWVkYzA5MWEyNDMwMjIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImI3YWJjZGI5ODA2YWFiZGEzM2E4ZWRjZDQ1ZjY0MGJhY2FlNjZiYWQ5Y2JjMmE3OTNjMTVlZGJhMjk4ZDJiNzYifQ"
+        },
+        {
+          "resource": "repo://src/manifold/training/core.py#L108-L131",
+          "version": "repo-lines-v1:sha256:baa9a087d3738075b46be0830580e8b61797158d76daabfd0edccac6f3d2955a:eyJzZWxlY3RlZExpbmVDb3VudCI6MjQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ2YzNmM2U3OGE1ZDFlNjE3NTYxMzU0OTI4Y2Y4NjQ2ODE3NWI1N2Q0ODAwNGFmNTdlMDY1NzljYTY2YTM0NjciLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjUxMDM0ODFjNTdkMGYwZGMwZjc2Y2QyY2M4YjM2MDRjNGU4Mjk2ZGE0MTIyYWRkMTllODE3NDVkYzdlMzMxYTYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImE1NjAzNmU5NmY1ZDU1ZjQ5YjNlZWQ2MmI0NDczNjg2NjM0ZTY3YWU5MDQ5YTA2YWJiMjMxYWNjODQ1MWJkYmUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImNhMGYxN2U2NGVjZjZkMTVjZmViNWNjOGNmZDY0ZDM0NzcyZTQ3OWEwYzY2MmQ4MDFiMWI5OWM2ZmM3MmM0ZjYifQ"
+        }
+      ]
+    }
+  ],
+  "verification": {
+    "by": "openwiki/0.7.0",
+    "at": "2026-10-03T13:11:49.042Z"
+  }
+}

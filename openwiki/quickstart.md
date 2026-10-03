@@ -3,6 +3,39 @@ type: Guide
 title: Quickstart
 description: Routing entry for the Manifold wiki; what the wiki covers, how it is organized, and where to go next for each change area.
 tags: [quickstart, navigation, overview]
+verified:
+  - by: openwiki/0.7.0
+    at: 2026-10-03T13:11:49.042Z
+sources:
+  - id: openwiki-source-05ccef8d4cf1698187f20464
+    resource: repo://pyproject.toml
+  - id: openwiki-source-f6308550d1ec17a2ebed8f58
+    resource: repo://src/manifold/metrics/paired_callback.py
+  - id: openwiki-source-487431944da97854e8cb6d33
+    resource: repo://src/manifold/modules/frozen_arm.py
+  - id: openwiki-source-56674f106efd2c16c47c3e08
+    resource: repo://src/manifold/pipelines/controlnet_latent_flow.py
+  - id: openwiki-source-63410e878c74053bcaeb98f8
+    resource: repo://src/manifold/pipelines/latent_flow.py
+  - id: openwiki-source-812f4876e72062b85443a7c2
+    resource: repo://src/manifold/training/callbacks/__init__.py
+  - id: openwiki-source-4a976a922e9a1286c789e272
+    resource: repo://src/manifold/training/callbacks/paired_fidelity.py
+  - id: openwiki-source-bf73652a42104a8f9ef7e65e
+    resource: repo://src/manifold/training/callbacks/registry.py
+  - id: openwiki-source-28b61e3219922e44e25b13ad
+    resource: repo://src/manifold/training/controlnet_cli.py
+  - id: openwiki-source-be99bd216fffaa3e1d9212c0
+    resource: repo://src/manifold/training/core.py
+  - id: openwiki-source-deca8f8f4a3d2dbbba47ac16
+    resource: repo://src/manifold/training/device_policy.py
+  - id: openwiki-source-bf926767b4a66a5c439a26ca
+    resource: repo://src/manifold/training/export_cli.py
+  - id: openwiki-source-4bdb3113f633b5c6a86fd01d
+    resource: repo://src/manifold/training/grpo_cli.py
+  - id: openwiki-source-d30a274dc99c74b634e7fd45
+    resource: repo://tests/test_paired_reward_deleted.py
+generated: { by: "openwiki/0.7.0", at: "2026-10-03T13:11:49.042Z" }
 ---
 
 # Quickstart
@@ -23,7 +56,7 @@ wiki is the evidence index; source code and tests remain authoritative.
 
 - [Architecture and source map](architecture.md) — component boundaries, data/config layers, runtime flows, native artifact contract, and change guidance.
 - [Key workflows](workflows.md) — JiT training, supervised ControlNet, reward + GRPO stages, checkpoint → native export, inference, eval, and the GRPO scheduler `rollout_range` contract.
-- [Before/after GRPO evaluation](evaluation.md) — `manifold-eval`, same-noise artifact comparison, paired PSNR/SSIM, slice grids, report artifacts, and the planned in-training fidelity monitor.
+- [Before/after GRPO evaluation](evaluation.md) — `manifold-eval`, same-noise artifact comparison, paired PSNR/SSIM, slice grids, report artifacts, and the now-active in-training `PairedFidelityCallback` monitor (ADR-0037) that mirrors the offline metric into the supervised ControlNet training loop.
 - [Operations and testing](operations-and-testing.md) — standard checks, distributed-validation contract, runbook cautions, deadlock vs slow-validation diagnostic, and focused test commands.
 - [Callback registry and training spine](callback-registry.md) — `CallbackRegistry` two-phase resolve/build, the spec contract, monitor validation, and `TrainingSpine.run` merge order (ADR-0029 / ADR-0032).
 - [Frozen arms and per-rank device policy](frozen-arm-and-device-policy.md) — `FrozenArmMixin` (register + dual-exclude, ADR-0031 A1) and `DevicePolicy` (the per-rank CUDA decision that replaced `resolve_warm_device` and the pre-PG `set_device` twin, ADR-0035).
@@ -59,9 +92,9 @@ workflow — use `--pipeline jit` (default) or `--pipeline controlnet`.
 | Edit reward training (preference pairs, online rollout) | [workflows.md](workflows.md#reward-and-grpo-stages) | `src/manifold/modules/reward.py`, `src/manifold/modules/partial_denoise.py`, `src/manifold/data/reward_pairs.py`, `src/manifold/training/reward_cli.py` | `RewardModule`, `partial_denoise_rollout`, `bradley_terry_loss`, `PartialFlowMatchHeunScheduler` | `tests/test_reward.py`, `test_reward_pairs.py`, `test_paired_reward_deleted.py` | `pytest tests/test_reward.py tests/test_reward_pairs.py -q` |
 | Edit GRPO (UNet or ControlNet policy) | [workflows.md](workflows.md#reward-and-grpo-stages), [workflows.md](workflows.md#grpo-scheduler-rollout_range-single-heun-interval-loop-adr-0005), [architecture.md](architecture.md#reward-and-policy-post-training) | `src/manifold/modules/grpo.py`, `src/manifold/schedulers/scheduling_flow_match_grpo.py`, `src/manifold/training/grpo_cli.py`, `src/manifold/training/controlnet_inputs.py` | `GRPOModule`, `singular_branch_rollout`, `clipped_surrogate_loss`, `FlowMatchGRPOScheduler.rollout_range`, `_detect_controlnet_export`, `_controlnet_real_inputs`, `_unet_real_inputs`, `load_frozen_controlnet_generator`, `manifold-train-grpo` | `tests/test_grpo.py`, `test_scheduler.py::test_grpo_*`, `test_paired_reward_deleted.py` | `pytest tests/test_grpo.py tests/test_scheduler.py -q` |
 | Edit checkpoint / export contract | [workflows.md](workflows.md#checkpoint-and-export-contract) | `src/manifold/training/{export_cli,export}.py`, `src/manifold/pipelines/{latent_flow,controlnet_latent_flow}.py`, `configs/network/config_network.yaml` | `export_to_native`, `LatentFlowPipeline`, `ControlNetLatentFlowPipeline`, `manifold-export` | `tests/test_persistence.py`, `test_pipeline_inference.py`, `test_controlnet_pipeline_inference.py`, `test_config.py` | `pytest tests/test_persistence.py tests/test_controlnet_pipeline_inference.py -q` |
-| Add / change offline before/after evaluation, paired fidelity, or reporting | [evaluation.md](evaluation.md), [workflows.md](workflows.md#beforeafter-evaluation), [operations-and-testing.md](operations-and-testing.md#beforeafter-evaluation-runbook) | `src/manifold/eval/{cli,before_after,comparison_page}.py`, `src/manifold/metrics/paired.py`, `src/manifold/pipelines/pipeline_utils.py` | `BeforeAfterEval`, `BeforeAfterResult`, `PairedFidelityMetrics`, `ComparisonPageBuilder`, `min_max_to_unit` | `tests/test_paired_fidelity.py`, `test_before_after_eval.py`, `test_eval_cli.py`, `test_comparison_page.py` | `pytest tests/test_paired_fidelity.py tests/test_before_after_eval.py tests/test_eval_cli.py tests/test_comparison_page.py -q` |
+| Add / change offline before/after evaluation, paired fidelity, or reporting | [evaluation.md](evaluation.md), [workflows.md](workflows.md#beforeafter-evaluation), [operations-and-testing.md](operations-and-testing.md#beforeafter-evaluation-runbook) | `src/manifold/eval/{cli,before_after,comparison_page}.py`, `src/manifold/metrics/paired.py`, `src/manifold/metrics/paired_callback.py`, `src/manifold/pipelines/pipeline_utils.py` | `BeforeAfterEval`, `BeforeAfterResult`, `PairedFidelityMetrics`, `PairedFidelityCallback`, `ComparisonPageBuilder`, `min_max_to_unit` | `tests/test_paired_fidelity.py`, `test_before_after_eval.py`, `test_eval_cli.py`, `test_comparison_page.py`, `test_paired_fidelity_callback.py`, `test_paired_fidelity_ddp.py` | `pytest tests/test_paired_fidelity.py tests/test_before_after_eval.py tests/test_eval_cli.py tests/test_comparison_page.py tests/test_paired_fidelity_callback.py -q` |
 | Edit validation / FID / x0-MAE / reward metric | [operations-and-testing.md](operations-and-testing.md#distributed-validation-contract), [callback-registry.md](callback-registry.md) | `src/manifold/metrics/fid/*`, `src/manifold/training/metrics.py`, `src/manifold/training/callbacks/{fid,registry}.py` | `FIDCallback`, `LatentX0MAE`, `FIDSpec`, `CallbackRegistry`, `CallbackContext` | `tests/test_fid.py`, `test_fid_helpers.py`, `test_paired_fidelity.py`, `test_metric_plot.py`, `test_ddp_metrics.py`, `test_callback_registry.py`, `test_ddp_val_honesty.py` | `pytest tests/test_fid.py tests/test_ddp_metrics.py -q` |
-| Add / change a training callback | [callback-registry.md](callback-registry.md) | `src/manifold/training/callbacks/{registry,context,train_loss,fid,checkpoint}.py`, `src/manifold/training/core.py` | `CallbackRegistry`, `CallbackSpec`, `TrainingSpine.run`, `forbidden_callbacks`, `forbidden_monitors` | `tests/test_callback_registry.py`, `tests/test_training_cli.py` | `pytest tests/test_callback_registry.py -q` |
+| Add / change a training callback | [callback-registry.md](callback-registry.md) | `src/manifold/training/callbacks/{registry,context,train_loss,fid,checkpoint,paired_fidelity}.py`, `src/manifold/metrics/paired_callback.py`, `src/manifold/training/core.py` | `CallbackRegistry`, `CallbackSpec`, `PairedFidelitySpec`, `TrainingSpine.run`, `forbidden_callbacks`, `forbidden_monitors` | `tests/test_callback_registry.py`, `tests/test_paired_fidelity_callback.py`, `tests/test_training_cli.py` | `pytest tests/test_callback_registry.py -q` |
 | Add / change a frozen arm or the per-rank device decision | [frozen-arm-and-device-policy.md](frozen-arm-and-device-policy.md) | `src/manifold/modules/frozen_arm.py`, `src/manifold/training/device_policy.py`, `src/manifold/training/{cli,grpo_cli,reward_cli,controlnet_cli}.py`, `src/manifold/modules/{grpo,controlnet_latent_flow,reward}.py` | `FrozenArmMixin._register_frozen_arm`, `FrozenArmMixin._frozen_arm_names`, `DevicePolicy.pin`, `DevicePolicy.warm_device` | `tests/test_frozen_arm_mixin.py`, `tests/test_device_policy.py`, `tests/test_ddp_warm.py` | `pytest tests/test_frozen_arm_mixin.py tests/test_device_policy.py -q` |
 | Diagnose a hung / slow multi-DCU validation epoch | [operations-and-testing.md](operations-and-testing.md#diagnosing-deadlock-vs-slow-validation) | `src/manifold/training/cli.py`, `src/manifold/metrics/fid/*` | `FIDCallback`, `LatentX0MAE`, MAISI `sliding_window_inference` | `tests/ddp.py` helper, `tests/test_ddp*.py` | `pytest tests/test_ddp.py -q` |
 | Add / remove a console entry point | [workflows.md](workflows.md#reward-and-grpo-stages) | `pyproject.toml` (`[project.scripts]`), `src/manifold/eval/cli.py` | `manifold-eval` and `main` | `tests/test_paired_reward_deleted.py` (parses `pyproject.toml` directly), `tests/test_eval_cli.py` (ships the full CLI workflow) | `pytest tests/test_paired_reward_deleted.py tests/test_eval_cli.py -q` |
@@ -93,8 +126,8 @@ manifold/
 - **Frozen arms:** new frozen-arm wiring MUST go through `FrozenArmMixin._register_frozen_arm` (ADR-0031 A1). Do not reintroduce the `object.__setattr__` bypass or a hand-rolled state-dict override — the mixin is the single owner of the register + dual-exclude contract.
 - **Per-rank device:** pre-PG shells MUST resolve the per-rank CUDA device via `DevicePolicy.pin()`; the post-PG VAE warm MUST go through `DevicePolicy.warm_device(fallback)`. Do not reintroduce the inline `set_device` twin, the bare `torch.device("cuda")` in the controlnet CLI, or `manifold.data.latent_pipeline.resolve_warm_device` (ADR-0035).
 - **Callbacks:** add new training callbacks via the `CallbackRegistry` (ADR-0029). The `TrainingSpine.run` merge order — defaults → knobs → `--callbacks` override → `forbidden_callbacks` / `forbidden_monitors` — is the single source of truth for which callbacks fire and which monitors are allowed (ADR-0032).
-- **Paired fidelity/eval:** preserve `min_max_to_unit` → `PairedFidelityMetrics(data_range=1.0)` and same-noise before/after pairing across the pipeline, offline driver, report, and planned in-training callback. Change the `manifold.eval` barrel, console wiring, metrics contract, and page schema together when extending the shipped eval surface.
-- **Metrics:** distinguish per-rank accumulation from global reduction. Manual `all_reduce` must not also use `sync_dist=True` for the same value. ADR-0037's fixed-subset paired monitor is accepted but not active; until implemented, only `val/x0_mae` is the supervised ControlNet monitor.
+- **Paired fidelity/eval:** preserve `min_max_to_unit` → `PairedFidelityMetrics(data_range=1.0)` and same-noise before/after pairing across the pipeline, offline driver, report, and the now-active in-training `PairedFidelityCallback` (registered as the `paired_fidelity` spec on the supervised ControlNet CLI). Change the `manifold.eval` barrel, console wiring, metrics contract, and page schema together when extending the shipped eval surface.
+- **Metrics:** distinguish per-rank accumulation from global reduction. Manual `all_reduce` must not also use `sync_dist=True` for the same value. ADR-0037's observe-only `val/psnr`/`val/ssim` monitor is active on the supervised ControlNet CLI; the frozen check at the supervised ControlNet checkpoint is still `val/x0_mae` (the paired-fidelity monitor never drives checkpoint selection, never enters the loss, and never touches the optimizer/EMA). Releasing the blanket `forbidden_callbacks={"fid"}` so the `paired_fidelity` spec may run on the GRPO ControlNet path is a deliberate ADR-0037 follow-up, not a quiet change.
 - **Checkpoint behavior:** update training callbacks, export, downstream frozen-generator loaders, and tests as one contract.
 - **Console scripts:** `pyproject.toml` is the single source of truth. The paired-reward deletion guard parses it directly, while `tests/test_eval_cli.py` exercises the full `manifold-eval` install-facing workflow; `ComparisonPageBuilder` remains library-only by design.
 

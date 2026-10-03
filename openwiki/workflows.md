@@ -3,6 +3,51 @@ type: Guide
 title: Key Workflows
 description: JiT, supervised ControlNet translator, reward/GRPO training stages, before/after evaluation, inference, checkpoints, and export.
 tags: [workflows, training, inference, checkpoints, export]
+verified:
+  - by: openwiki/0.7.0
+    at: 2026-10-03T13:11:49.042Z
+sources:
+  - id: openwiki-source-12822fdabe7eb1e0e1018719
+    resource: repo://configs/train/config_grpo.yaml
+  - id: openwiki-source-3748206f6159b3ca8063c053
+    resource: repo://src/manifold/data/warm_datamodule.py
+  - id: openwiki-source-121ee09471abdc662d9d3b48
+    resource: repo://src/manifold/eval/before_after.py
+  - id: openwiki-source-e22b4e5926edbd63eb845214
+    resource: repo://src/manifold/eval/cli.py
+  - id: openwiki-source-52166c58b57c3078636d5b06
+    resource: repo://src/manifold/eval/comparison_page.py
+  - id: openwiki-source-f6308550d1ec17a2ebed8f58
+    resource: repo://src/manifold/metrics/paired_callback.py
+  - id: openwiki-source-2472d02c3afe41b7e0d68982
+    resource: repo://src/manifold/metrics/paired.py
+  - id: openwiki-source-0718666398e4c020f19a709c
+    resource: repo://src/manifold/modules/controlnet_sampler.py
+  - id: openwiki-source-487431944da97854e8cb6d33
+    resource: repo://src/manifold/modules/frozen_arm.py
+  - id: openwiki-source-ffd9f2f79ca81385e197ae7f
+    resource: repo://src/manifold/modules/grpo.py
+  - id: openwiki-source-56674f106efd2c16c47c3e08
+    resource: repo://src/manifold/pipelines/controlnet_latent_flow.py
+  - id: openwiki-source-63410e878c74053bcaeb98f8
+    resource: repo://src/manifold/pipelines/latent_flow.py
+  - id: openwiki-source-041a3584d4049736545ceb90
+    resource: repo://src/manifold/schedulers/scheduling_flow_match_grpo.py
+  - id: openwiki-source-4a976a922e9a1286c789e272
+    resource: repo://src/manifold/training/callbacks/paired_fidelity.py
+  - id: openwiki-source-cb9c9c415ab8026b88012d9e
+    resource: repo://src/manifold/training/cli.py
+  - id: openwiki-source-28b61e3219922e44e25b13ad
+    resource: repo://src/manifold/training/controlnet_cli.py
+  - id: openwiki-source-bf926767b4a66a5c439a26ca
+    resource: repo://src/manifold/training/export_cli.py
+  - id: openwiki-source-d4e091552e1ad8d0fe58e7b2
+    resource: repo://src/manifold/training/export.py
+  - id: openwiki-source-4bdb3113f633b5c6a86fd01d
+    resource: repo://src/manifold/training/grpo_cli.py
+  - id: openwiki-source-43f6a22439495a06382f037c
+    resource: repo://tests/test_paired_fidelity_ddp.py
+generated: { by: "openwiki/0.7.0", at: "2026-10-03T13:11:49.042Z" }
 ---
 
 # Key workflows
@@ -25,13 +70,17 @@ Important constraint: the regular noise-to-data production flow disables validat
 
 ## Paired training
 
-`manifold-train-controlnet` is the supervised paired translator (ADR-0027 stage 1; the old `paired_cli` and the separate paired-reward pipeline were retired — the latter in ADR-0034). It loads a frozen JiT native export via `--native-dir`, warms shared per-volume latents via `--latents-dir`, and trains a trainable ControlNet over the frozen base through `ControlNetLatentFlowModule`. Validation currently uses the latent-space `val/x0_mae` callback (`src/manifold/training/metrics.py`), which is fast and runs through the shared `controlnet_rollout` primitive that native inference also uses (`src/manifold/modules/controlnet_sampler.py`; ADR-0005). ADR-0037 accepts a complementary fixed-subset `val/psnr` / `val/ssim` monitor, but that callback is not implemented yet and will remain observe-only, not a checkpoint selector. The native supervised export then becomes stage-1 input to `manifold-train-grpo` for the ControlNet policy path.
+`manifold-train-controlnet` is the supervised paired translator (ADR-0027 stage 1; the old `paired_cli` and the separate paired-reward pipeline were retired — the latter in ADR-0034). It loads a frozen JiT native export via `--native-dir`, warms shared per-volume latents via `--latents-dir`, and trains a trainable ControlNet over the frozen base through `ControlNetLatentFlowModule`. Validation uses the latent-space `val/x0_mae` callback (`src/manifold/training/metrics.py`) as the **checkpoint monitor** (mode `min`, `save_top_k=3`) — it is fast and runs through the shared `controlnet_rollout` primitive that native inference also uses (`src/manifold/modules/controlnet_sampler.py`; ADR-0005).
+
+The **observe-only in-training paired-fidelity monitor** (`val/psnr` / `val/ssim`, ADR-0037) is now active on the supervised CLI as a complement to `val/x0_mae`. It is registered as the `paired_fidelity` spec on the `CallbackRegistry` (`src/manifold/training/callbacks/paired_fidelity.py`, mounted exactly like `FIDSpec`) and built as `PairedFidelityCallback` (`src/manifold/metrics/paired_callback.py`). On each gated validation epoch the callback rolls a **fixed paired subset** under **fixed seeded noise** through the module's own full Heun `controlnet_rollout`, decodes generated and real target via the shared `LatentDecoder` + `min_max_to_unit` normalization (the same `data_range=1.0` contract `BeforeAfterEval` and the ControlNet pipeline use), and scores 3D PSNR + 3D SSIM with `PairedFidelityMetrics`. The four spec knobs are `subset_size` / `every_n_epochs` / `num_inference_steps` / `seed`; the rollout step count is **recipe-primary** — `PairedFidelitySpec.num_inference_steps` defaults to `None` and the spec reads it from `CallbackContext.inference_recipe["num_inference_steps"]`, which the supervised CLI fills from the existing `controlnet.num_inference_steps` knob (default 15 ⇒ 29 UNet evals). The monitor never drives checkpoint selection (`monitor_metric` stays `val/x0_mae`), never enters the loss, and never touches the optimizer / EMA; under DDP every rank evaluates the same fixed subset redundantly (DDP-synchronized weights + identical seeded noise + identical fixed input ⇒ identical per-rank result), so the cross-rank reduction is just Lightning's `torchmetrics` sync on the two module-attached `MeanMetric`s. See [Active in-training monitor: `PairedFidelityCallback` + `PairedFidelitySpec`](evaluation.md#active-in-training-monitor-pairedfidelitycallback--pairedfidelityspec) for the full contract and [Callback registry and training spine](callback-registry.md#built-in-specs) for the registry surface.
+
+The native supervised export then becomes stage-1 input to `manifold-train-grpo` for the ControlNet policy path.
 
 Paired conditioning uses a learned MLP that combines source and target contrast embeddings (`concat([embed(src), embed(tgt+offset)])`), with the optional `paired_direction_offset` shifting the target embedding row to break A<->B symmetry. The learned MLP provides greater discriminability across the 12 contrast directions and replaces the earlier linear sum.
 
 Useful recipe controls in `configs/train/config_controlnet_supervised.yaml` include:
 
-- `controlnet.num_inference_steps`: Heun steps for the validation rollout; mirror the JiT denoiser's production inference count.
+- `controlnet.num_inference_steps`: Heun steps for both the validation rollout and the paired-fidelity monitor's rollout; mirror the JiT denoiser's production inference count.
 - `controlnet.val_fraction`: held-out subject fraction when `env.val_data_base_dir` is not a BraTS directory (the shipped `environment_brats2023.yaml` points it at a manifest JSON, which `_train_val_manifests` rejects and falls back to the fraction).
 - `diffusion_unet_train.lr_warmup_ratio`: preferred over a fixed count for short runs; warmup steps are clamped so peak LR can be reached.
 
@@ -102,7 +151,7 @@ manifold-eval \
   --device cuda
 ```
 
-The command writes `metrics.json`, `slice_grid_<i>.png`, and `<output>/after_native`. A separate `ComparisonPageBuilder` turns those local artifacts plus optional JiT `metrics.csv` files into a self-contained HTML report; it is not another console entry point. Keep this offline comparison distinct from ADR-0037's accepted in-training monitor, which is planned but not active.
+The command writes `metrics.json`, `slice_grid_<i>.png`, and `<output>/after_native`. A separate `ComparisonPageBuilder` turns those local artifacts plus optional JiT `metrics.csv` files into a self-contained HTML report; it is not another console entry point. Keep this offline comparison contractually aligned with the **now-active in-training monitor** (ADR-0037's `val/psnr` / `val/ssim`): both share the same `PairedFidelityMetrics`, the same `min_max_to_unit` normalization (so `data_range=1.0` is the same on both sides), and the same ControlNet rollout primitive, so the in-training curve and the offline `metrics.json` PSNR/SSIM are directly comparable — a change to the metric, the normalization, or the rollout step count on either side without the other is a comparison bug (a cross-component change, not a local patch).
 
 ## Checkpoint and export contract
 
@@ -160,9 +209,10 @@ When changing inference, verify that module sampling and pipeline sampling still
 | --- | --- | --- | --- |
 | Cache build / reconstruction | `src/manifold/data/latent_pipeline.py`, `src/manifold/data/paired_latent_dataset.py`, `src/manifold/data/latent_dataset.py` | `tests/test_paired_latent_cache.py`, `tests/test_ddp_warm.py` | `pytest tests/test_paired_latent_cache.py tests/test_ddp_warm.py -q` |
 | Supervised ControlNet stage | `src/manifold/training/controlnet_cli.py`, `src/manifold/modules/controlnet_latent_flow.py`, `configs/train/config_controlnet_supervised.yaml` | `tests/test_controlnet_module_training.py`, `tests/test_controlnet_cli.py` | `pytest tests/test_controlnet_module_training.py tests/test_controlnet_cli.py -q` |
+| In-training paired-fidelity monitor (ADR-0037) | `src/manifold/training/callbacks/paired_fidelity.py`, `src/manifold/metrics/paired_callback.py`, `src/manifold/metrics/paired.py`, `src/manifold/metrics/vae_stage.py`, `src/manifold/training/controlnet_cli.py` | `tests/test_paired_fidelity_callback.py`, `tests/test_paired_fidelity_ddp.py`, `tests/test_callback_registry.py::test_paired_fidelity_*`, `tests/test_paired_fidelity.py` | `pytest tests/test_paired_fidelity_callback.py "tests/test_callback_registry.py::test_paired_fidelity_spec_*" tests/test_paired_fidelity_ddp.py -q` |
 | Reward + GRPO stages | `src/manifold/training/{reward_cli,grpo_cli}.py`, `src/manifold/modules/{reward,grpo}.py` | `tests/test_reward.py`, `tests/test_reward_pairs.py`, `tests/test_grpo.py` | `pytest tests/test_reward.py tests/test_reward_pairs.py tests/test_grpo.py -q` |
 | `manifold-export` bridge + persistence | `src/manifold/training/export.py`, `src/manifold/training/export_cli.py`, `src/manifold/pipelines/{latent_flow,controlnet_latent_flow}.py` | `tests/test_persistence.py`, `tests/test_controlnet_cli.py` | `pytest tests/test_persistence.py tests/test_controlnet_cli.py -q` |
 | `manifold-eval` paired fidelity + comparison page | `src/manifold/eval/cli.py`, `src/manifold/eval/before_after.py`, `src/manifold/eval/comparison_page.py`, `src/manifold/metrics/paired.py` | `tests/test_paired_fidelity.py`, `tests/test_before_after_eval.py`, `tests/test_eval_cli.py`, `tests/test_comparison_page.py` | `pytest tests/test_paired_fidelity.py tests/test_before_after_eval.py tests/test_eval_cli.py tests/test_comparison_page.py -q` |
 | Native inference pipelines | `src/manifold/pipelines/{latent_flow,controlnet_latent_flow}.py`, `src/manifold/modules/{sampler,controlnet_sampler}.py` | `tests/test_pipeline_inference.py`, `tests/test_controlnet_pipeline_inference.py`, `tests/test_scheduler.py` | `pytest tests/test_pipeline_inference.py tests/test_controlnet_pipeline_inference.py tests/test_scheduler.py -q` |
 
-Scope boundaries: each row maps a workflow seam to one CLI plus its module and pipeline siblings; do not rerun the full suite for a single-row change. New `--pipeline paired` restoration or a new in-training monitor must add the matching test before becoming supported.
+Scope boundaries: each row maps a workflow seam to one CLI plus its module and pipeline siblings; do not rerun the full suite for a single-row change. New `--pipeline paired` restoration or a new in-training monitor on the GRPO ControlNet path (releasing the blanket `forbidden_callbacks={"fid"}` for the `paired_fidelity` spec) must add the matching test before becoming supported.

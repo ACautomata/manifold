@@ -1,0 +1,188 @@
+{
+  "schemaVersion": 1,
+  "pageVersion": "sha256:8a1161d3804be1345b5adb58d2e576c296f83486e1d3215a18cd14e5c0d872a5",
+  "claims": [
+    {
+      "id": "claim_7395cf5431d846e48f7eed57efc6f69e",
+      "statement": "manifold-train composes environment + recipe + network configs, defers the VAE-encode latent warm into DataModule.setup() so the per-rank i % world == rank sharding activates (ADR-0017), then trains LatentFlowModule with logit-normal timesteps and JiT's (1-t)^-2 weighted clean-latent prediction loss. The noise-to-data production flow disables validation when no held-out source is wired and refuses to reuse training data as validation.",
+      "evidence": [
+        {
+          "resource": "repo://src/manifold/data/warm_datamodule.py",
+          "version": "repo-file-v1:sha256:39ec8c4a0b4fe051e536d46e3f9fca18d19dc1dbed670fe245f9a63c3a8bfd23"
+        },
+        {
+          "resource": "repo://src/manifold/training/cli.py",
+          "version": "repo-file-v1:sha256:ca83aa71a4327af3ca12ff62392f1797626badb9a1e4e9b743c166c39214a8fa"
+        }
+      ]
+    },
+    {
+      "id": "claim_8155cc655f1949efb8b196252383759a",
+      "statement": "The supervised ControlNet CLI runs two validators: val/x0_mae from the non-registry LatentX0MAE extra callback is the active checkpoint monitor (mode=min, save_top_k=3), and the in-training PairedFidelityCallback (val/psnr / val/ssim, ADR-0037) is the observe-only companion — it never drives checkpoint selection, never enters the loss, and never touches the optimizer or EMA. The paired-fidelity spec is in the supervised CLI's default callback-name set alongside train_loss and checkpoint.",
+      "evidence": [
+        {
+          "resource": "repo://src/manifold/metrics/paired_callback.py",
+          "version": "repo-file-v1:sha256:2d78c68acfbf98d12fd04e32a4f389c475e78b3fecb22202dbb21d1882c221e0"
+        },
+        {
+          "resource": "repo://src/manifold/training/callbacks/paired_fidelity.py",
+          "version": "repo-file-v1:sha256:09c5b8bb0451cd41f6c98d678177eb1d52639198fcd4bd89a0a29b6af1339273"
+        },
+        {
+          "resource": "repo://src/manifold/training/controlnet_cli.py",
+          "version": "repo-file-v1:sha256:ebab163068d957ea1550d2cc769eedcea367ae300b9737b548cb2ef2e91cb361"
+        }
+      ]
+    },
+    {
+      "id": "claim_073adc7f36ec44019d837cfea79af310",
+      "statement": "PairedFidelitySpec declares four knobs (subset_size, every_n_epochs, num_inference_steps, seed) and logged_metrics=frozenset({\"val/psnr\",\"val/ssim\"}). The rollout step count is recipe-primary: the spec's num_inference_steps defaults to None and PairedFidelitySpec.build reads it from CallbackContext.inference_recipe[\"num_inference_steps\"], which the supervised CLI fills from controlnet.num_inference_steps (default 15 ⇒ 29 UNet evals); an explicit per-callback value overrides the recipe. The fixed paired subset is resolved lazily through getattr(source, \"val_latent_ds\", source) so the cold-path setup() replacement is honored.",
+      "evidence": [
+        {
+          "resource": "repo://src/manifold/metrics/paired_callback.py",
+          "version": "repo-file-v1:sha256:2d78c68acfbf98d12fd04e32a4f389c475e78b3fecb22202dbb21d1882c221e0"
+        },
+        {
+          "resource": "repo://src/manifold/training/callbacks/paired_fidelity.py",
+          "version": "repo-file-v1:sha256:09c5b8bb0451cd41f6c98d678177eb1d52639198fcd4bd89a0a29b6af1339273"
+        },
+        {
+          "resource": "repo://src/manifold/training/controlnet_cli.py",
+          "version": "repo-file-v1:sha256:ebab163068d957ea1550d2cc769eedcea367ae300b9737b548cb2ef2e91cb361"
+        }
+      ]
+    },
+    {
+      "id": "claim_bb7eed4c2a004d0ab1247387095b9bf0",
+      "statement": "Under DDP every rank evaluates the same fixed paired subset redundantly (DDP-synchronized weights + identical seeded noise + identical fixed input ⇒ identical per-rank result), so the cross-rank reduction is just Lightning's torchmetrics sync on the two module-attached MeanMetric instances. There is no FID-style sharding and no error-rendezvous machinery on this path; tests/test_paired_fidelity_ddp.py's 2-rank gate locks both the no-hang and the per-rank value-equality claims.",
+      "evidence": [
+        {
+          "resource": "repo://src/manifold/metrics/paired_callback.py",
+          "version": "repo-file-v1:sha256:2d78c68acfbf98d12fd04e32a4f389c475e78b3fecb22202dbb21d1882c221e0"
+        },
+        {
+          "resource": "repo://tests/test_paired_fidelity_ddp.py",
+          "version": "repo-file-v1:sha256:cc8f0743bf83fa5a93ef7607cf485eb72f8c8a5454d7e89f933ac62f133817a7"
+        }
+      ]
+    },
+    {
+      "id": "claim_02c76aafd1c0465faf208da968c765c8",
+      "statement": "The offline BeforeAfterEval PSNR/SSIM and the in-training PairedFidelityCallback share the same PairedFidelityMetrics, the same min_max_to_unit normalization (data_range=1.0), and the same ControlNet rollout primitive by construction, so the in-training val/psnr/val/ssim curve and the offline metrics.json are directly comparable. A change to the metric, normalization, or rollout step count on either side without the other is a comparison bug that crosses pipeline_utils, controlnet_latent_flow, paired.py, paired_callback.py, and before_after.py.",
+      "evidence": [
+        {
+          "resource": "repo://src/manifold/eval/before_after.py",
+          "version": "repo-file-v1:sha256:ff5b7013e86e044b859edc917ce46c246182162a4802fbb05dfdf1f608cfc40f"
+        },
+        {
+          "resource": "repo://src/manifold/metrics/paired.py",
+          "version": "repo-file-v1:sha256:1a388bde3ad7969aedbd81e1f240df70e48bb327a68f1a08b9b0f83a7078ebd1"
+        },
+        {
+          "resource": "repo://src/manifold/metrics/paired_callback.py",
+          "version": "repo-file-v1:sha256:2d78c68acfbf98d12fd04e32a4f389c475e78b3fecb22202dbb21d1882c221e0"
+        },
+        {
+          "resource": "repo://src/manifold/pipelines/controlnet_latent_flow.py",
+          "version": "repo-file-v1:sha256:e1dca719a1b723380f9b5189661120ea26b3a4425dc03d821c89eb5457f64384"
+        }
+      ]
+    },
+    {
+      "id": "claim_c65b285fab924ca78587c6861f60b416",
+      "statement": "There is one GRPO recipe (configs/train/config_grpo.yaml) and one console entry (manifold-train-grpo); the policy is inferred from the native artifact under --native-dir — a raw JiT export trains the UNet, a supervised ControlNet export trains the ControlNet on its frozen base. There is no --grpo-mode flag. grpo_train.lr is the UNet-policy default; the optional controlnet.lr applies only to the ControlNet path and falls back to grpo_train.lr. The shared mode-agnostic RewardModel scores the terminal latent z_K unconditionally for both paths.",
+      "evidence": [
+        {
+          "resource": "repo://configs/train/config_grpo.yaml",
+          "version": "repo-file-v1:sha256:84fcdfe444eea9c0b0fd7cf5e6c1417c29b88208cbbb58a505a81911d4309910"
+        },
+        {
+          "resource": "repo://src/manifold/training/grpo_cli.py",
+          "version": "repo-file-v1:sha256:bd476544148229bbc306ead99268def05e8b706beb9fb0681dc99f3ae9080053"
+        }
+      ]
+    },
+    {
+      "id": "claim_87d6308a5e8649258c953fa926e1e009",
+      "statement": "For the ControlNet policy path, unconditional FID is suppressed two ways: at default-derivation (the constant frozen-base metric is skipped) and post-merge via TrainingSpine.run forbidden_callbacks={\"fid\": ...} / forbidden_monitors={\"val/fid\": ...} (ADR-0032), so a YAML or --callbacks override cannot re-enable FID or a val/fid checkpoint monitor. Checkpoint selection on the ControlNet path uses val/mean_reward.",
+      "evidence": [
+        {
+          "resource": "repo://src/manifold/training/grpo_cli.py",
+          "version": "repo-file-v1:sha256:bd476544148229bbc306ead99268def05e8b706beb9fb0681dc99f3ae9080053"
+        }
+      ]
+    },
+    {
+      "id": "claim_b0c6e0554322400c95dc5586710a8bd0",
+      "statement": "The GRPO singular-branch rollout walks two slices per branch through FlowMatchGRPOScheduler.rollout_range (ADR-0005 single-copy): the anchor slice 0→max_k (deterministic Heun, shared by every sibling) and the suffix slice k+1→n (per-sibling stochastic SDE branch that produces the GRPO group). The method lives on the scheduler, not as a free function in grpo.py; both the partial and GRPO schedulers inherit FlowMatchHeunDiscreteScheduler.heun_rollout verbatim. Source-level guards in tests/test_grpo.py and tests/test_scheduler.py lock the absence of _heun_one_step / _heun_rollout free functions and the inherited-primitive identity.",
+      "evidence": [
+        {
+          "resource": "repo://src/manifold/modules/grpo.py",
+          "version": "repo-file-v1:sha256:a6414ab143bb599e8e4a423696e13f5c592c28bd1f51e54251fac5d3ac7e210a"
+        },
+        {
+          "resource": "repo://src/manifold/schedulers/scheduling_flow_match_grpo.py",
+          "version": "repo-file-v1:sha256:bf84e8e68b0b736ef9f7155df5ef967d40f4602e41405e7d89efa26e4b14190c"
+        }
+      ]
+    },
+    {
+      "id": "claim_9465ce0d0a7546f299be421c0aed3900",
+      "statement": "Export is the sole checkpoint-to-native bridge: training .ckpt → manifold-export → native per-component dir consumed by LatentFlowPipeline.from_pretrained (--pipeline jit) or ControlNetLatentFlowPipeline.from_pretrained (--pipeline controlnet, requires --base-native-dir to restore the frozen base). The ControlNet .ckpt registers only the trainable ControlNet (FrozenArmMixin ADR-0031 A1: state_dict() strips the frozen base, load_state_dict strict-loads trainable keys with the frozen arms as an allow-list), so export bakes only controlnet.* keys and passes the base through verbatim. --pipeline paired is a stale reference: manifold.pipelines.paired_latent_flow.PairedLatentFlowPipeline was deleted in ADR-0034 and is not exercised.",
+      "evidence": [
+        {
+          "resource": "repo://src/manifold/modules/frozen_arm.py",
+          "version": "repo-file-v1:sha256:068107b0f47957bc4434604e1bfc4ad85d9c860cd75419940870beb854a903ed"
+        },
+        {
+          "resource": "repo://src/manifold/training/export.py",
+          "version": "repo-file-v1:sha256:d4918c2e41551a8218fef4797b53c15c0a9eb65b0234424303322463df077066"
+        },
+        {
+          "resource": "repo://src/manifold/training/export_cli.py",
+          "version": "repo-file-v1:sha256:39871b986393aaeb5c44dbdf33ed218f20d5618e5511af13db6ac79e2000928d"
+        }
+      ]
+    },
+    {
+      "id": "claim_0ebe36c77f8c40ed8d1877579f405f34",
+      "statement": "manifold-eval is the only shipped eval console entry. It infers the policy from the before native artifact's model_index.json pipeline_class (no --policy flag), exports the after .ckpt through the standard export_to_native bridge to <output>/after_native, reloads both fresh pipelines, and runs the same-seed BeforeAfterEval driver: JiT emits a before|after grid with provenance only, ControlNet additionally scores each generated target against its real target with PairedFidelityMetrics. A separate library-only ComparisonPageBuilder turns the local artifacts plus optional JiT metrics.csv into a self-contained HTML report with base64-embedded PNGs.",
+      "evidence": [
+        {
+          "resource": "repo://src/manifold/eval/before_after.py",
+          "version": "repo-file-v1:sha256:ff5b7013e86e044b859edc917ce46c246182162a4802fbb05dfdf1f608cfc40f"
+        },
+        {
+          "resource": "repo://src/manifold/eval/cli.py",
+          "version": "repo-file-v1:sha256:601432a7e81289c0d4085783b891798f2d3678e743771da886a207ab58d970ae"
+        },
+        {
+          "resource": "repo://src/manifold/eval/comparison_page.py",
+          "version": "repo-file-v1:sha256:67cf2eb537944d31e213c59e938c4762dd28283618541b968ea7ae9ab66c9b73"
+        }
+      ]
+    },
+    {
+      "id": "claim_db75be13a4094479a7cca87f6a87bf01",
+      "statement": "Two native inference pipelines are exercised: LatentFlowPipeline (JiT noise-to-data, UNet + scheduler + frozen VAE) and ControlNetLatentFlowPipeline (paired translator, frozen JiT base UNet + trainable ControlNet + scheduler + frozen VAE). Both share the per-component save_pretrained / from_pretrained contract and delegate to the same rollout primitive as the training modules (controlnet_rollout for the paired path, sample_latent_flow / heun_rollout for the JiT path), so training and inference cannot drift (ADR-0005). PairedLatentFlowPipeline is gone (ADR-0034); --pipeline paired in manifold-export is a stale reference.",
+      "evidence": [
+        {
+          "resource": "repo://src/manifold/modules/controlnet_sampler.py",
+          "version": "repo-file-v1:sha256:b557d164bdd1b05fb2d98f93889a33c58f67acb48115ecb10686b11554b617db"
+        },
+        {
+          "resource": "repo://src/manifold/pipelines/controlnet_latent_flow.py",
+          "version": "repo-file-v1:sha256:e1dca719a1b723380f9b5189661120ea26b3a4425dc03d821c89eb5457f64384"
+        },
+        {
+          "resource": "repo://src/manifold/pipelines/latent_flow.py",
+          "version": "repo-file-v1:sha256:9097a8a670b502ea987628300d4326f381e991f3629fe71cafcf744499c0e27a"
+        }
+      ]
+    }
+  ],
+  "verification": {
+    "by": "openwiki/0.7.0",
+    "at": "2026-10-03T13:11:49.042Z"
+  }
+}
