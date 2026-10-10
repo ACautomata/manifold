@@ -3,6 +3,69 @@ type: Reference
 title: Architecture and Source Map
 description: Component boundaries, data/config layers, evaluation/reporting boundaries, domain vocabulary, and where to look in source.
 tags: [architecture, source-map, components, data-flow]
+verified:
+  - by: openwiki/0.7.2
+    at: 2026-10-10T14:21:58.700Z
+sources:
+  - id: openwiki-source-862c417e516477791e237829
+    resource: repo://docs/adr/0026-controlnet-via-monai-native-residual-interface.md
+  - id: openwiki-source-4ee4003f33469f012ed392fe
+    resource: repo://docs/adr/0027-controlnet-supervised-then-grpo-two-stage.md
+  - id: openwiki-source-1b5659f7853fdac71576f4bd
+    resource: repo://docs/adr/0034-one-realism-reward-both-grpo-policies-delete-condition-aware.md
+  - id: openwiki-source-e6eba8b3aeb5f992ffb439cc
+    resource: repo://src/manifold/__init__.py
+  - id: openwiki-source-be17d6b0aae1753017c77cef
+    resource: repo://src/manifold/configuration.py
+  - id: openwiki-source-09e4eceb7e21a9e44d0eeb8d
+    resource: repo://src/manifold/eval/__init__.py
+  - id: openwiki-source-e22b4e5926edbd63eb845214
+    resource: repo://src/manifold/eval/cli.py
+  - id: openwiki-source-f6308550d1ec17a2ebed8f58
+    resource: repo://src/manifold/metrics/paired_callback.py
+  - id: openwiki-source-666d28928b5f89a8354d80ac
+    resource: repo://src/manifold/models/__init__.py
+  - id: openwiki-source-425df5dedfde0932318ead5e
+    resource: repo://src/manifold/models/controlnet_3d.py
+  - id: openwiki-source-f25390467e603a12f73af39d
+    resource: repo://src/manifold/models/modeling_utils.py
+  - id: openwiki-source-0415468d2196bb148ba1d91e
+    resource: repo://src/manifold/modules/__init__.py
+  - id: openwiki-source-aefad772862dded74740a681
+    resource: repo://src/manifold/modules/controlnet_latent_flow.py
+  - id: openwiki-source-0718666398e4c020f19a709c
+    resource: repo://src/manifold/modules/controlnet_sampler.py
+  - id: openwiki-source-487431944da97854e8cb6d33
+    resource: repo://src/manifold/modules/frozen_arm.py
+  - id: openwiki-source-81c1e136efa0c7240a130f1a
+    resource: repo://src/manifold/modules/sampler.py
+  - id: openwiki-source-f571e3a5231f7055f805276d
+    resource: repo://src/manifold/pipelines/__init__.py
+  - id: openwiki-source-56674f106efd2c16c47c3e08
+    resource: repo://src/manifold/pipelines/controlnet_latent_flow.py
+  - id: openwiki-source-63410e878c74053bcaeb98f8
+    resource: repo://src/manifold/pipelines/latent_flow.py
+  - id: openwiki-source-918f26e9f16813877a79b7b5
+    resource: repo://src/manifold/schedulers/__init__.py
+  - id: openwiki-source-2dc5bf79aced1021bf03e1f2
+    resource: repo://src/manifold/schedulers/scheduling_flow_match_heun.py
+  - id: openwiki-source-1d5844760600cb6bb2564175
+    resource: repo://src/manifold/training/__init__.py
+  - id: openwiki-source-812f4876e72062b85443a7c2
+    resource: repo://src/manifold/training/callbacks/__init__.py
+  - id: openwiki-source-4a976a922e9a1286c789e272
+    resource: repo://src/manifold/training/callbacks/paired_fidelity.py
+  - id: openwiki-source-28b61e3219922e44e25b13ad
+    resource: repo://src/manifold/training/controlnet_cli.py
+  - id: openwiki-source-bf926767b4a66a5c439a26ca
+    resource: repo://src/manifold/training/export_cli.py
+  - id: openwiki-source-d4e091552e1ad8d0fe58e7b2
+    resource: repo://src/manifold/training/export.py
+  - id: openwiki-source-36db33c03ac89b676295a74d
+    resource: repo://tests/test_callback_registry.py
+  - id: openwiki-source-7131b0d80871bbec1bff1bff
+    resource: repo://tests/test_controlnet_cli.py
+generated: { by: "openwiki/0.7.2", at: "2026-10-10T14:21:58.700Z" }
 ---
 
 # Architecture and source map
@@ -25,17 +88,41 @@ The shared rollout primitives are intentional: training-time sampling and native
 
 ```mermaid
 flowchart LR
-    Cache["VAE latent cache"] --> JiT["LatentFlowModule"]
-    Cache --> ControlNet["ControlNetLatentFlowModule"]
-    JiT --> Export["manifold-export"]
+    subgraph Data["Data (layer 1)"]
+        Cache["VAE latent cache"]
+    end
+    subgraph Training["Training orchestration (layer 5)"]
+        JiT["LatentFlowModule"]
+        ControlNet["ControlNetLatentFlowModule"]
+        Reward["RewardModule"]
+        GRPO["GRPOModule"]
+    end
+    subgraph Pipes["Inference pipelines (layer 4)"]
+        JitPipe["LatentFlowPipeline"]
+        CnPipe["ControlNetLatentFlowPipeline"]
+    end
+    subgraph Eval["Offline eval and reporting (layer 7)"]
+        EvalCmd["manifold-eval"]
+        Driver["BeforeAfterEval"]
+        Metric["PairedFidelityMetrics"]
+        Artifacts["metrics JSON and slice grids"]
+    end
+    Cache --> JiT
+    Cache --> ControlNet
+    JiT --> Export["manifold-export (ADR-0006)"]
     ControlNet --> Export
-    Export --> Eval["manifold-eval"]
-    Eval --> Core["BeforeAfterEval"]
-    Core --> Metric["Paired PSNR and SSIM"]
-    Core --> Artifacts["metrics JSON and slice grids"]
+    Reward --> Export
+    GRPO --> Export
+    Export -- native per-component dir --> JitPipe
+    Export -- native per-component dir --> CnPipe
+    JitPipe --> EvalCmd
+    CnPipe --> EvalCmd
+    EvalCmd --> Driver
+    Driver --> Metric
+    Driver --> Artifacts
 ```
 
-*Figure: Training and native artifacts converge at export, then the evaluation path scores paired targets and writes portable artifacts.*
+*Figure: Seven-layer runtime — Data (1) feeds Training modules (5) JiT / ControlNet / Reward / GRPO; `manifold-export` (ADR-0006) writes the native per-component directory that the Inference pipelines (4) reload; Eval (7) reloads both pipelines and writes portable artifacts.*
 
 ## Runtime flows
 
@@ -59,7 +146,7 @@ The paired reward pipeline was deleted in ADR-0034 (paired-reward CLI, condition
 
 BraTS-specific code groups volumes by subject and contrast, creates subject-disjoint splits, and enumerates all ordered non-self pairs. The dataset contract itself remains generic: source/target latents, labels, and spacing. The shared two-way subject splitter `_train_val_manifests` lives in `src/manifold/data/paired_manifests.py` (relocated from the deleted paired-reward CLI, consumed by `controlnet_cli` and `grpo_cli`).
 
-The active supervised checkpoint monitor remains latent-space `val/x0_mae`. ADR-0037 accepts an observe-only fixed-subset `val/psnr` / `val/ssim` callback, but that callback is not implemented in the current tree; treat the decision and its extension surface as planned work described in [Before/after GRPO evaluation](evaluation.md#accepted-in-training-monitor-planned-not-active).
+The active supervised checkpoint monitor remains latent-space `val/x0_mae`. ADR-0037's observe-only fixed-subset `val/psnr` / `val/ssim` monitor is implemented and active in the current tree: `PairedFidelitySpec` (`src/manifold/training/callbacks/paired_fidelity.py`) is registered with the `CallbackRegistry` and emitted by default in the supervised `controlnet_cli` `default_names` (`["train_loss", "checkpoint", "paired_fidelity"]`); the built `PairedFidelityCallback` (`src/manifold/metrics/paired_callback.py`) runs the module's own full ControlNet Heun rollout on a seeded fixed paired subset each gated epoch, decodes via `LatentDecoder`, normalizes with `min_max_to_unit`, scores with `PairedFidelityMetrics`, and logs `val/psnr` / `val/ssim`. It stays observe-only — `PairedFidelitySpec.logged_metrics = frozenset({"val/psnr", "val/ssim"})` declares them as *validatable* monitors but never displaces `val/x0_mae` as the checkpoint selector (the recipe-primary rollout step count is threaded from the existing `controlnet.num_inference_steps` knob through `CallbackContext.inference_recipe`, issue #239). The ControlNet-GRPO monitor extension remains a separate follow-up (paired rollout uses the trainable ControlNet, so the unconditional-FID rationale does not apply).
 
 Start with:
 
@@ -78,7 +165,7 @@ Start with `src/manifold/models/reward_model.py`, `src/manifold/modules/{reward,
 
 ### Before/after GRPO evaluation
 
-The shipped `manifold-eval` command exports the post-GRPO checkpoint against the before export's component structure, reloads both artifacts, and sends them through `BeforeAfterEval`. The driver creates identical initial noise and conditioning for each seed, decodes every latent with the frozen VAE, and applies the shared `min_max_to_unit` contract. JiT emits a `before | after` provenance-only metric record; ControlNet additionally scores each generated target against its real target with MONAI 3D PSNR/SSIM. One 2.5D three-plane grid is written per sample. See [Before/after GRPO evaluation](evaluation.md#runtime-flow) for the runtime sequence, public API, artifact schema, and the accepted-but-unimplemented in-training monitor.
+The shipped `manifold-eval` command exports the post-GRPO checkpoint against the before export's component structure, reloads both artifacts, and sends them through `BeforeAfterEval`. The driver creates identical initial noise and conditioning for each seed, decodes every latent with the frozen VAE, and applies the shared `min_max_to_unit` contract. JiT emits a `before | after` provenance-only metric record; ControlNet additionally scores each generated target against its real target with MONAI 3D PSNR/SSIM. One 2.5D three-plane grid is written per sample. See [Before/after GRPO evaluation](evaluation.md#runtime-flow) for the runtime sequence, public API, and artifact schema; the offline and the in-training (ADR-0037 `PairedFidelityCallback`) metric paths share the same `PairedFidelityMetrics(data_range=1.0)` contract and `min_max_to_unit` normalization, so the offline number and the logged `val/psnr` / `val/ssim` curve are directly comparable.
 
 Start with `src/manifold/eval/cli.py`, `src/manifold/eval/before_after.py`, `src/manifold/eval/comparison_page.py`, `src/manifold/metrics/paired.py`, and `src/manifold/pipelines/pipeline_utils.py`.
 
@@ -88,12 +175,36 @@ Experiment YAML is composed by `src/manifold/config/loader.py` and built into co
 
 Native inference directories contain component configuration/weights (including `model_index.json` and component subdirectories). Lightning `.ckpt` files are training state and are not loaded directly by pipelines; export is the bridge. `manifold-eval` depends on this boundary: its before directory supplies the loadable policy template and self-described `pipeline_class`, while the existing export bridge bakes the after `.ckpt` into `<output>/after_native`. The eval CLI therefore infers JiT versus ControlNet from the artifact rather than accepting a policy flag. See [Checkpoint and export contract](workflows.md#checkpoint-and-export-contract) and the eval [policy dispatch contract](evaluation.md#policy-dispatch-and-artifact-contract).
 
+### Native per-component pipeline format
+
+Both shipped inference pipelines serialize to and reload from the same per-component directory layout — `model_index.json` at the root, one subdirectory per component, each component writing its own `config.json` (and, for model components, a `diffusion_pytorch_model.pt` weights file). Concretely (`src/manifold/pipelines/latent_flow.py`, `controlnet_latent_flow.py`):
+
+```text
+<native_dir>/
+├── model_index.json            # {"format": "manifold", "pipeline_class": ..., "components": {...}}
+├── unet/
+│   ├── config.json             # the wrapper kwargs captured by register_to_config
+│   └── diffusion_pytorch_model.pt
+├── controlnet/                 # ControlNet pipeline only
+│   ├── config.json
+│   └── diffusion_pytorch_model.pt
+├── vae/
+│   ├── config.json             # scaling_factor lives here (ADR-0003)
+│   └── diffusion_pytorch_model.pt
+└── scheduler/
+    └── scheduler_config.json   # stateless config only - no weights
+```
+
+`save_pretrained` writes `model_index.json` with `format="manifold"`, `pipeline_class=type(self).__name__` (so a `ControlNetLatentFlowPipeline` writes `"ControlNetLatentFlowPipeline"` and a `LatentFlowPipeline` writes `"LatentFlowPipeline"`), and a `components` map that enumerates each held component by its `module.ClassName` qualname (the `_qualname` helper). Each model component is persisted via `ModelMixin.save_pretrained` → `config.json` + `torch.save(state_dict())` (`map_location="cpu"`, `weights_only=True`); the scheduler is stateless and writes only its `ConfigMixin`-derived JSON via `to_json_file`. `from_pretrained` is the mirror — it requires `model_index.json`, refuses a directory without one with a clear `FileNotFoundError`, then constructs each component from its subdirectory and instantiates the pipeline class named in the index. The two pipelines therefore share one persistence contract: only the `components` map and the wrapper's `__init__` signature differ.
+
+This contract is what `manifold-eval` dispatches on — `_pipeline_class_of` reads `pipeline_class` from the before artifact's `model_index.json`, picks the matching pipeline, and runs `run_unconditional` (JiT) or `run_paired` (ControlNet) accordingly. No mode flag is accepted. See [Before/after GRPO evaluation — policy dispatch](evaluation.md#policy-dispatch-and-artifact-contract) for the runtime sequence and the after-export write path.
+
 ## Change guidance
 
 - **Transport/integration:** change the scheduler and shared sampler path together; run scheduler, pipeline, and module tests to prevent train/inference drift.
 - **Latent scaling:** preserve VAE ownership and the unscaled-cache contract; check VAE, data, persistence, and pipeline tests.
 - **Paired conditioning/pairing:** keep BraTS discovery outside the generic dataset contract and preserve subject-level split isolation.
-- **Paired fidelity/evaluation:** preserve the `min_max_to_unit` → `PairedFidelityMetrics(data_range=1.0)` ordering and same-noise before/after contract across the pipeline, offline eval, and the future in-training monitor. A normalization, artifact, or report-schema change is a cross-component change, not a local patch.
+- **Paired fidelity/evaluation:** preserve the `min_max_to_unit` → `PairedFidelityMetrics(data_range=1.0)` ordering and same-noise before/after contract across the pipeline, offline eval, and the active in-training `PairedFidelityCallback` monitor. A normalization, artifact, or report-schema change is a cross-component change, not a local patch.
 - **Metrics:** distinguish per-rank accumulation from global reduction. Manual all-reduced metrics must not also use `sync_dist`, or they will be reduced twice.
 - **Checkpoint behavior:** update training callbacks, export, downstream frozen-generator loaders, and tests as one contract.
 - **Frozen arms:** new frozen-arm wiring MUST go through `FrozenArmMixin._register_frozen_arm`, not via `object.__setattr__` or any custom state-dict override — the mixin is the single owner of the register + dual-exclude contract (ADR-0031 A1). The frozen arms stay in `parameters()` (Lightning owns device placement) but carry no grad and emit no checkpoint key.
@@ -101,5 +212,3 @@ Native inference directories contain component configuration/weights (including 
 - **Callbacks:** new callbacks MUST go through the `CallbackRegistry` two-phase resolve/build; the `TrainingSpine.run` merge order is the single source of truth for which callbacks fire, which knobs apply, and which monitors are allowed (ADR-0029 / ADR-0032).
 
 For component-level change navigation (entry points, focused tests, minimal validation), see the [Quickstart task routing](quickstart.md#task-routing) and the stage-level table in [Workflows change navigation](workflows.md#change-navigation).
-
-

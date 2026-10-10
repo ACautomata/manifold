@@ -3,6 +3,15 @@ type: Reference
 title: Frozen arms and per-rank device policy
 description: FrozenArmMixin (register + dual-exclude off the optimizer / checkpoint) and DevicePolicy (the per-rank CUDA device decision that replaced resolve_warm_device and the pre-PG set_device twin).
 tags: [frozen-arm, device-policy, ADR-0031, ADR-0035]
+verified:
+  - by: openwiki/0.7.2
+    at: 2026-10-10T14:21:58.700Z
+sources:
+  - id: openwiki-source-bdb26e011dbdfd0846537627
+    resource: repo://docs/adr/0031-device-ownership.md
+  - id: openwiki-source-487431944da97854e8cb6d33
+    resource: repo://src/manifold/modules/frozen_arm.py
+generated: { by: "openwiki/0.7.2", at: "2026-10-10T14:21:58.700Z" }
 ---
 
 # Frozen arms and per-rank device policy
@@ -14,10 +23,11 @@ concern that every training CLI has to get right:
   shared "register + dual-exclude" implementation that keeps a frozen arm off
   the optimizer and off the checkpoint while letting Lightning own its device
   placement through the standard submodule machinery. Used by `GRPOModule`
-  (frozen `unet` arm on the ControlNet policy path; frozen `reward_model` and
-  frozen reference policy on the GRPO reward path), by
-  `ControlNetLatentFlowModule` (frozen `unet` arm), and by `RewardModule`
-  (frozen `reference_unet`).
+  (always: frozen `reward_model`; on the ControlNet policy path additionally:
+  frozen base `unet`; on the optional KL anchor: frozen `reference_unet` alone
+  for the UNet policy, or frozen `reference_unet` + `reference_controlnet` for
+  the ControlNet policy), by `ControlNetLatentFlowModule` (frozen `unet` arm),
+  and by `RewardModule` (frozen `denoiser`).
 - **`DevicePolicy`** (`src/manifold/training/device_policy.py`, ADR-0035) — the
   per-rank CUDA device decision. Replaces both the duplicated pre-PG
   `set_device` twin that lived in every training `main()` and the
@@ -39,10 +49,11 @@ The previous scheme kept a frozen base UNet *unregistered* on the host via
 `object.__setattr__`, hiding it from the module tree entirely. That worked for
 the off-optimizer and off-checkpoint invariants but broke Lightning's automatic
 `.to(device)`, forcing a manual staging step in `on_fit_start` and leaving
-Mode-1 (supervised) and Mode-2 (GRPO ControlNet) forks out of sync. ADR-0031
-chose the opposite direction: **register** the frozen arm as a normal
-`nn.Module` submodule so Lightning owns its device placement, and **dual-exclude**
-it from the optimizer and the checkpoint through targeted overrides.
+the UNet-policy and ControlNet-policy GRPO forks out of sync (each required a
+distinct hand-written `.to(device)` sequence). ADR-0031 chose the opposite
+direction: **register** the frozen arm as a normal `nn.Module` submodule so
+Lightning owns its device placement, and **dual-exclude** it from the optimizer
+and the checkpoint through targeted overrides.
 
 ### The mixin contract
 
@@ -160,11 +171,12 @@ de-duplication.
 policy = DevicePolicy()  # side-effect free: snapshots LOCAL_RANK (missing -> 0)
 ```
 
-`__init__` only reads `os.environ.get("LOCAL_RANK", "0")` and stores the
-result. It touches neither CUDA nor the process group. The snapshot is taken
-**once at construction** — post-PG callers do **not** re-resolve via
-`dist.get_rank()`. A `torchrun` launch always sets `LOCAL_RANK`; a single-process
-launch does not, and the default 0 is correct in that case.
+`__init__` only reads `os.environ.get("LOCAL_RANK")` and stores the result as
+`int(...)` (or `0` when the env var is missing). It touches neither CUDA nor the
+process group. The snapshot is taken **once at construction** — post-PG callers
+do **not** re-resolve via `dist.get_rank()`. A `torchrun` launch always sets
+`LOCAL_RANK`; a single-process launch does not, and the default 0 is correct in
+that case.
 
 ### `pin` — the one-time pre-PG side effect
 

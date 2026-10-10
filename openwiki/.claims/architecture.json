@@ -1,0 +1,174 @@
+{
+  "schemaVersion": 1,
+  "pageVersion": "sha256:9d76d527d729c29305c1e1930dfb0d3c6d0037cf4afde3801b6c90b1475b70b4",
+  "claims": [
+    {
+      "id": "claim_6d63f26f056c4a70a7249c3d1de92e00",
+      "statement": "Manifold's runtime architecture is a diffusers-style four-component layout (Models thin wrappers around MONAI MAISI backbones; Schedulers owning the rectified-flow transport `z = t·x + (1-t)·e` and Heun reverse step; Modules stable-pretraining `spt.Module` training components; Pipelines native inference composition) extended by three orchestration layers: Training orchestration (CLI, `CallbackRegistry` + `TrainingSpine`, Lightning `Trainer`, export), Metrics callbacks (FID, latent x0-MAE, paired-fidelity, line-chart rendering), and Offline evaluation and reporting (`manifold-eval`, same-noise before/after, slice grids, HTML comparison).",
+      "evidence": [
+        {
+          "resource": "repo://src/manifold/__init__.py",
+          "version": "repo-file-v1:sha256:27e1834aa2e478956fed97aeff717499b56b7769c5bb218e0edb02cf83845de1"
+        },
+        {
+          "resource": "repo://src/manifold/eval/__init__.py",
+          "version": "repo-file-v1:sha256:7e6a996f679b8d4479cf9d565119639002642267ed4aad99447e093544592bea"
+        },
+        {
+          "resource": "repo://src/manifold/models/__init__.py",
+          "version": "repo-file-v1:sha256:45a14f7ad56edaca3422febe7743dec50cc5557bd0fe96ab08f24afec0aef2a1"
+        },
+        {
+          "resource": "repo://src/manifold/modules/__init__.py",
+          "version": "repo-file-v1:sha256:f17f45afba089e8cace83b780379ce3c2ea6e59bc1487f066708933dabf390d8"
+        },
+        {
+          "resource": "repo://src/manifold/pipelines/__init__.py",
+          "version": "repo-file-v1:sha256:b973cccaa37f124c3207541f2634edea51271dfbcf2f3725acc0b000b77681cc"
+        },
+        {
+          "resource": "repo://src/manifold/schedulers/__init__.py",
+          "version": "repo-file-v1:sha256:f6951942e7d81b3da0fa91a2b0a8356053c5b3c3deae1aa1e5ee2e09601a0a4e"
+        },
+        {
+          "resource": "repo://src/manifold/training/__init__.py",
+          "version": "repo-file-v1:sha256:c379d6f62a955a255c9b893836890fcd6f82abfd8a0a36a6615aef4a5d7a4b07"
+        }
+      ]
+    },
+    {
+      "id": "claim_5d4720f2244647598190bd7a8f26f694",
+      "statement": "The Heun rollout is a single shared primitive: `LatentFlowModule.sample` (in-training generation, e.g. FID) and `LatentFlowPipeline.sample_latent` (inference) both delegate to `sample_latent_flow` (ADR-0005), so the train and inference paths cannot drift. The ControlNet sibling `controlnet_rollout` similarly delegates to `scheduler.heun_rollout` and is shared by the ControlNet pipeline, the supervised `ControlNetLatentFlowModule` validation, the GRPO ControlNet suffix, and the reward fake-builder.",
+      "evidence": [
+        {
+          "resource": "repo://src/manifold/modules/controlnet_sampler.py",
+          "version": "repo-file-v1:sha256:b557d164bdd1b05fb2d98f93889a33c58f67acb48115ecb10686b11554b617db"
+        },
+        {
+          "resource": "repo://src/manifold/modules/sampler.py",
+          "version": "repo-file-v1:sha256:3c094e817888a5a5187249f6e30e1596efd11f69e73b0c82a9cf2f32ae052b62"
+        },
+        {
+          "resource": "repo://src/manifold/pipelines/latent_flow.py",
+          "version": "repo-file-v1:sha256:9097a8a670b502ea987628300d4326f381e991f3629fe71cafcf744499c0e27a"
+        },
+        {
+          "resource": "repo://src/manifold/schedulers/scheduling_flow_match_heun.py",
+          "version": "repo-file-v1:sha256:d605741daacd1b6f3b1ef9da4f4df72ba95f4a5f85d6e0a6d88d9d53ca535019"
+        }
+      ]
+    },
+    {
+      "id": "claim_3d0a95fcf1cd4e0e905901e98d130c4c",
+      "statement": "Inference pipelines persist and reload through a native per-component directory layout: `model_index.json` at the root (carrying `format`, `pipeline_class`, and a `components` map of module.ClassName qualnames) plus one subdirectory per component (`unet/`, `controlnet/`, `vae/`, `scheduler/`) each writing its own `config.json` and (for model components) a `diffusion_pytorch_model.pt` weights file. `LatentFlowPipeline` and `ControlNetLatentFlowPipeline` share this contract; the only differences are the `components` map and the wrapper `__init__` signature. `from_pretrained` raises a clear `FileNotFoundError` if `model_index.json` is missing.",
+      "evidence": [
+        {
+          "resource": "repo://src/manifold/configuration.py",
+          "version": "repo-file-v1:sha256:6df782f13514633642a95857845d01e5699f33a7f74b46accbd05c1b31db2405"
+        },
+        {
+          "resource": "repo://src/manifold/models/modeling_utils.py",
+          "version": "repo-file-v1:sha256:b33918b7576f31ae9408c09beb2687bf445bddf5c01d081929ca27401d513e1b"
+        },
+        {
+          "resource": "repo://src/manifold/pipelines/controlnet_latent_flow.py",
+          "version": "repo-file-v1:sha256:e1dca719a1b723380f9b5189661120ea26b3a4425dc03d821c89eb5457f64384"
+        },
+        {
+          "resource": "repo://src/manifold/pipelines/latent_flow.py",
+          "version": "repo-file-v1:sha256:9097a8a670b502ea987628300d4326f381e991f3629fe71cafcf744499c0e27a"
+        }
+      ]
+    },
+    {
+      "id": "claim_6c79fca735f74fbe839ab81a01ba0546",
+      "statement": "The supervised paired `x_src -> x_tgt` translator is a trainable ControlNet on a frozen JiT base UNet (ADR-0026/0027), with the base held `registered + dual-excluded` via `FrozenArmMixin` (ADR-0031 A1) so Lightning owns its device placement while it stays off the optimizer (`requires_grad=False`) and off the checkpoint (`state_dict()` strip); the ControlNet's (src, tgt) contrast embeddings combine through `concat([embed(src), embed(tgt+offset)])`; the supervised loss is the `(1-t)^-2`-weighted x0-MSE. ADR-0034 deleted the prior paired-reward pipeline; both GRPO policy paths (UNet and ControlNet) now score the terminal latent `z_K` unconditionally with the same shared `RewardModel`.",
+      "evidence": [
+        {
+          "resource": "repo://docs/adr/0026-controlnet-via-monai-native-residual-interface.md",
+          "version": "repo-file-v1:sha256:c11c70c1c81ee5d9e7376eada9af1c120db382caff6e3b01f19a1a66d1312a0a"
+        },
+        {
+          "resource": "repo://docs/adr/0027-controlnet-supervised-then-grpo-two-stage.md",
+          "version": "repo-file-v1:sha256:97503c626a258eb852e94045824a0f8f63743a628ab318b78c6276f4f7bedb85"
+        },
+        {
+          "resource": "repo://docs/adr/0034-one-realism-reward-both-grpo-policies-delete-condition-aware.md",
+          "version": "repo-file-v1:sha256:ab63de45fe9112825e9a55405cef1eada429f422dd3b18d5297df3df7271fb25"
+        },
+        {
+          "resource": "repo://src/manifold/models/controlnet_3d.py",
+          "version": "repo-file-v1:sha256:58da29b2336a10aa0db222902aa888762e70cd79a0efa37dfd9e93f84329b73e"
+        },
+        {
+          "resource": "repo://src/manifold/modules/controlnet_latent_flow.py",
+          "version": "repo-file-v1:sha256:9091c6afb6004ba6a75a11076e10cd3338b4ffb1b3c4f1216affcfaa07d5bce8"
+        },
+        {
+          "resource": "repo://src/manifold/modules/frozen_arm.py",
+          "version": "repo-file-v1:sha256:068107b0f47957bc4434604e1bfc4ad85d9c860cd75419940870beb854a903ed"
+        }
+      ]
+    },
+    {
+      "id": "claim_463887087cf847c7bf85f59f300dc684",
+      "statement": "The ADR-0037 observe-only paired-fidelity monitor is implemented and active: `PairedFidelitySpec` (`src/manifold/training/callbacks/paired_fidelity.py`) is registered with `CallbackRegistry` and emitted by default in `controlnet_cli` `default_names` (`[\"train_loss\", \"checkpoint\", \"paired_fidelity\"]`); the built `PairedFidelityCallback` (`src/manifold/metrics/paired_callback.py`) runs the module's own full ControlNet Heun rollout on a seeded fixed paired subset each gated epoch and logs `val/psnr` and `val/ssim` while leaving the checkpoint selector at `val/x0_mae` (the spec's `logged_metrics = frozenset({\"val/psnr\", \"val/ssim\"})` declares them as validatable but observe-only). The recipe-primary rollout step count is threaded from the existing `controlnet.num_inference_steps` knob through `CallbackContext.inference_recipe` (issue #239), so the in-training curve is directly comparable to the offline `manifold-eval` PSNR/SSIM (both share `PairedFidelityMetrics(data_range=1.0)` and `min_max_to_unit`).",
+      "evidence": [
+        {
+          "resource": "repo://src/manifold/metrics/paired_callback.py",
+          "version": "repo-file-v1:sha256:2d78c68acfbf98d12fd04e32a4f389c475e78b3fecb22202dbb21d1882c221e0"
+        },
+        {
+          "resource": "repo://src/manifold/training/callbacks/__init__.py",
+          "version": "repo-file-v1:sha256:3e2503a398c5a63ab7253b340a43cfdaacc71de9747848a4fde7a2c41b53b5c0"
+        },
+        {
+          "resource": "repo://src/manifold/training/callbacks/paired_fidelity.py",
+          "version": "repo-file-v1:sha256:09c5b8bb0451cd41f6c98d678177eb1d52639198fcd4bd89a0a29b6af1339273"
+        },
+        {
+          "resource": "repo://src/manifold/training/controlnet_cli.py",
+          "version": "repo-file-v1:sha256:ebab163068d957ea1550d2cc769eedcea367ae300b9737b548cb2ef2e91cb361"
+        },
+        {
+          "resource": "repo://tests/test_callback_registry.py",
+          "version": "repo-file-v1:sha256:936d6ae013589455a7ae3c7710a77b7d6f24087747ba52404f80e7883c4cf71b"
+        },
+        {
+          "resource": "repo://tests/test_controlnet_cli.py",
+          "version": "repo-file-v1:sha256:818e0ec89e9d8e42f1897ac68eed91334949aea22f8ae769db32c0e893f04e20"
+        }
+      ]
+    },
+    {
+      "id": "claim_8e52cde4f58440cc9cef7f51f7a7e2fb",
+      "statement": "The training `.ckpt` and the native inference directory are distinct artifact types bridged by `manifold-export` (ADR-0006): `.ckpt` is full Lightning training state (UNet + optimizer + LR-schedule + epoch) used for resume and selection; the native directory is the per-component deployment artifact loaded by `LatentFlowPipeline.from_pretrained` and `ControlNetLatentFlowPipeline.from_pretrained`. Pipelines never read `.ckpt` directly. `manifold-eval` exploits this boundary by exporting the after `.ckpt` to `<output>/after_native` using the before pipeline's component structure (so VAE, scheduler, and architecture match by construction), then reloading both pipelines fresh; the policy (JiT vs ControlNet) is inferred from the before artifact's `pipeline_class`, not a mode flag (ADR-0034 dispatch convention).",
+      "evidence": [
+        {
+          "resource": "repo://src/manifold/eval/cli.py",
+          "version": "repo-file-v1:sha256:601432a7e81289c0d4085783b891798f2d3678e743771da886a207ab58d970ae"
+        },
+        {
+          "resource": "repo://src/manifold/pipelines/controlnet_latent_flow.py",
+          "version": "repo-file-v1:sha256:e1dca719a1b723380f9b5189661120ea26b3a4425dc03d821c89eb5457f64384"
+        },
+        {
+          "resource": "repo://src/manifold/pipelines/latent_flow.py",
+          "version": "repo-file-v1:sha256:9097a8a670b502ea987628300d4326f381e991f3629fe71cafcf744499c0e27a"
+        },
+        {
+          "resource": "repo://src/manifold/training/export.py",
+          "version": "repo-file-v1:sha256:d4918c2e41551a8218fef4797b53c15c0a9eb65b0234424303322463df077066"
+        },
+        {
+          "resource": "repo://src/manifold/training/export_cli.py",
+          "version": "repo-file-v1:sha256:39871b986393aaeb5c44dbdf33ed218f20d5618e5511af13db6ac79e2000928d"
+        }
+      ]
+    }
+  ],
+  "verification": {
+    "by": "openwiki/0.7.2",
+    "at": "2026-10-10T14:21:58.700Z"
+  }
+}

@@ -1,0 +1,182 @@
+{
+  "schemaVersion": 1,
+  "pageVersion": "sha256:674720d5a36acca26b0f096d0943cb76316174a43e87a33defca551932afbc7e",
+  "claims": [
+    {
+      "id": "claim_c1f73b43791d40e3aafecef864647d36",
+      "statement": "A registered spec is a `@dataclass` with knob fields (the allow-list `CallbackRegistry.resolve` uses to reject unknown knobs with `ValueError`) and a `build(ctx: CallbackContext) -> pl.Callback` method; specs match the `CallbackSpec` Protocol structurally (composition, not inheritance). Optional `logged_metrics: ClassVar[frozenset[str]]` (FIDSpec, PairedFidelitySpec) declares callback-logged metrics for `validate_monitor` without entering `resolve`'s knob set; `monitor_metric` (CheckpointSpec only) is the field `validate_monitor` scans for.",
+      "evidence": [
+        {
+          "resource": "repo://src/manifold/training/callbacks/fid.py",
+          "version": "repo-file-v1:sha256:03d19dbe671d2f31b6a4a16064bb060cc3f7006f60ac95fd32c209065b035062"
+        },
+        {
+          "resource": "repo://src/manifold/training/callbacks/paired_fidelity.py",
+          "version": "repo-file-v1:sha256:09c5b8bb0451cd41f6c98d678177eb1d52639198fcd4bd89a0a29b6af1339273"
+        },
+        {
+          "resource": "repo://src/manifold/training/callbacks/registry.py",
+          "version": "repo-file-v1:sha256:2c7eba43a15c1783f59d856a19ba24795a7ae3305b376368de28b760fceeb023"
+        }
+      ]
+    },
+    {
+      "id": "claim_efa484c091cf4df9854ddd9a368f4da4",
+      "statement": "Construction is split into `CallbackRegistry.resolve(names, cfg)` (config-time: validate the requested name list and per-name knob dict, return constructed spec instances in `names` order — unknown name raises `KeyError`, unknown knob raises `ValueError`) and `CallbackRegistry.build(specs, ctx)` (fit-prep: inject the runtime `CallbackContext` and return the constructed `pl.Callback` list). The split exists because generative callbacks (FID, paired-fidelity) need runtime objects (VAE, inference recipe, feature network) that do not exist at config resolution. The resolved list is rank-symmetric by contract.",
+      "evidence": [
+        {
+          "resource": "repo://docs/adr/0029-callback-registry.md",
+          "version": "repo-file-v1:sha256:33fc8883e982c7acd91a0acbace0f086904656c5d3dccfe1880f5466ac8b136e"
+        },
+        {
+          "resource": "repo://src/manifold/training/callbacks/context.py",
+          "version": "repo-file-v1:sha256:4a4f9526087b7ba05a9f493a285cbd8a892439d7a8047e644b9a5029f2f2058b"
+        },
+        {
+          "resource": "repo://src/manifold/training/callbacks/registry.py",
+          "version": "repo-file-v1:sha256:2c7eba43a15c1783f59d856a19ba24795a7ae3305b376368de28b760fceeb023"
+        }
+      ]
+    },
+    {
+      "id": "claim_3af3f2cb0dff4cf5b073a9503b60b582",
+      "statement": "`CallbackRegistry.validate_monitor(specs, module, extra_callbacks=None)` runs after resolve/build, before the trainer is built; the `monitor_metric` must be present in the union of every spec's `logged_metrics`, the `module.logged_metrics` attribute, and every `extra_callbacks` member's `logged_metrics`. Absence is the intended fallback when `monitor_metric=None` or no checkpoint spec is present — validation is a no-op. The supervised ControlNet `val/x0_mae` validates through the `extra_callbacks` union (the shell appends `LatentX0MAE()` after the registry callbacks), while the observe-only `val/psnr` / `val/ssim` validates through the registry path.",
+      "evidence": [
+        {
+          "resource": "repo://src/manifold/training/callbacks/registry.py",
+          "version": "repo-file-v1:sha256:2c7eba43a15c1783f59d856a19ba24795a7ae3305b376368de28b760fceeb023"
+        },
+        {
+          "resource": "repo://src/manifold/training/controlnet_cli.py",
+          "version": "repo-file-v1:sha256:ebab163068d957ea1550d2cc769eedcea367ae300b9737b548cb2ef2e91cb361"
+        },
+        {
+          "resource": "repo://tests/test_callback_registry.py",
+          "version": "repo-file-v1:sha256:936d6ae013589455a7ae3c7710a77b7d6f24087747ba52404f80e7883c4cf71b"
+        }
+      ]
+    },
+    {
+      "id": "claim_eedacbd5d3654c3fad739878b21fac3d",
+      "statement": "Four built-in specs are registered: `TrainLossSpec` (no knobs, logs `train/loss_epoch`), `FIDSpec` (`num_synth`/`every_n_epochs`/`center_slices_ratio`/`cov_ridge`, logs `val/fid`), `PairedFidelitySpec` (`subset_size`/`every_n_epochs`/`num_inference_steps`/`seed`, logs `val/psnr`/`val/ssim` — observe-only), and `CheckpointSpec` (`monitor_metric`/`save_top_k`/`save_last`/`every_n_epochs`/`mode`/`filename`, built as `pl.callbacks.ModelCheckpoint`). PairedFidelitySpec is recipe-primary for `num_inference_steps`: knob `None` reads from `ctx.inference_recipe[\"num_inference_steps\"]`, which the supervised `controlnet_cli` fills from `controlnet.num_inference_steps` (issue #239); an explicit per-callback knob overrides the recipe; with neither, the callback's own default (15) applies.",
+      "evidence": [
+        {
+          "resource": "repo://src/manifold/training/callbacks/__init__.py",
+          "version": "repo-file-v1:sha256:3e2503a398c5a63ab7253b340a43cfdaacc71de9747848a4fde7a2c41b53b5c0"
+        },
+        {
+          "resource": "repo://src/manifold/training/callbacks/checkpoint.py",
+          "version": "repo-file-v1:sha256:52e83102e6030ffe1ad5bafbe5a6455d340ebb13e53007ead0ce93d6d73dd86a"
+        },
+        {
+          "resource": "repo://src/manifold/training/callbacks/fid.py",
+          "version": "repo-file-v1:sha256:03d19dbe671d2f31b6a4a16064bb060cc3f7006f60ac95fd32c209065b035062"
+        },
+        {
+          "resource": "repo://src/manifold/training/callbacks/paired_fidelity.py",
+          "version": "repo-file-v1:sha256:09c5b8bb0451cd41f6c98d678177eb1d52639198fcd4bd89a0a29b6af1339273"
+        },
+        {
+          "resource": "repo://src/manifold/training/callbacks/train_loss.py",
+          "version": "repo-file-v1:sha256:d94df1a022aec73fad267aaaa34bec6e53b3039b0699093c04199227fe4dc8b3"
+        }
+      ]
+    },
+    {
+      "id": "claim_fc044c3f7240494a8d8d283082baf238",
+      "statement": "`TrainingSpine.run` is a single method (composition, not a per-shell subclass) parameterized by named arguments; the merge order is `default_names` → `callback_cfg` knobs → `callback_names_override` (replaces the name list, the CLI `--callbacks` flag) → `forbidden_callbacks` (force-removes named callbacks AFTER the merge with a `rank_zero_info` log line) → `forbidden_monitors` (rejects a checkpoint `monitor_metric` BEFORE resolution with a loud log + `ValueError`) → `registry.resolve` → `registry.build` → extend with `extra_callbacks` → `registry.validate_monitor` → `build_trainer` → `trainer.fit`. If no `ModelCheckpoint` survives the merge, `TrainingSpine.run` raises `ValueError(\"no ModelCheckpoint in resolved list\")` rather than letting `next(...)` raise `StopIteration` deeper in the call (codex #170 P2).",
+      "evidence": [
+        {
+          "resource": "repo://docs/adr/0032-cli-spine-collapse.md",
+          "version": "repo-file-v1:sha256:9d58b03193f196f4452aa73c75bdee0219789938d427000796661255c2e41f92"
+        },
+        {
+          "resource": "repo://src/manifold/training/core.py",
+          "version": "repo-file-v1:sha256:54bcae1a877efee42ef18e4c063d85729c9321274f982816cf484862a1f4e9f9"
+        },
+        {
+          "resource": "repo://tests/test_callback_registry.py",
+          "version": "repo-file-v1:sha256:936d6ae013589455a7ae3c7710a77b7d6f24087747ba52404f80e7883c4cf71b"
+        }
+      ]
+    },
+    {
+      "id": "claim_ac3bc13fea73450cb2015378b56094b6",
+      "statement": "Per-shell dynamic default callback-name sets: JiT starts with `[\"train_loss\"]`, appends `\"fid\"` when `enable_fid and val_enabled`, and always appends `\"checkpoint\"`; reward is `[\"checkpoint\"]`; GRPO is `[\"checkpoint\"]` and appends `\"fid\"` only when `fid_active` (suppressed for the ControlNet policy, since unconditional FID ignores the ControlNet); supervised ControlNet is `[\"train_loss\", \"checkpoint\", \"paired_fidelity\"]` and appends `LatentX0MAE` via `extra_callbacks` for the `val/x0_mae` monitor.",
+      "evidence": [
+        {
+          "resource": "repo://src/manifold/training/cli.py",
+          "version": "repo-file-v1:sha256:ca83aa71a4327af3ca12ff62392f1797626badb9a1e4e9b743c166c39214a8fa"
+        },
+        {
+          "resource": "repo://src/manifold/training/controlnet_cli.py",
+          "version": "repo-file-v1:sha256:ebab163068d957ea1550d2cc769eedcea367ae300b9737b548cb2ef2e91cb361"
+        },
+        {
+          "resource": "repo://src/manifold/training/grpo_cli.py",
+          "version": "repo-file-v1:sha256:bd476544148229bbc306ead99268def05e8b706beb9fb0681dc99f3ae9080053"
+        },
+        {
+          "resource": "repo://src/manifold/training/reward_cli.py",
+          "version": "repo-file-v1:sha256:1f07453a90b032911f55e9c7362b2bc78388632d892b314b0c955b3b1a3b7905"
+        }
+      ]
+    },
+    {
+      "id": "claim_dd132407253a4f1d8e31e27c482dfb98",
+      "statement": "The GRPO ControlNet path passes `forbidden_callbacks={\"fid\": \"constant frozen-base metric\"}` and `forbidden_monitors={\"val/fid\": ...}` so unconditional FID (whose rollout ignores the trainable ControlNet) is dropped for that policy even if a YAML knob or `--callbacks` override tries to re-add it, and any checkpoint `monitor_metric: val/fid` raises `ValueError` before resolution. The forbidden-callbacks guard lives generically in the spine, not in any GRPO vocabulary (ADR-0032).",
+      "evidence": [
+        {
+          "resource": "repo://docs/adr/0032-cli-spine-collapse.md",
+          "version": "repo-file-v1:sha256:9d58b03193f196f4452aa73c75bdee0219789938d427000796661255c2e41f92"
+        },
+        {
+          "resource": "repo://src/manifold/training/core.py",
+          "version": "repo-file-v1:sha256:54bcae1a877efee42ef18e4c063d85729c9321274f982816cf484862a1f4e9f9"
+        },
+        {
+          "resource": "repo://src/manifold/training/grpo_cli.py",
+          "version": "repo-file-v1:sha256:bd476544148229bbc306ead99268def05e8b706beb9fb0681dc99f3ae9080053"
+        },
+        {
+          "resource": "repo://tests/test_callback_registry.py",
+          "version": "repo-file-v1:sha256:936d6ae013589455a7ae3c7710a77b7d6f24087747ba52404f80e7883c4cf71b"
+        }
+      ]
+    },
+    {
+      "id": "claim_ca27e3edab6c4bf4ae732df0bd2fd3c9",
+      "statement": "ADR-0037's supervised ControlNet in-training paired-fidelity monitor is implemented and active: `PairedFidelitySpec` (`src/manifold/training/callbacks/paired_fidelity.py`) is registered with the `CallbackRegistry` and emitted by default in the supervised `controlnet_cli` `default_names` (`[\"train_loss\", \"checkpoint\", \"paired_fidelity\"]`); the built `PairedFidelityCallback` (`src/manifold/metrics/paired_callback.py`) runs the module's own full ControlNet Heun rollout on a seeded fixed paired subset each gated epoch, decodes via `LatentDecoder`, scores with `PairedFidelityMetrics`, and logs `val/psnr` / `val/ssim`. It stays observe-only — `PairedFidelitySpec.logged_metrics = frozenset({\"val/psnr\", \"val/ssim\"})` declares them as *validatable* monitors but never displaces `val/x0_mae` as the checkpoint selector. The ControlNet-GRPO extension is a deliberate follow-up: paired rollout uses the trainable ControlNet, so the unconditional-FID rationale does not apply.",
+      "evidence": [
+        {
+          "resource": "repo://docs/adr/0037-controlnet-fidelity-in-training-monitor.md",
+          "version": "repo-file-v1:sha256:d0a3d05b9077e09dec7e27fc81eb94101ac4479942a44c7e3862a97d740383b0"
+        },
+        {
+          "resource": "repo://src/manifold/metrics/paired_callback.py",
+          "version": "repo-file-v1:sha256:2d78c68acfbf98d12fd04e32a4f389c475e78b3fecb22202dbb21d1882c221e0"
+        },
+        {
+          "resource": "repo://src/manifold/training/callbacks/paired_fidelity.py",
+          "version": "repo-file-v1:sha256:09c5b8bb0451cd41f6c98d678177eb1d52639198fcd4bd89a0a29b6af1339273"
+        },
+        {
+          "resource": "repo://src/manifold/training/controlnet_cli.py",
+          "version": "repo-file-v1:sha256:ebab163068d957ea1550d2cc769eedcea367ae300b9737b548cb2ef2e91cb361"
+        },
+        {
+          "resource": "repo://tests/test_callback_registry.py",
+          "version": "repo-file-v1:sha256:936d6ae013589455a7ae3c7710a77b7d6f24087747ba52404f80e7883c4cf71b"
+        },
+        {
+          "resource": "repo://tests/test_paired_fidelity_callback.py",
+          "version": "repo-file-v1:sha256:7584ba5c1a9e9003d62b05cbb13415206665e64a1f4a064e390047a125c77480"
+        }
+      ]
+    }
+  ],
+  "verification": {
+    "by": "openwiki/0.7.2",
+    "at": "2026-10-10T14:21:58.700Z"
+  }
+}

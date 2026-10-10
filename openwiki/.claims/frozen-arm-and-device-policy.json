@@ -1,0 +1,24 @@
+{
+  "schemaVersion": 1,
+  "pageVersion": "sha256:e281e5a86f5478b96937f0d2be527c2aacecddb914ccceb9dd61392830903623",
+  "claims": [
+    {
+      "id": "claim_6466fdd574e74ffda78d6a4721d03cbd",
+      "statement": "FrozenArmMixin is the shared register + dual-exclude mechanism for frozen arms (ADR-0031 A1): a host calls `_register_frozen_arm(name, arm)` in `__init__` and the mixin applies `arm.eval()` + `requires_grad_(False)` over `arm.parameters()` and registers the arm as a normal `nn.Module` submodule so Lightning owns its device placement while the mixin keeps it off the optimizer (host's trainable-arm-only `configure_optimizers` + `requires_grad=False`) and off the checkpoint (the `state_dict` override).",
+      "evidence": [
+        {
+          "resource": "repo://docs/adr/0031-device-ownership.md",
+          "version": "repo-file-v1:sha256:c1ef4fc02e93424548faf2d8a94cfe1d95b2ec02bae7c8de00ebfc4c206194b9"
+        },
+        {
+          "resource": "repo://src/manifold/modules/frozen_arm.py",
+          "version": "repo-file-v1:sha256:068107b0f47957bc4434604e1bfc4ad85d9c860cd75419940870beb854a903ed"
+        }
+      ]
+    }
+  ],
+  "verification": {
+    "by": "openwiki/0.7.2",
+    "at": "2026-10-10T14:21:58.700Z"
+  }
+}

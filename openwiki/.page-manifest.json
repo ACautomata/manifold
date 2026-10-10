@@ -1,0 +1,40 @@
+{
+  "schemaVersion": 1,
+  "pages": {
+    "/openwiki/architecture.md": {
+      "pageVersion": "sha256:9d76d527d729c29305c1e1930dfb0d3c6d0037cf4afde3801b6c90b1475b70b4",
+      "completedBy": "openwiki/0.7.2",
+      "completedRunId": "345344a0-ba8e-4beb-b1e0-a5c3282e258c",
+      "gitHead": "5adac66405717ae4dbca5532b3cfe85bd84ee5b3",
+      "sourceFingerprint": "sha256:4de90acdbd7547c0a86e89f11f0f1aaa5015328e25ba836f948477ca9602ac1d"
+    },
+    "/openwiki/callback-registry.md": {
+      "pageVersion": "sha256:674720d5a36acca26b0f096d0943cb76316174a43e87a33defca551932afbc7e",
+      "completedBy": "openwiki/0.7.2",
+      "completedRunId": "345344a0-ba8e-4beb-b1e0-a5c3282e258c",
+      "gitHead": "5adac66405717ae4dbca5532b3cfe85bd84ee5b3",
+      "sourceFingerprint": "sha256:4de90acdbd7547c0a86e89f11f0f1aaa5015328e25ba836f948477ca9602ac1d"
+    },
+    "/openwiki/evaluation.md": {
+      "pageVersion": "sha256:2023bcc21fb03fd26e9e056c801ef818f508d42557db683772166621abb6caec",
+      "completedBy": "openwiki/0.7.2",
+      "completedRunId": "345344a0-ba8e-4beb-b1e0-a5c3282e258c",
+      "gitHead": "5adac66405717ae4dbca5532b3cfe85bd84ee5b3",
+      "sourceFingerprint": "sha256:4de90acdbd7547c0a86e89f11f0f1aaa5015328e25ba836f948477ca9602ac1d"
+    },
+    "/openwiki/frozen-arm-and-device-policy.md": {
+      "pageVersion": "sha256:e281e5a86f5478b96937f0d2be527c2aacecddb914ccceb9dd61392830903623",
+      "completedBy": "openwiki/0.7.2",
+      "completedRunId": "345344a0-ba8e-4beb-b1e0-a5c3282e258c",
+      "gitHead": "5adac66405717ae4dbca5532b3cfe85bd84ee5b3",
+      "sourceFingerprint": "sha256:4de90acdbd7547c0a86e89f11f0f1aaa5015328e25ba836f948477ca9602ac1d"
+    },
+    "/openwiki/operations-and-testing.md": {
+      "pageVersion": "sha256:c0c36a02e5c8508d59414bad3fb63e33b4914e05e03205b25d08bf96e4b2b579",
+      "completedBy": "openwiki/0.7.2",
+      "completedRunId": "345344a0-ba8e-4beb-b1e0-a5c3282e258c",
+      "gitHead": "5adac66405717ae4dbca5532b3cfe85bd84ee5b3",
+      "sourceFingerprint": "sha256:4de90acdbd7547c0a86e89f11f0f1aaa5015328e25ba836f948477ca9602ac1d"
+    }
+  }
+}

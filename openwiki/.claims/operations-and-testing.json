@@ -1,0 +1,234 @@
+{
+  "schemaVersion": 1,
+  "pageVersion": "sha256:c0c36a02e5c8508d59414bad3fb63e33b4914e05e03205b25d08bf96e4b2b579",
+  "claims": [
+    {
+      "id": "claim_aabf8712e7d74c87865f07199425b23a",
+      "statement": "The standard-checks table groups the focused test files in `tests/` by change area (orchestration, data/warming, scheduler/module/pipeline, FID and paired fidelity, distributed validation, reward and policy, callback registry, frozen-arm contract, per-rank device policy, persistence/export, before/after eval), so the nearest test changes with a focused diff; `tests/ddp.py` is the multi-process harness shared by every DDP gate.",
+      "evidence": [
+        {
+          "resource": "repo://tests/ddp.py",
+          "version": "repo-file-v1:sha256:9dc66f0ff934a9f9b8a93f2c166627e23e02bfb0dbe3b7ad596b2e07b7393eed"
+        },
+        {
+          "resource": "repo://tests/test_callback_registry.py",
+          "version": "repo-file-v1:sha256:936d6ae013589455a7ae3c7710a77b7d6f24087747ba52404f80e7883c4cf71b"
+        },
+        {
+          "resource": "repo://tests/test_device_policy.py",
+          "version": "repo-file-v1:sha256:8d99e2156464501e20251d9523a7e8488623928f7247030f95fb2f1b718e443f"
+        },
+        {
+          "resource": "repo://tests/test_fid.py",
+          "version": "repo-file-v1:sha256:7df59301953a63074fc3f5b064709e02bcc04167786f8db16cf73c063db5097b"
+        },
+        {
+          "resource": "repo://tests/test_frozen_arm_mixin.py",
+          "version": "repo-file-v1:sha256:258a2098069105177614c2d2b08f6640f0d6eb7e89fea440197c48d84442723e"
+        },
+        {
+          "resource": "repo://tests/test_paired_fidelity_callback.py",
+          "version": "repo-file-v1:sha256:7584ba5c1a9e9003d62b05cbb13415206665e64a1f4a064e390047a125c77480"
+        },
+        {
+          "resource": "repo://tests/test_paired_fidelity_ddp.py",
+          "version": "repo-file-v1:sha256:cc8f0743bf83fa5a93ef7607cf485eb72f8c8a5454d7e89f933ac62f133817a7"
+        },
+        {
+          "resource": "repo://tests/test_paired_reward_deleted.py",
+          "version": "repo-file-v1:sha256:fc91d77b049c1a6391077577f9c79179d141851c8e09dfede7415044bb6de5b9"
+        }
+      ]
+    },
+    {
+      "id": "claim_e130bf4e462843f1bd83d038f302baba",
+      "statement": "Under ADR-0025 (supersedes ADR-0016), all validation metrics are fully DDP and there is no rank-0 gate: `val/x0_mae` aggregates as a sample-weighted `torchmetrics.MeanMetric` (cross-rank `Σ(loss·B)/ΣB`, not mean-of-per-rank-means); `val/fid` reduces per-plane sufficient statistics `(sum_x, sum_xxT, n)` through `SufficientStatsReducer` (a `D × D` matrix per plane, no feature-matrix gather) and reconstructs global moments via `moments_from_sufficient_stats`; `val/mean_reward` runs on every rank and is reduced by manual `all_reduce(ReduceOp.SUM)` + sync_dist logging; the supervised ControlNet `val/psnr`/`val/ssim` monitor is shipped and active by default (ADR-0037, redundant-evaluation per rank).",
+      "evidence": [
+        {
+          "resource": "repo://docs/adr/0025-all-ddp-validation-no-rank0-gate.md",
+          "version": "repo-file-v1:sha256:be3aa13f1684f3fa228e8f6c1b492db6d178048afbea9dd279a0816cc955e782"
+        },
+        {
+          "resource": "repo://src/manifold/metrics/fid/math.py",
+          "version": "repo-file-v1:sha256:e6bba4338fc60f3e8cf1b20310a62c0b94b7c5c01ccb26231f58c97b2b4ebaf9"
+        },
+        {
+          "resource": "repo://src/manifold/metrics/fid/reducer.py",
+          "version": "repo-file-v1:sha256:2cf3258e9403e16e98e78f206e9e305649810e5de581e982528682ed6e11d8db"
+        },
+        {
+          "resource": "repo://src/manifold/metrics/paired_callback.py",
+          "version": "repo-file-v1:sha256:2d78c68acfbf98d12fd04e32a4f389c475e78b3fecb22202dbb21d1882c221e0"
+        },
+        {
+          "resource": "repo://src/manifold/training/metrics.py",
+          "version": "repo-file-v1:sha256:20d7e9943c2a5cff271704db536d7adfdaef91cdcbb62387e3146e1692c30bbd"
+        },
+        {
+          "resource": "repo://tests/test_ddp_metrics.py",
+          "version": "repo-file-v1:sha256:3f6b9e835d3357f3ed76b942c1fb5e22597eb9c47290ca9d7a266bd8b0856b8c"
+        },
+        {
+          "resource": "repo://tests/test_ddp_val_honesty.py",
+          "version": "repo-file-v1:sha256:d7678a9e51c362644275cc822e94597f687b45a86b9e559b90f81ad11ab8da4d"
+        },
+        {
+          "resource": "repo://tests/test_paired_fidelity_ddp.py",
+          "version": "repo-file-v1:sha256:cc8f0743bf83fa5a93ef7607cf485eb72f8c8a5454d7e89f933ac62f133817a7"
+        }
+      ]
+    },
+    {
+      "id": "claim_7d5cc0cd423241dcbb214d9bb3f2a509",
+      "statement": "The before/after evaluation runbook documents the issue-#229 / ADR-0036 contract: `--before-dir` must self-describe a `pipeline_class` in its `model_index.json` (no `--policy` flag; `_pipeline_class_of` dispatches JiT vs ControlNet), `--after-ckpt` is processed through the same full-state checkpoint→native export bridge that `manifold-export` uses, the derived native tree lands at `<output>/after_native` without overwriting the before export, and the `.ckpt` must match the before export's module shape (`unet.unet.*` for JiT, `controlnet.*` only for ControlNet since the frozen base is dual-excluded off the checkpoint per ADR-0031 A1).",
+      "evidence": [
+        {
+          "resource": "repo://docs/adr/0025-all-ddp-validation-no-rank0-gate.md",
+          "version": "repo-file-v1:sha256:be3aa13f1684f3fa228e8f6c1b492db6d178048afbea9dd279a0816cc955e782"
+        },
+        {
+          "resource": "repo://src/manifold/eval/cli.py",
+          "version": "repo-file-v1:sha256:601432a7e81289c0d4085783b891798f2d3678e743771da886a207ab58d970ae"
+        },
+        {
+          "resource": "repo://tests/test_eval_cli.py",
+          "version": "repo-file-v1:sha256:84a8b6493ab9b0477a9f1ff041c4080042778209ebd41cc09cb4e90d69c4cf7d"
+        }
+      ]
+    },
+    {
+      "id": "claim_c9b8adac57c74708a96c1ba985a106e5",
+      "statement": "Diagnosing the 8-DCU/DTK deadlock rests on three load-bearing signals (the `Sl` + stalled-log + no-tqdm triad alone is a false positive under healthy 8-DDP validation): `hy-smi` DCU% near 0 with no progress = stalled, `SIGTERM` response (the 2026-07-14 stall required `SIGKILL`), and `py-spy` showing an identical `sliding_window_inference -> _conv_forward` frozen frame on all ranks.",
+      "evidence": [
+        {
+          "resource": "repo://docs/adr/0016-multigpu-validation-rank0-only-honest-guards.md",
+          "version": "repo-file-v1:sha256:f441d4c8c47fc8b4c4dbd271185ee76382552e030d1684fcd515dc28ae8899d3"
+        },
+        {
+          "resource": "repo://docs/adr/0025-all-ddp-validation-no-rank0-gate.md",
+          "version": "repo-file-v1:sha256:be3aa13f1684f3fa228e8f6c1b492db6d178048afbea9dd279a0816cc955e782"
+        }
+      ]
+    },
+    {
+      "id": "claim_8504aa29d604456e9dc41c316fa23028",
+      "statement": "DDP failure modes guard collective-count invariance (ADR-0030 hardening): every rank must enter collectives in the same order (FID's four error-rendezvous points inside `on_validation_epoch_end` use `ReduceOp.MAX` so all ranks take the same abort branch together), empty FID shards contribute correctly-sized zero sufficient statistics only when `numel() == 0` (not `shape[0] < 2` — a one-sample shard is valid and `SufficientStatsReducer` lets it through), manual `all_reduce` must not be combined with `sync_dist=True` for the same value, and FID synth seeds stay rank-strided (`seed + i` for `i % world == rank`) so the global synth union is not `world × rank-0`.",
+      "evidence": [
+        {
+          "resource": "repo://src/manifold/metrics/fid/callback.py",
+          "version": "repo-file-v1:sha256:9734aba1f49a1153d63cb424beb6cb1f3a70cc5cc68d13a4d032ddaf8504d246"
+        },
+        {
+          "resource": "repo://src/manifold/metrics/fid/reducer.py",
+          "version": "repo-file-v1:sha256:2cf3258e9403e16e98e78f206e9e305649810e5de581e982528682ed6e11d8db"
+        },
+        {
+          "resource": "repo://tests/test_fid_helpers.py",
+          "version": "repo-file-v1:sha256:c25cb14fb82c2691896515aa5753a4c8e611e9d72ca395ae5d090373922d94ae"
+        }
+      ]
+    },
+    {
+      "id": "claim_10e91744ff9b4eb88771c222cc9d8e91",
+      "statement": "Validation and checkpoint cautions: noise-to-data production validation is disabled when no held-out source is wired (train-as-validation leakage is refused, checkpointing falls back to periodic/last rather than monitored FID); `LatentDecoder` disables MAISI `norm_float16` on the first decode and caches the skip, so FID and `BeforeAfterEval` decode in float32 and score PSNR/SSIM with `data_range=1.0` after `min_max_to_unit`; `val/psnr`/`val/ssim` (ADR-0037) are observed in-training only on the supervised ControlNet stage but never a checkpoint monitor and never a loss term, leaving `val/x0_mae` as the selector; native exports use the raw-arm weights (EMA removed in commit `e89b05d`, no `val/fid_avg` / `val/fid_raw`); export is full-state deserialization, so only process trusted `.ckpt` files.",
+      "evidence": [
+        {
+          "resource": "repo://src/manifold/eval/before_after.py",
+          "version": "repo-file-v1:sha256:ff5b7013e86e044b859edc917ce46c246182162a4802fbb05dfdf1f608cfc40f"
+        },
+        {
+          "resource": "repo://src/manifold/metrics/fid/decoder.py",
+          "version": "repo-file-v1:sha256:ff7faf62ce70ba45a1ee8fe10ef3fbe4472584f84f9a29ffb7b531c0555fb1a9"
+        },
+        {
+          "resource": "repo://src/manifold/metrics/paired_callback.py",
+          "version": "repo-file-v1:sha256:2d78c68acfbf98d12fd04e32a4f389c475e78b3fecb22202dbb21d1882c221e0"
+        },
+        {
+          "resource": "repo://src/manifold/training/controlnet_cli.py",
+          "version": "repo-file-v1:sha256:ebab163068d957ea1550d2cc769eedcea367ae300b9737b548cb2ef2e91cb361"
+        },
+        {
+          "resource": "repo://src/manifold/training/metrics.py",
+          "version": "repo-file-v1:sha256:20d7e9943c2a5cff271704db536d7adfdaef91cdcbb62387e3146e1692c30bbd"
+        }
+      ]
+    },
+    {
+      "id": "claim_5aa2dcafbec74de3921c48791267bd78",
+      "statement": "The distributed-validation runbook requires a single all-ranks validation epoch probe (`--max-epochs 1 check_val_every_n_epoch=1 val_subset_size=4`) before relying on multi-DCU best-by-metric selection because ADR-0025's rollback of the rank-0 gate remains sugon-probe-pending: the active VAE `num_splits: 4` / `dim_split: 1` / `save_mem: true` configuration was present during the original 2026-07-14 stall and is one of the ranked root-cause candidates, not a confirmed fix; if the probe hangs the fallback order is (1) serialize GPU decode across ranks retaining global reduction or (2) move decode to CPU via `sw_device='cpu'`.",
+      "evidence": [
+        {
+          "resource": "repo://docs/adr/0025-all-ddp-validation-no-rank0-gate.md",
+          "version": "repo-file-v1:sha256:be3aa13f1684f3fa228e8f6c1b492db6d178048afbea9dd279a0816cc955e782"
+        }
+      ]
+    },
+    {
+      "id": "claim_4d2b8b49f3b54e9da63a4ac06a6748df",
+      "statement": "The stale checkpoint comments in `configs/train/config_rflow_jit.yaml` that still describe rank-0-only DDP metrics and an unmonitored fallback pre-date ADR-0025 and must be ignored; ADR-0025 plus the current callback/CLI code are the only authoritative sources — the previously referenced `config_paired_jit.yaml` no longer exists, and the supervised paired translator is `configs/train/config_controlnet_supervised.yaml`.",
+      "evidence": [
+        {
+          "resource": "repo://configs/train/config_rflow_jit.yaml",
+          "version": "repo-file-v1:sha256:861889b35d8dac09129dd7235162e61e82e909976fb31f9e283741539a30c4ec"
+        },
+        {
+          "resource": "repo://docs/adr/0025-all-ddp-validation-no-rank0-gate.md",
+          "version": "repo-file-v1:sha256:be3aa13f1684f3fa228e8f6c1b492db6d178048afbea9dd279a0816cc955e782"
+        },
+        {
+          "resource": "repo://src/manifold/training/cli.py",
+          "version": "repo-file-v1:sha256:ca83aa71a4327af3ca12ff62392f1797626badb9a1e4e9b743c166c39214a8fa"
+        }
+      ]
+    },
+    {
+      "id": "claim_50818ec9030c43b7b54f5591e1df898f",
+      "statement": "The supervised ControlNet paired-fidelity monitor is shipped and active by default under ADR-0037: `PairedFidelityCallback` runs the module's full Heun rollout on every rank over the same fixed paired subset under identical seeded noise on DDP-synchronized weights (redundant-evaluation design), decodes through `LatentDecoder`, normalizes with `min_max_to_unit`, and scores with `PairedFidelityMetrics` — but never drives checkpoint selection (`val/x0_mae` stays the monitor) and never contributes loss; the in-training curve and the offline `manifold-eval` numbers are directly comparable because both paths share the same decode + metric contract.",
+      "evidence": [
+        {
+          "resource": "repo://src/manifold/metrics/paired.py",
+          "version": "repo-file-v1:sha256:1a388bde3ad7969aedbd81e1f240df70e48bb327a68f1a08b9b0f83a7078ebd1"
+        },
+        {
+          "resource": "repo://src/manifold/metrics/paired_callback.py",
+          "version": "repo-file-v1:sha256:2d78c68acfbf98d12fd04e32a4f389c475e78b3fecb22202dbb21d1882c221e0"
+        },
+        {
+          "resource": "repo://src/manifold/training/callbacks/paired_fidelity.py",
+          "version": "repo-file-v1:sha256:09c5b8bb0451cd41f6c98d678177eb1d52639198fcd4bd89a0a29b6af1339273"
+        },
+        {
+          "resource": "repo://src/manifold/training/controlnet_cli.py",
+          "version": "repo-file-v1:sha256:ebab163068d957ea1550d2cc769eedcea367ae300b9737b548cb2ef2e91cb361"
+        },
+        {
+          "resource": "repo://tests/test_paired_fidelity_callback.py",
+          "version": "repo-file-v1:sha256:7584ba5c1a9e9003d62b05cbb13415206665e64a1f4a064e390047a125c77480"
+        },
+        {
+          "resource": "repo://tests/test_paired_fidelity_ddp.py",
+          "version": "repo-file-v1:sha256:cc8f0743bf83fa5a93ef7607cf485eb72f8c8a5454d7e89f933ac62f133817a7"
+        }
+      ]
+    },
+    {
+      "id": "claim_d1d3b2db0e9242938978b89494135483",
+      "statement": "The `scripts/` directory was eliminated in ADR-0033 (including `scripts/eval_paired_step_sweep.py` and the `scripts/diag_*` helpers); the only retained investigation tool is `tests/parity/validate_against_hope.py`, the sampler-parity probe that asserts `<1e-3` parity between the modules-side sampler and the inference pipeline as the ADR-0005 proof.",
+      "evidence": [
+        {
+          "resource": "repo://docs/adr/0016-multigpu-validation-rank0-only-honest-guards.md",
+          "version": "repo-file-v1:sha256:f441d4c8c47fc8b4c4dbd271185ee76382552e030d1684fcd515dc28ae8899d3"
+        },
+        {
+          "resource": "repo://tests/parity/validate_against_hope.py",
+          "version": "repo-file-v1:sha256:333c209baceeda19355110afc5f7e9c960f6479d6b3c50fd07ba4985f65592d3"
+        }
+      ]
+    }
+  ],
+  "verification": {
+    "by": "openwiki/0.7.2",
+    "at": "2026-10-10T14:21:58.700Z"
+  }
+}
