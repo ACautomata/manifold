@@ -1,0 +1,47 @@
+{
+  "schemaVersion": 1,
+  "pages": {
+    "/openwiki/architecture.md": {
+      "pageVersion": "sha256:9e729dae2de9612d3c21c375ca4ba1054357ecdc5c7fd5296dc5b75177df15c4",
+      "completedBy": "openwiki/0.7.2",
+      "completedRunId": "6b55e4d3-e8ce-42c3-8f8c-16cde973d8fc",
+      "gitHead": "5adac66405717ae4dbca5532b3cfe85bd84ee5b3",
+      "sourceFingerprint": "sha256:4de90acdbd7547c0a86e89f11f0f1aaa5015328e25ba836f948477ca9602ac1d"
+    },
+    "/openwiki/callback-registry.md": {
+      "pageVersion": "sha256:c19cc3353cfacbffd439a6895f57d5edf933d8d1ddd02d10bd4c293c0d019775",
+      "completedBy": "openwiki/0.7.2",
+      "completedRunId": "6b55e4d3-e8ce-42c3-8f8c-16cde973d8fc",
+      "gitHead": "5adac66405717ae4dbca5532b3cfe85bd84ee5b3",
+      "sourceFingerprint": "sha256:4de90acdbd7547c0a86e89f11f0f1aaa5015328e25ba836f948477ca9602ac1d"
+    },
+    "/openwiki/evaluation.md": {
+      "pageVersion": "sha256:cf7a2cdad704b5c2144e5672a33bca6573256bf0e300ab1ce6315e3e27c2bfc7",
+      "completedBy": "openwiki/0.7.2",
+      "completedRunId": "6b55e4d3-e8ce-42c3-8f8c-16cde973d8fc",
+      "gitHead": "5adac66405717ae4dbca5532b3cfe85bd84ee5b3",
+      "sourceFingerprint": "sha256:4de90acdbd7547c0a86e89f11f0f1aaa5015328e25ba836f948477ca9602ac1d"
+    },
+    "/openwiki/frozen-arm-and-device-policy.md": {
+      "pageVersion": "sha256:2e17c47a1c78875fd45516c5ea685a29984472fb5c3b43042d0094c628e51b62",
+      "completedBy": "openwiki/0.7.2",
+      "completedRunId": "6b55e4d3-e8ce-42c3-8f8c-16cde973d8fc",
+      "gitHead": "5adac66405717ae4dbca5532b3cfe85bd84ee5b3",
+      "sourceFingerprint": "sha256:4de90acdbd7547c0a86e89f11f0f1aaa5015328e25ba836f948477ca9602ac1d"
+    },
+    "/openwiki/operations-and-testing.md": {
+      "pageVersion": "sha256:62624664a4af2cdc670d7915744828720ede7e55ff69c2fa16250da9f7b65b89",
+      "completedBy": "openwiki/0.7.2",
+      "completedRunId": "6b55e4d3-e8ce-42c3-8f8c-16cde973d8fc",
+      "gitHead": "5adac66405717ae4dbca5532b3cfe85bd84ee5b3",
+      "sourceFingerprint": "sha256:4de90acdbd7547c0a86e89f11f0f1aaa5015328e25ba836f948477ca9602ac1d"
+    },
+    "/openwiki/paired-fidelity-monitor.md": {
+      "pageVersion": "sha256:6ab93241ef4473b6ad7c86568b5f8965569e94e32b19002c978b394a9e1a5b80",
+      "completedBy": "openwiki/0.7.2",
+      "completedRunId": "6b55e4d3-e8ce-42c3-8f8c-16cde973d8fc",
+      "gitHead": "5adac66405717ae4dbca5532b3cfe85bd84ee5b3",
+      "sourceFingerprint": "sha256:4de90acdbd7547c0a86e89f11f0f1aaa5015328e25ba836f948477ca9602ac1d"
+    }
+  }
+}

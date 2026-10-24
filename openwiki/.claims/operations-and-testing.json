@@ -1,0 +1,290 @@
+{
+  "schemaVersion": 1,
+  "pageVersion": "sha256:62624664a4af2cdc670d7915744828720ede7e55ff69c2fa16250da9f7b65b89",
+  "claims": [
+    {
+      "id": "claim_0124d99d785e445c8888c6294c946b3b",
+      "statement": "The repository's standard checks are `pytest` and `ruff check .`; the multi-process CPU gloo harness `tests/ddp.py::run_ddp_two_rank` (spawning workers that each write a per-rank result JSON) is the shared seam for every distributed test, and the focused distributed tests must be re-run after changing rank gates, sampler assumptions, reduction code, validation callbacks, trainer device selection, or checkpoint monitors.",
+      "evidence": [
+        {
+          "resource": "repo://pyproject.toml#L96-L101",
+          "version": "repo-lines-v1:sha256:5aae0962ef04ad9c0c1982bc1a9ffeb1b7a64be2f18f2ca1a6a34c2360315bf3:eyJzZWxlY3RlZExpbmVDb3VudCI6NiwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiNzc0NWZhYjg2YjEyMWRjODViNGY3ODY3MzM5YTEzZmVlODA0YzhhMDJmNDcxMDY1NzJmMmJmMDY2NGQ1OTUxZCIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMDEwODVhZDA5MDQyNTcxMWFkYjRmMTVmMjhlMjVjMTcxMDc5MmMxZDQ1ZGE3Mzk0ZWU5MTJlMDM4MTkwNDU5MSIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiNjA4ZDkxZDZmZmU4NDdkNzA3NWUzNDkyMzkwMTdkMzkwNGEwNmRiM2ZiM2U0ZDg1ZjRkZTk2Y2NhN2IwNTM1MiIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjAsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiZTNiMGM0NDI5OGZjMWMxNDlhZmJmNGM4OTk2ZmI5MjQyN2FlNDFlNDY0OWI5MzRjYTQ5NTk5MWI3ODUyYjg1NSJ9"
+        },
+        {
+          "resource": "repo://tests/ddp.py#L71-L94",
+          "version": "repo-lines-v1:sha256:59017ed3023831e2fadd4f71478ac6d9cd61837565af8bf76f342c00b8bcad58:eyJzZWxlY3RlZExpbmVDb3VudCI6MjQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjI5ZTMwNjc2MWE0MjUzZTA1MzRjYzk3MzNiMWNkYTMwNThiNzI0NTcwZDlhOWI2ZDg5MTg4ZTJmNjU5Y2IwZWYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImVmZmEwZTdjZjY1NmFlODU5NDFmZjEyZjIzNTYwNjBlNGZkZTllMWI5ZThiMjdmYzgwYzFjYzM2NTA1NTA2NGQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjIyMjcxMzgwMDgyMzNlNjg2NmI3NDdiZGMwNzcxYWZhZWVkMTZhNTliMzMzMjc4YTYxMjc1YTA2YTdiYWMzMjciLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImFhNWFhMGI1ZmZmZjFkNDQxZTdjMWJiYThmOTFlOWQ2NjM1ZTczNDgxYzUzZGQ1NzBhOTEyMzE5NzNiM2U3NWQifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_58047773030c4143a3096c463d771731",
+      "statement": "The in-training paired-fidelity observer is shipped and default-on for `manifold-train-controlnet`: `run_controlnet_training` registers the `paired_fidelity` spec and passes `default_names=[\"train_loss\", \"checkpoint\", \"paired_fidelity\"]`, and the observer stays observe-only — never a checkpoint `monitor_metric` (selection stays `val/x0_mae`), never a loss term, and never touching the optimizer or EMA.",
+      "evidence": [
+        {
+          "resource": "repo://src/manifold/metrics/paired_callback.py#L1-L29",
+          "version": "repo-lines-v1:sha256:4a18ef56a296f7054c2e16f65485deaf58032217aa270a95fc8eaa82b304e402:eyJzZWxlY3RlZExpbmVDb3VudCI6MjksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjEwZDRlZGM2MGM3MmJkMjRkY2Y3MTZiNWZmZjcyMDQ5NDcwZGM1NmU1NzZkZjFkMTQ2OTczNmE3NmIzZGQ5MmIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImEzMDNlY2RkNGE0ZDEwZjE5YzczZmQ0MmZkMTI0MzdmZDMzNTRhODI2ODE2MDVkYTUyNTVhOTdhMzkwNjhkYmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjU1YjZlODcwNmI0MzA0N2YyYTZkYjY3ZjEzMjYzODU5NTYwNGU2N2YzNjk2Njg3NmNlMDE1OGYwMDUzZTZiZDEifQ"
+        },
+        {
+          "resource": "repo://src/manifold/training/callbacks/paired_fidelity.py#L36-L75",
+          "version": "repo-lines-v1:sha256:2c220edce50b7369395e72c29eca98fc1baeff8a1c5ed61188da0f3ef97a12a3:eyJzZWxlY3RlZExpbmVDb3VudCI6NDAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImY2OWExMzk3NWMyNTZlYzgzMjBlMjAxNjA4M2M5NmRmNjM3Y2EzZDM1YmViZGUyMzE0YmVlM2E0NzExYjU2Y2EiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU5MDlhNTNhNjE4ZDAyOGUxZDMwMDBjMGE3YWJjZWVjYmU1ZmIzN2Y0ZTUxMWVmZTQ2NjQzZmFkNmU2Njg3MmYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjRlY2YwYmE5ZmI2YzQzNWUxODJlMGJmNjRlZjQyYzdhNzg3MmI1OGE0NWYxOGY3NmQ2MmQ0YWIxN2UwM2VkMWIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
+        },
+        {
+          "resource": "repo://src/manifold/training/controlnet_cli.py#L168-L198",
+          "version": "repo-lines-v1:sha256:5446a4872d3a7c262ac18f17012b78d5d9325c828070feb27d14d31fdce070bd:eyJzZWxlY3RlZExpbmVDb3VudCI6MzEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQxNDY3NzExZGVmNzE4MTU5YjIwOGYyNGJmZTdhOTMwMzVmMThkZGU4NjZiZDg2MGQwYjkzODc3MTNlYTI3OGMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjMwYzFmMTg4ZjE0MmVkN2E4MjQ2ODBiMjA3MTcyYzU1MTliYzYxNGE0OGZkYTdjZjE2N2VkYjhkZGY3OTk1NmMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjJkN2NlMGU0OGZjNmRlODA2YTdjMThhNzQzZWM5NzE5OWE4ZTJlYmMxOGFlYzdjNjg1ZDE3YzE2NTg5MDAzZTAiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImQ5OWU0NWJiM2Y4MzZjZWUwZmJkOWI1NWFmZTkxMWI2YzcxYzU0YTIwM2RlODI5YWU0YzcxM2JlOTRmMmJhOWQifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_f65bc9139aaa43e69693d374dd5d40b9",
+      "statement": "The paired-fidelity observer's DDP design is redundant evaluation rather than sharding: every rank scores the same fixed subset under identical seeded noise on DDP-synchronized weights, so the per-rank values are identical and Lightning's torchmetrics sync is the only cross-rank interaction — there is no FID-style sharding and no error-rendezvous machinery.",
+      "evidence": [
+        {
+          "resource": "repo://src/manifold/metrics/paired_callback.py#L22-L28",
+          "version": "repo-lines-v1:sha256:53e5296f948ef16052ab4a8dbcd5b65c117dc575d3f849d542bd7308aaf1d387:eyJzZWxlY3RlZExpbmVDb3VudCI6NywiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiMDFiYTQ3MTljODBiNmZlOTExYjA5MWE3YzA1MTI0YjY0ZWVlY2U5NjRlMDljMDU4ZWY4Zjk4MDVkYWNhNTQ2YiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiODk2YmJjOTRkZDY3YWM1ZWM3ZmZkOWUzNTgzMTkyZmIzMWRhOWFiZDRiMjFhNzMyMmZkYWJkMTg0N2I4YzRmYiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiMzc0Mjc4NzNmNTFkNGFlMzcwNTBiY2VkNTJjYWRkNmM2MWY5Yjk3YTY4NDgxMDQ1MDBjY2UwZjA1MWIxNTQ4MiIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiMWFhZjc2MzdjYjZlN2U1ZGI4NWQ2MzQyNzQ2MDE0ZGYwNDFjY2Q1NThhOTIwYjI5ZWI2YWM3MTlkN2JhZjVjMiJ9"
+        },
+        {
+          "resource": "repo://tests/test_paired_fidelity_ddp.py#L19-L70",
+          "version": "repo-lines-v1:sha256:bb1a558ae1294084763ac1a15733c0dc9035300d5a32efe9a6fbb4cd3506d73c:eyJzZWxlY3RlZExpbmVDb3VudCI6NTIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImRhMWJkMDBkZTBiZTJiNmUwMGJkMmNhOTE4MDMzMjgzMWVmMzE1Y2M2ZmZkZmVlMjQzNDM3NjFiY2Q3MTZkNzYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjYxYzg4NDc5Y2U3MGEyYTZlZGQwOGZhOTcwOTAzMGZhMTc5NTExN2Y0OTNmNTVkNzMyNzc5NWI5NmJmZjQxYTQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijg5ZTk0NDRjOWRhN2MxMGM0NjdhMzQ0MzMxMWQxYTAxYmJhNTRiYTFjYzQwZTQ0ZDA5MjY2ZmViYWE2NzlmMTQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_e9a59dcff090483c9675d6b0d799a6fb",
+      "statement": "The paired-fidelity observer resolves its paired validation dataset lazily at the first gated epoch (the cold path replaces `val_latent_ds` during `DataModule.setup()`), caches a seeded `randperm` subset so only the model changes between epochs, and re-seeds the generation noise from a fresh generator on every gated epoch.",
+      "evidence": [
+        {
+          "resource": "repo://src/manifold/metrics/paired_callback.py#L125-L146",
+          "version": "repo-lines-v1:sha256:3175cd9f3cec4eb18fe33df9a6911bba48dd61d1cccc699a006b8f023224ee8b:eyJzZWxlY3RlZExpbmVDb3VudCI6MjIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjJkZDRlMzNkYzYyNDBhNTgxZjM5NDU4YWUyYTU3NWM5NDA3ZjVhYjM5ZjY0NDRkYmI4NTFlNWVjNzA1Nzg3YjUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjJlYWJiOTcwZWVlMjYyNmIwMTUzNDI4YzA4NTFlM2Q0ODZmNDNkZGZmYmI0NTFiODQxYzI2MjkzOWFmZGZlMGUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImZkZjY1YTk3OTgzZTNiYTQxM2I3Y2ZiODM5NDg5NjFhOWVjOWRiOGNiM2UwMjY1YzM5OGVkYTE5YWE1ODQ4MzAiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjkzMzY2OGYzY2NmNDQ2ZGRiYWFjNzM1NzgxYTIwOTJiYmU4YjZmMjE0NTZjZjc4NTVlMDEwNGE2ZDRlNWE1MDUifQ"
+        },
+        {
+          "resource": "repo://src/manifold/metrics/paired_callback.py#L179-L196",
+          "version": "repo-lines-v1:sha256:59d251d2fab59a14facd6366e78b72bd5b3d22d2092d769c0b2d981ced1dee4f:eyJzZWxlY3RlZExpbmVDb3VudCI6MTgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImE2NWIyMmRkODFjMjEyZTM3YzMxOGIwY2RiOWY5MzU0ZGY4MzYxNzAzZWE2OTNmODM0ZTQ1YmQ5NmNkZjBjNzEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU1MDMyZTk2NGQwOTMyMzUxZTVkMTg1MjY5MjgxYjE3MWEzYTA5YjA4YjI4NmU2NjFlYTQ3MDMyM2M4MmViNGQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImU0NTQwYjljZjY5Mjg1ZWZjMmY0ZTg2ODFhMmE1YTg3OWMwMjhlOGJiMmFiZjYwNDY3ZmM0YTVhMjNmODQzODYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjI5OTRkMDUzY2Q3NzM2OTY0YWY3NTRmOTAxYzI5MDY5OGFmZjhlYTE0NzNmY2YyMTcxNmU0ZjZkOTIxMjI0ODEifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_929ffc1fe8fa405895c8fa5f1666b27d",
+      "statement": "Under DDP, `val/x0_mae` reduces to the true sample-weighted global mean: `LatentX0MAE` attaches a `torchmetrics.MeanMetric` to the module and updates it with the per-batch sample count as the weight, so Lightning's cross-rank sync yields `(Σ mae·B)/(Σ B)` rather than a mean of per-rank means.",
+      "evidence": [
+        {
+          "resource": "repo://src/manifold/training/metrics.py#L109-L147",
+          "version": "repo-lines-v1:sha256:5fa212124743be6153006f80ac7f909e2bf388a581efc71adef42e519a89d88d:eyJzZWxlY3RlZExpbmVDb3VudCI6MzksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijg0YjJlMWI4MDI0MjdkMzVhNmIxZWE2MmIwMjlmY2YyMGViZWU2ZDEzMDkyOTJjZGUzNGIyNDdkNGQ2Y2U1ZGEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImNmMmFlZDFlOTc0ZTA1ZGQ4ZjY1YTM3OTkxY2Q4NDIwMGE5ODhjYTEwZDc4YmFlMTE5ZDA1MTYyY2EwZWZlMTAiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjQ4NWJiYjgzMzVmMDE5M2VkODg0ZjU4MTQ3MWUyNWRkMjIxNTExODY0MDg1ZGU5YTFmYTRjZWY0M2JjNWNlYWIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_b09666a5d1524126994bf152f2b962a7",
+      "statement": "Distributed FID reduces per-plane sufficient statistics `(sum_x, sum_xxT, n)` to global moments instead of gathering feature matrices: an empty local shard contributes correctly sized zero statistics, the synthetic arm is rank-strided (`seed + global_index`) so the global sample union matches the requested count, and a plane is valid only once the global count reaches two.",
+      "evidence": [
+        {
+          "resource": "repo://src/manifold/metrics/fid/reducer.py#L16-L76",
+          "version": "repo-lines-v1:sha256:bf6c58d9af909b4f254eccc177926a226722952437846e88f4efd8ac6aca8240:eyJzZWxlY3RlZExpbmVDb3VudCI6NjEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImMxNDFlZmY4MzBiOTJlYzg4NTk0ZWJjZGEzZWUxMjQxZGI0ZTJmNWZiNThjNjcxYzY4MDA2OTRlZTIxMzc1YWMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjJiYjU0MmE5MDcwY2FhNGM5OTg5ZmQxN2U0NGE5NmIwMmViNTBmY2JjZWQ2N2VhMGU0N2FjODgzZTg5NjgwZGUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImU0YzBkYTgyM2FlOTY2MGNhNzg5NDNhNDY3NWQ1YmY1OWYxNzJjNDYwOGI1MTk2YmNhZmM4ZWE3MDBjZjcxOTQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
+        },
+        {
+          "resource": "repo://src/manifold/metrics/fid/rollout.py#L60-L77",
+          "version": "repo-lines-v1:sha256:34e7e9e60cebe66b0699dfd6309bcceff035cac6ace3fb502e862d27314edac0:eyJzZWxlY3RlZExpbmVDb3VudCI6MTgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjI0NWNlOWRlZmJiMzFlMmU1OTU2ZDJiNGIzMGM5YzI0NjNjYjFjZDkzZGJhMjQ3NDQ3YjdkYmRkMWM2NWNjN2EiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjY5YzkxYjM2YjljMWE4ZTEyM2FlODhmOTQwM2VkMzg1YWE3ZWUzMjdlZTUzMjY1Y2MxMWQ2NWYwMTNjYmY1OWEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjgyYTdlNzk1MjQ2MmE1MTlkZWE0MGI2ZWUyOTQ1MmJhZGQ4MmFiNWQxODVhMThkZmIzYzdlNzhkNWFlZjA3OGYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjhjYWFlMTZkNWU3OWVlMjYxMjQ5OTQ1NGUyMWQ3YmNmMTgzYjkyMjJlZWJhY2MxYzNkZWJlMDE2YTMwNmM2YmMifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_daec3bad0ed548a28d8d4fe293ec8bd5",
+      "statement": "The FID callback preserves collective-count invariance with four symmetric error-rendezvous all-reduces (stage error, feature-net disablement, real-plane preprocessing error, synthetic-plane preprocessing error), so a rank-local failure cannot strand peers in a later reduction; a failed rendezvous logs `val/fid` as `inf` on every rank.",
+      "evidence": [
+        {
+          "resource": "repo://src/manifold/metrics/fid/callback.py#L215-L386",
+          "version": "repo-lines-v1:sha256:1e4e4650b702ab4868ee3927c47f157aa9d149c5e818a51b62053ab71a4cabe5:eyJzZWxlY3RlZExpbmVDb3VudCI6MTcyLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiJmYzU3MGI0YzI0MzRhNzVkYTVhNTNiY2E0Mzg3ZjRhM2I1NGZiYmZhYTQzYWJlZGUyM2Q3YzcyZGRkZjY1ODU5IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiJhNjc1NmQ2OTUxNTJmZDNiM2Q1MjkwM2E5YWFlNmQ3MjEwYjRjNTNkYjBjZmE4MzEyMDYxN2YxOWE4ODRkM2M0IiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI4ZjJhYzkzMWM2YzNlZDk2YjkyOTg0ZjI3MTUxYzZkNjgwNzVjZGFjNDQ2ODJhZGI3ZjRkODc0MGQ0YWM4Zjc5IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiIxMmYyYzczYTkxMDQ2NjFlN2IyYWQzOWUyNjRiODY0OWI4MjE0ZWI1Zjc0YzM3YzU0M2ZkOWI3NTExMjg2NzVjIn0"
+        }
+      ]
+    },
+    {
+      "id": "claim_f7d9855994bb4ff2a4318a6bcd2fb820",
+      "statement": "`val/mean_reward` is a manually reduced global value: every rank accumulates a non-padding `(sum, count)` pair over its own validation shard, the pair is `all_reduce`d (SUM) at epoch end, and the global mean is logged with `sync_dist=False` — a manually `all_reduce`d value must not also use `sync_dist=True` for the same value.",
+      "evidence": [
+        {
+          "resource": "repo://src/manifold/modules/grpo.py#L521-L534",
+          "version": "repo-lines-v1:sha256:5ee52fb9f5d0e9cf9d883507e5c24c1ffe3f74a10ff4a1c8ce327083a9a73742:eyJzZWxlY3RlZExpbmVDb3VudCI6MTQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjZmNzQ4YWZjMTY1MzdjZGQ0ZWU3MjRlZDdhNzZhOWNkNjU0ZGY2NjRjMTQ2YjFjY2UyNTRiZGI0MGZhNmQ5ODYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjcxMmRjMjAzNjI3ODkxNmE0MjU0ZWI1YTRhMjBhNjE3ZTdkY2Y3ZGE2NDVkNmZhYmE1NThhMDcyODhmN2FhNTciLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjhhYmExY2E1NWJmNGMwMGI1N2NkMzAyN2IxMGY4ZDQwMTAwOTU2MTZjM2U0ZmJhYTUxMzVkZDU2NjJjN2RlM2MiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjIwMTRjOTNkMDJiZGNlOTcwNGJmMDIxMDA1NTgyOTY4MGIxYzc3NjI1NmNhNjdhMWZmOWI5NWFkMWMwYzRlYTQifQ"
+        },
+        {
+          "resource": "repo://src/manifold/modules/grpo.py#L742-L800",
+          "version": "repo-lines-v1:sha256:4fe4c1dcddda73d7bdaf73aaf911c65cef35f8ae3633ab0685938c3f433e2fd7:eyJzZWxlY3RlZExpbmVDb3VudCI6NTksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImNhYWM4NTcwMDUyODVlNjQxZGJhOGYwNjFhOWFmYTc1MjhiZjIwYzI0OWIwZGM2NjU2NDYzZDdhNTU0Y2ZiZDciLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImM0NGMxMzA4YTZkMDgzMzE2NzQzNzI2Y2MxNGE5ZTE5YWY3ZWM2MDBlOGY3NzMwM2I0YTQ5MGQ5OTQ5OGRmYTMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImZiODU3NGY2MDkzMDU1OGY1OTExMzVmNzc3ZjI1Y2I3ZDEwZTc4YTdjNzcyNWE3YzE1YjJkMjUzNDJjOTRiY2EiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_c18eb82a6a104abe8922bf88020f0470",
+      "statement": "ADR-0025 removed every rank-0-only validation gate (the FID cadence gate is rank-symmetric and the GRPO validation step runs on all ranks), so the configured `val/fid`, `val/x0_mae`, and `val/mean_reward` monitors stay global under DDP and best-by-metric checkpoint selection works again under multi-GPU.",
+      "evidence": [
+        {
+          "resource": "repo://docs/adr/0025-all-ddp-validation-no-rank0-gate.md#L19-L42",
+          "version": "repo-lines-v1:sha256:d5c32aa074706c1466c03c0fa5e50458e654c79534927bd112a773926eebfcb5:eyJzZWxlY3RlZExpbmVDb3VudCI6MjQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjdkM2RiYzRlN2U3Y2JlNWRkYzg5MWIwODA3MTJmNjM1MWM5NGI3MjhlYzhiZDg1NTZmNDYxMmIwNzBkMjdiNDAiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImRiNjk0MzQyZjI3MzBjMjU1NGUzNmRlMGVmYzdmNmVlNGMzZGVmYmE2MzY2MjRjNTE0MWFiMzhlODIxNmQ3YmQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjdjN2UzNzIyYjRiMTAyMGNiYmFjZGZlNzhhMzAwNmU0YzE5MDFlOGRmMmE2ZTZkMTM2Y2E4MTNjY2U3NGZhMjYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjI3MmJhNGUzOWRlZTVmMDA5N2Q2M2QzOTBkZTBhYTI1MDFlZDc0OGYzMDcwMDBjZjI2ZTg0M2ExNDgwYTUzZTEifQ"
+        },
+        {
+          "resource": "repo://src/manifold/metrics/fid/callback.py#L120-L130",
+          "version": "repo-lines-v1:sha256:67c3071ba385fef685bb741d119b0e729a40ad6bb899d3e47827da230e15720f:eyJzZWxlY3RlZExpbmVDb3VudCI6MTEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImIyNDczZjg3MmI2MmUyMDNmYzY0ZjdjNzkwZWZjOGU1YzVlNWE2ZWIxZmYzMDEzMzg5ZWU4MWQyMzFmNjg0MmEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImNjZWQxMTM1NTkwZTUwNjI2NDliMzYwZTYxYmFhNzQ1NmZhZjZiNmE5ZDlkZWU1ODVmZDliNTY5MmU3ZmQ4OTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImVhNmY4YjkwODlmMGJlMTU5OTUwMjEwM2IzNzlkZjIxNmU2NzhlN2E5MjE4ZjcwZjZjMTE4Zjg1ZjBiNjk4MDYifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_9c545a9f94f74dd6a3a284607c8cde9c",
+      "statement": "ADR-0025's distributed-validation probe is `--max-epochs 1 check_val_every_n_epoch=1 val_subset_size=4` on all eight ranks, with the fallback order serialize-GPU-decode then CPU decode (`sw_device='cpu'`), and the VAE `num_splits: 4` / `dim_split: 1` / `save_mem: true` network config is explicitly not a proven fix because it was already active during the original 8-DCU stall.",
+      "evidence": [
+        {
+          "resource": "repo://configs/network/config_network.yaml#L18-L37",
+          "version": "repo-lines-v1:sha256:8c35ba75ff105510243a50133533f1acedb67884a099ced72024a38bbb2a8751:eyJzZWxlY3RlZExpbmVDb3VudCI6MjAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ3NDAwZTJkZjRhZDVlMzgxZjYyMmZhM2RjOGYyNTM2YWY1NDM4ZGM1ZTJjMTNiMDhiMzkyMGFiMmFiNjQ4ZTgiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjdjN2Q2N2QwZjY4Nzc2ZTlmMjBiNjg3OWY2OTU2MmM2ZDRmZmM2YjA3NmE5ZTBjNmI2NjUzMzhkNTUzYjMxZGMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImIwMzNmMTE5Y2Y1OGMzYjNjNmY1YzUyM2NmODAyZmM5ZTY4MTViMjFkZGUxMjJjYmJjNzUyOGVkZGJlM2Y2ZmYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjZkYjE5OWU2ZDZjZmYzODUyMzVkMDE5NDQwNjE3MmU5MmE4MDZhNmI4YWFhMDdkODE0NzAwNGViMzIyNWVjNGUifQ"
+        },
+        {
+          "resource": "repo://docs/adr/0025-all-ddp-validation-no-rank0-gate.md#L59-L79",
+          "version": "repo-lines-v1:sha256:1ddaceb66c1b73adcfa21d31d93d52727a7bf54750df1fff95a667abbcd5c937:eyJzZWxlY3RlZExpbmVDb3VudCI6MjEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjA2ZjZiMDJiNWM1MjY4MTA3MzFiZmY0NTNiNTAyNmIzNTQ4Njg3MzFkNmMxZmFlYjY1Nzk2OThhNGNlYzY3MWMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjY3NDgxMzg1YTJiN2ZiYmYyOWIzMjc2Njc3ZDhkOTNmYjI3MWNlZmMyNjhiMTVjZTNmMGZhZTY2MzNkNTA3ZDgiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImE3MTg0ZmU2NWQxYTRiNjc0OGE5YmViZDVlYzEyN2MzMGZiMzEzMjBiM2YwNjMzNDE4ZmQ5NmQyNTY0YTYyMjUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImU0NGQ3YWEyYTgxM2RmNmExYTYwYTYzODUyY2QwZWVhNTI1ZDhkNDI0OWIzZWIzZGRkOGQ0NWIxZDUwNTM0MjMifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_a071a14183ec4c45b3598a25b899e5d9",
+      "statement": "The \"sleeping processes + stalled log + no tqdm\" triad is a known false positive for the DCU deadlock and must not be acted on without a load-bearing signal: `hy-smi` near 0% (stalled) versus ~100% (slow but computing), `SIGTERM` responsiveness (the 2026-07-14 stall required `SIGKILL`), or an identical frozen `sliding_window_inference -> _conv_forward` frame under `py-spy` on all ranks.",
+      "evidence": [
+        {
+          "resource": "repo://docs/adr/0025-all-ddp-validation-no-rank0-gate.md#L81-L105",
+          "version": "repo-lines-v1:sha256:124146c34bec49dbb07a6196ed31fb09ea23a339f18ab0ddd1267ce7e9a42396:eyJzZWxlY3RlZExpbmVDb3VudCI6MjUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjFlY2ZjMzI4OTQzZWViNDhhOTFhNjE3NmM4ZWE1NTIzOGIxYzA2YjdkMmExMGI4M2RlN2Y0NjIyZjc3MGQzOTMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjFiNWM5OWRlNTAyZTM4YWRkZDllMTg2ZGViYmVkODQ5ZDk1MGIxNGIyNzg4OTE1ZWMxMGFmYjFhMjc5ZmUxNTUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImZhZGNkMTc5ZjgwNzUxY2MyODkxOTc3MTBjYzRkNDUzMGRkZGZiNjdjMmI1Y2VhOGE0YWE4ZTQyMTU0NGRkNGUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImVmNzMyODlkZTFiYjVlM2E4NDM0Y2ZmMzYxNjczOGY4NWU3ZDQzMmM5MTM2Y2E4MDk0MGI0NTk4MGE4YWViOGUifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_e0664e762fd64849893c2bfaa99308ba",
+      "statement": "`manifold-eval` is the only shipped eval console entry; its `--before-dir` must be a native export carrying a self-describing `model_index.json` whose `pipeline_class` selects the JiT or ControlNet path, the after checkpoint is exported into `<output>/after_native` through the standard export bridge, and the pairing contract is the fixed seed, inference-step count, conditioning, and VAE/scheduler.",
+      "evidence": [
+        {
+          "resource": "repo://pyproject.toml#L76-L85",
+          "version": "repo-lines-v1:sha256:c721be9a8317af2bd9f5add77646c4d13507b7d1d05e95114a0b973f6f6ea218:eyJzZWxlY3RlZExpbmVDb3VudCI6MTAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQxNzE0NGZiZTA1NTA1MjQ1YTRlMjFiNjBmYzMzZjA3OGJkOWVjNmY4MTA0YzMyZWRiNzI5MGM3ZDkyNGMwMTAiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjRlMTQ3NjBlY2ZkODQxMThkM2FmZTQ1YjMyMWRjZjI2YTFkZGY5OWY4YzVjMjY5NmVlMWE3NzU5MDgzMDQyMjUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjEzMTNlZWMxOTBiYTI2NTU4MDBkODcyZTgwY2JlMzZjOWRhMGE2MWM3N2I4YTg1MzU3YTg5MWE2ZWUxYTNiNTQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjVkZGRiYTZmZmY0ZmNmOGYzNWVlMTI4MTRiOWFjYTlmNmEzYTc5MTg1MWNiMDY4NDk2YjE1YjJlMTViNzc2ZGYifQ"
+        },
+        {
+          "resource": "repo://src/manifold/eval/before_after.py#L161-L222",
+          "version": "repo-lines-v1:sha256:5b35030cdfa90644666b8ac637eb556858e907e723bdb6d2d6c2e573f4c8b86f:eyJzZWxlY3RlZExpbmVDb3VudCI6NjIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImZlMTkzMWI2NjY1NjkwMGQ0OTMzZjk4ODI5NTIyNjg3YTQ1Mzk4Y2VlMGQ0YjY5NGQzMWUwNDcyOWRlMWJhZjQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU5MDlhNTNhNjE4ZDAyOGUxZDMwMDBjMGE3YWJjZWVjYmU1ZmIzN2Y0ZTUxMWVmZTQ2NjQzZmFkNmU2Njg3MmYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijc3N2UxYjhkZTQ5ZjVlNTM0Y2UxY2JkM2JkYWI0N2JiZjkwMjBhOTgwYzllNDU4NDg1M2NkMzZhOGY1Y2E2N2IiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjA2ZjgzYWIwMTE3ODMwZjAyOTc0YmUyOTBlZjFkOTZmMTc1NDljMzU4M2U0NWZhMGFmOTk3NGM1YzdkOTFkYTQifQ"
+        },
+        {
+          "resource": "repo://src/manifold/eval/cli.py#L132-L160",
+          "version": "repo-lines-v1:sha256:b80125ee3a743e8b483397f17141a5c0953991ed467f782d99f101a534a99d64:eyJzZWxlY3RlZExpbmVDb3VudCI6MjksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjY0M2YyNWNhZWQ0MTgxODdjZDdhMGJhZWQwOWRiMmM2Y2JkMjE0ZTcwODk1NGE4MWVjNzdjMDBkOTEzM2Y2NmIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAyN2UzYTE4ODQ3YWM5NDgyOGFkY2U5YjBmMzRmOTg4NDhhNmQxODM5YTlkNjVhZjFmMTk0MzkzNmEzOWJmNDIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjY2NTRlNWVkOWE0YTAxYWViNDgyYWNlYzJlOWY3NjZlYjIxZjg2MzRlODU2NTRhZjg2MGM5ZmQ0ZjFhZjM3MTMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjVlYWRhYjUxYWNlZDNiOWNhNTczYzMwNThjYzRiODU2NzgzNDk2MTVlMTExNWRiMTA1MjBkMzA0ODIxNDg0NzIifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_df09e87addc24c17a448dae726448f38",
+      "statement": "The offline JiT comparison records only provenance in `metrics.json` (no `before.psnr` / `before.ssim`), because the full-reference PSNR/SSIM fields exist only on the ControlNet path where a real target exists; the unconditional comparison relies on same-noise grids plus the training FID/reward history.",
+      "evidence": [
+        {
+          "resource": "repo://src/manifold/eval/before_after.py#L101-L159",
+          "version": "repo-lines-v1:sha256:73ef4e27d97f5380033be423498fe85bc904b091083dbebb126dfc2876847f79:eyJzZWxlY3RlZExpbmVDb3VudCI6NTksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU5MDlhNTNhNjE4ZDAyOGUxZDMwMDBjMGE3YWJjZWVjYmU1ZmIzN2Y0ZTUxMWVmZTQ2NjQzZmFkNmU2Njg3MmYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjhhYzljYzM0ZDYyNGI4NjFjNmMzMTM0YWQ4YTU4NWRkZTZjZDZiOTFlNzI0MmRjNDU1N2ZlOGE5ZGJlZGJiYWQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjdkNzg3YzhmNTJiMjJkM2ZjZTNjMmMzNDc5ZWM0MjYzZGMxOGQyYjJiODJmOGNhNzcxYWYzZmRhMGQ2ZjIyY2EifQ"
+        },
+        {
+          "resource": "repo://src/manifold/eval/before_after.py#L206-L219",
+          "version": "repo-lines-v1:sha256:7ce0db7dca6870ef209d46bb96aa9ce75ff010cb0bc870354dd75e70a8256433:eyJzZWxlY3RlZExpbmVDb3VudCI6MTQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAyM2M0YWM0Njk1MDdhZDAzNWJhZGViMzZjYjEzZTZiNjExMjYzYzZmZGFmZjBlNjIyMTIzMjY2OTk5Y2ZlMjEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU5MDlhNTNhNjE4ZDAyOGUxZDMwMDBjMGE3YWJjZWVjYmU1ZmIzN2Y0ZTUxMWVmZTQ2NjQzZmFkNmU2Njg3MmYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjRkM2IwMTY2YTQ1OTRjNGMzY2I5NzE3OTdlNzdjZTdiNTM1ZDg1MWI5NmMwMDBkMDA0MzE4ZjI5MWI1MDk5MzEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImQyMWY4YmM1NmRhMTRlNzg3NDMxNDNhNTI0ZTlmMTVlZDU3ZWYzYTk5MmJhNjBkYWYwOTkyYmI4ODQxZDE5YzkifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_038dfad47eb349f887fda5bad84ff150",
+      "statement": "Production validation is refused without a held-out source: the JiT shell disables validation and falls back to periodic/last checkpointing when no held-out split is wired, and the supervised ControlNet path raises unless `val_data_base_dir` is a BraTS directory or `val_fraction > 0` (the recipe default is `0.2`).",
+      "evidence": [
+        {
+          "resource": "repo://configs/train/config_controlnet_supervised.yaml#L48-L54",
+          "version": "repo-lines-v1:sha256:2664c41430a4800bbf83e25da2d07cd68a351f92fac58d0d83fcd71c594f63f2:eyJzZWxlY3RlZExpbmVDb3VudCI6NywiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiZTM2Yjk0YWQyYjNmOGJhOTQ5ZjE5YTUxN2FlZDQ1OTk1NzQ1YjFmN2QxODY2M2Y1OWRhZjA5ZTcwYzJiYWRlYyIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMDFiYTQ3MTljODBiNmZlOTExYjA5MWE3YzA1MTI0YjY0ZWVlY2U5NjRlMDljMDU4ZWY4Zjk4MDVkYWNhNTQ2YiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiODg5YjYxM2QzODgyYzYyZmM0ZjNhMmMwOWM4NDAzZDY3ZWRhNzJhZjZjNWVmZDcyYmFjMzYzZjU3N2ExNmU3NSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiNzViMzhmNmFiMmRmM2VmN2MyYjE5YjFlNmNmOGJhNmZmYjhkZTI2NWI2Y2FmYTNmOGY5NDVlMzk4OTI2ZDFiNCJ9"
+        },
+        {
+          "resource": "repo://src/manifold/training/cli.py#L259-L271",
+          "version": "repo-lines-v1:sha256:68196c870f3dcb70c2b26d8d7231e13d796dae806cfd0f0ca4bf2236685da4a3:eyJzZWxlY3RlZExpbmVDb3VudCI6MTMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQ0YWZmNTY1Y2ViM2E1ZWM4MjQ2Y2RiNTkxNzYwMTQwZWViMzM2MjAxM2U4YzY3OWExZWU5MDRiNTg4NGM5YmIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjVlZTk1NzQ2NjFhNjY0MjJkYTliOTdhMWU1NDM2YTYzYWQwNDY5MTlmZWZiNTEyMzZmZGQxY2QwNjAxMWE3MDIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUyZjVmNzQyZjExYjhjZTZmNTc5MmQxMDk0ZmNlNmQ0OTk2NWMwZWVmODExMTNkN2Q5Mzg1ZGYxM2ZiM2NlYzkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjUxNThmMWQxOWU4N2NkZGJjZTgxYTc3NTYwNjA2YmNlMzQ0MGExYTViY2JmYWNhZDU0N2M3NDZiMmMzMjc0YTcifQ"
+        },
+        {
+          "resource": "repo://src/manifold/training/controlnet_cli.py#L393-L406",
+          "version": "repo-lines-v1:sha256:05e824dd488b041756fd3088585d193ce4067439a375e423a2177898a2e989c1:eyJzZWxlY3RlZExpbmVDb3VudCI6MTQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQxODNkZmMzNGY2NmFmMDE2OWI4ZDU2N2ZiZTM1M2M1ODljNzI3NjQxNjI0NDM4ZjcxMjNjMTQzMDNlYjQ4MTciLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU5MDlhNTNhNjE4ZDAyOGUxZDMwMDBjMGE3YWJjZWVjYmU1ZmIzN2Y0ZTUxMWVmZTQ2NjQzZmFkNmU2Njg3MmYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjRiNmFjNjg5ZmFjOGE2OWNmNjg5ZjZkYTlkNjc4ZmMyNDE2NjlhZDk1ZDQzZjZmZmMxNjE5MmUyMmVkMTI5ZGYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUxMjY4YjliN2U2YmRkYWMwOGQzMzFkOTcxOWViMWI0NTZiOTY5NWQ4MzQ4Y2UwODlkYjc0MTM4OTdiOGE2ZjAifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_8b25be648d564f8283b85c0d42cf0e48",
+      "statement": "Evaluation decodes in float32 with the MAISI `norm_float16` flag disabled, and paired scoring applies the same per-volume `min_max_to_unit` convention as the ControlNet pipeline with `data_range=1.0`, so the in-training monitor curve and the offline before/after number stay directly comparable.",
+      "evidence": [
+        {
+          "resource": "repo://src/manifold/metrics/fid/decoder.py#L1-L51",
+          "version": "repo-lines-v1:sha256:ff7faf62ce70ba45a1ee8fe10ef3fbe4472584f84f9a29ffb7b531c0555fb1a9:eyJzZWxlY3RlZExpbmVDb3VudCI6NTEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjA2ZGIzODA4YWEzNmI2Nzg4NzY2Nzg5NGU2OTk4MWMyYmIwNDYyYzhiYmQzZTU0NzE2YWE1YzU0NmIwYWFmM2EiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjM4NWRiNzMzNDljMmJlYTg2NWIyNzgwZmIyYWY5YzE4MWM0ZjY5MjFiYmM5NDM1NmRlYjU0NTk1ZDRmOWYxZjkiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
+        },
+        {
+          "resource": "repo://src/manifold/metrics/paired_callback.py#L198-L217",
+          "version": "repo-lines-v1:sha256:0234b19b5b6df5046efed1b16daa9ad98e4640610b7b0fc72ace0bbe2f39b361:eyJzZWxlY3RlZExpbmVDb3VudCI6MjAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjFlNGIyMWU5OWJkODdlNDcxYWQzZTlhZTc2YWMyNmFjYjgyMTYxNGQwYjk2OTI3YjI1MDFiNjNiMzg3MTZiNTUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImVhMDNiZWU4ZjU0OTcwNjA0NzRlNDQzNWJmOGViZjNlZTVkOTM3Zjc3MzU1YTkwYjU4YTgzNmQ3ZDQ2MDljNTkiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImRmZGM4Y2UyMzVkNTBmNTMwY2JkMjllYTE2YjA4NTczYTQxNDE2YjIwZDUxYmRkZDllN2EyNDgzYmM0NjJiMjkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImNlNWQ2NWM2NTk5ZDE4M2FkODJjZjZkYjc2NWZiZjk0YjkwZDVhNDNiYjVhNmJjNjc1MWE4YTI3NzQ3ZDc1YWEifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_0f19f7c461834895aed60c51978b3478",
+      "statement": "Export deserializes the full training state (`weights_only=False`) and bakes the raw optimizer weights — there is no EMA arm — so only checkpoints produced by a trusted run may be exported.",
+      "evidence": [
+        {
+          "resource": "repo://src/manifold/training/export.py#L1-L60",
+          "version": "repo-lines-v1:sha256:ff2f80dda358eec0a3aa211a58660046171288cc7041fe0c27a4421bbe77d022:eyJzZWxlY3RlZExpbmVDb3VudCI6NjAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijc4NTM2MmM1N2NhNjFjM2JlMzMwNTUxMWQ1NzUyZTQ3ZWQ3ZGU3Y2IyN2RjNDg1MzMwMjkxMmExMWZjMTUxOWIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImU4OWRhNWY5NjVjYzJlZWNlN2E2ODY3MjcxZWJlYTk1OTllYzZhZTVmMDczODVmNmYzYjIwNmMxNWM5OGI2ZjIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6Ijc5YjFlZjE4OTczYzlkNTZjYzE3NDUxZDE5NjU5MzA0YWZhNzg3ZWZhZmU3ZjFhYTEyNjdlNzYzMGU0YTJjYzYifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_2d6336fef1f64212a8835f050422ba30",
+      "statement": "The `scripts/` directory was eliminated by ADR-0033; the surviving investigation tool is `tests/parity/validate_against_hope.py`, a one-off (non-CI) sampler-parity probe whose default algorithmic-latent tolerance is `1e-3` and which needs the `hope` package plus the JiT checkpoint on the `PYTHONPATH`.",
+      "evidence": [
+        {
+          "resource": "repo://docs/adr/0033-scripts-elimination.md#L1-L25",
+          "version": "repo-lines-v1:sha256:a33a0acbe747a1a04d64db8b85de1ecaeed1676874eb230112a036e98fc39b1c:eyJzZWxlY3RlZExpbmVDb3VudCI6MjUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImI2Njk0YTQzNjJmMWI5NWViNzAzOGQxZDYyZjMzM2EyMDUwYTQwZTkxZWQwNDZiYWM5MzU2NjJhZDM3Y2JmYjgiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImJhYzBhZWIwMTc4ZGVjMWRmNzQ5NGE3OTk2MGM1NzJmZjQzZDU2YzQyN2ZkZmQyZDkyNWNjZjQzYTgzZjU1NWEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImM2YjYxYWY0OGEyMjI2NGU3OWM3MGFlMzAyYTZmMjc3Y2RkNDdkNmJhYzg3OGRjZjE5YTY5ODcyZDg1ZDFhMTIifQ"
+        },
+        {
+          "resource": "repo://tests/parity/validate_against_hope.py#L1-L39",
+          "version": "repo-lines-v1:sha256:df3814aa0a118e4d385b87cb35e35e22fc38cae3987be70e8edcc163f179210e:eyJzZWxlY3RlZExpbmVDb3VudCI6MzksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImY4OTIyZGRlMGQ1ZTA1ZmUxYjU1MDM0ZDQxZGUwOTA1ZTQwZDAzYmEzNDJjYWQxNmY2ZDYwYTI5N2ZlYmU2Y2YiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImEzMDNlY2RkNGE0ZDEwZjE5YzczZmQ0MmZkMTI0MzdmZDMzNTRhODI2ODE2MDVkYTUyNTVhOTdhMzkwNjhkYmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjU1YjZlODcwNmI0MzA0N2YyYTZkYjY3ZjEzMjYzODU5NTYwNGU2N2YzNjk2Njg3NmNlMDE1OGYwMDUzZTZiZDEifQ"
+        },
+        {
+          "resource": "repo://tests/parity/validate_against_hope.py#L108-L114",
+          "version": "repo-lines-v1:sha256:b27fe442ca1e834a7ea296c95def7f35f06c90f6963af6ced05fc11fb593a6ed:eyJzZWxlY3RlZExpbmVDb3VudCI6NywiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiNmJlNDM5YTQ3NTAzNDI3YTRjNzlmOWJkM2MzYzNmYzFmOTNmZDFlN2I0YzdhMTUxZDVhZmFkMDQwMmQxYThlYSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMWYzYzY1YzZhYjY5ODk1OTlmZjg4ODJmYjNmNDRhNTEyOGNiOWUwOTk1YjA4YTYwZjQ5ZmU0NzE1OTc4MmI3MCIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiZWYzMTRhNTkwNzU1Mzc3ZTIxMDcwYjBmZDExMGE2NjMwZThkNWY4MjQwNDU3ZjlhMDJlNmU1N2NjZGU4ZGQwZSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiYjAyNmViYTdlZGJlMzNkNTc1ZDhjNDFiMThmOWQyYzkyMzI4OWNmMGZiNzIwZTczZGI3MTc3ZjhkMjBkMzQxOCJ9"
+        }
+      ]
+    },
+    {
+      "id": "claim_fda3085a6b88464ba83f4c10ded8b293",
+      "statement": "`configs/train/config_rflow_jit.yaml` still carries a stale checkpoint comment describing rank-0-only DDP FID and an unmonitored fallback; ADR-0025 and the current callback/CLI code are authoritative instead, and the paired supervised recipe is `configs/train/config_controlnet_supervised.yaml` (the older `config_paired_jit.yaml` no longer exists).",
+      "evidence": [
+        {
+          "resource": "repo://configs/train/config_rflow_jit.yaml#L48-L54",
+          "version": "repo-lines-v1:sha256:8f70e9b571bf8e073310043a937b86f83df19a58a6180804ec69a0f3fa0900e3:eyJzZWxlY3RlZExpbmVDb3VudCI6NywiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiODNkYzM5N2U0YzQ2NGMzOTEwNWU4ODlhNzNjOWVjM2I3YzRkOWFlMWY2NTMwM2EyODVmYTg0NGQ5MGM1Yjg3YSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiY2NiYWUxZjIwZjMxYzc5YmI2YjQ3MzJmMjViYjBlMWFjZmI0OWUxODQwYTQ2M2VkNDE0ZGU0MjEyMGY1MDc0MiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiY2Y5MGY3MzJhNzdkNWYzOTI1YzI3MDkwZTljMThkY2RlNWE2YjEyZGM3NTA3NzYzZjgwODYwZTkzZjJlNWRjMCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiNmNjZTNjY2E1MThiNmI4NDg1MjBjNTk4YWU4NWQ4YmM5ZGUzNDRjMjliM2M3OGI1ZTk0ZTA2MTBlY2YxN2RlYyJ9"
+        },
+        {
+          "resource": "repo://docs/adr/0025-all-ddp-validation-no-rank0-gate.md#L1-L20",
+          "version": "repo-lines-v1:sha256:19509d85558ded454575564afd806412cd351a39feadbe8a342af72fdac1d90e:eyJzZWxlY3RlZExpbmVDb3VudCI6MjAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImY1MmQ3MTExMDNkNTBhNDM3ODMwYzZmYmNkMDRmYjRiYWI0OWEwZjgyZjZkMjZkMWM3OTFjNmU4NDg4ZGQwOTAiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjhhN2Y1M2Q3OTYxZjFkMWY2NmI2ZDFmNTM3NGU1ODNhM2I5NWY4NzQxMDRhZWRjODcyNjM2YjIyY2EyYjkwOGYifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_fa5f03fab5bb4180964ae8bce7ef7e20",
+      "statement": "`--callbacks` (or the YAML `callbacks:` list) replaces the callback name list rather than extending it, so an operator override on the supervised path silently drops the default-on `paired_fidelity` observer; dropping `checkpoint` as well makes `TrainingSpine.run` fail fast because a `ModelCheckpoint` is required.",
+      "evidence": [
+        {
+          "resource": "repo://src/manifold/config/loader.py#L155-L167",
+          "version": "repo-lines-v1:sha256:236cc0aaeca209a4be379584db38dbf4585067a49256aad247c1b00baf3088b2:eyJzZWxlY3RlZExpbmVDb3VudCI6MTMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImY1MTE5MzIxYjZmMDU5NDQ5ZDc3YWMyNzI1ZGNkZDlmZDIzZDA2MDk2MTZkYTU1NDcxODVkMThjMTM0YmVlMDEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImY0YTY3MThmNDZkYjc4MjM1NDM3OTczYjE3NDM4Y2M3NWIwNDhmNWZhNjhjYjhlNjdmOWExZDYzZjY0YTg0YTciLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjQzN2NiN2E3NGJiYzFkMjZlMjE5ODBkNjFmYjczNDg3ZDE2YjY3OGVmZjE0NzA4MDY5NWI2YTRkYjg0ZTE3MmIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
+        },
+        {
+          "resource": "repo://src/manifold/training/core.py#L108-L151",
+          "version": "repo-lines-v1:sha256:94c3b227a0fb72682eb80a4db6c34bb0a9d496d6b0209c7995ec048c0fee86ed:eyJzZWxlY3RlZExpbmVDb3VudCI6NDQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ2YzNmM2U3OGE1ZDFlNjE3NTYxMzU0OTI4Y2Y4NjQ2ODE3NWI1N2Q0ODAwNGFmNTdlMDY1NzljYTY2YTM0NjciLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU1MDMyZTk2NGQwOTMyMzUxZTVkMTg1MjY5MjgxYjE3MWEzYTA5YjA4YjI4NmU2NjFlYTQ3MDMyM2M4MmViNGQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImE1NjAzNmU5NmY1ZDU1ZjQ5YjNlZWQ2MmI0NDczNjg2NjM0ZTY3YWU5MDQ5YTA2YWJiMjMxYWNjODQ1MWJkYmUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImJlYWUxYzM1MjAwMDdlNzhjOGU5MDA4ZTE0NGI2NmVkODBkNjYxNmJmZDNmMjVlMWRlODlmYTg5ZWJkNzcyZDgifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_8861d6cdc22b4e1793ec3349d7377568",
+      "statement": "The in-training paired-fidelity observer has two focused test anchors: `tests/test_paired_fidelity_callback.py` asserts the monitor wiring externally (logged metrics, cadence gate, fixed-subset stability, same-seed determinism, per-epoch reset, `[0, 1]` normalization ceiling, shape-mismatch error, observe-only contract), and `tests/test_paired_fidelity_ddp.py` asserts 2-rank no-deadlock behavior plus cross-rank consistency of both the logged and the rank-local pre-sync scores while the checkpoint keeps monitoring `val/x0_mae`.",
+      "evidence": [
+        {
+          "resource": "repo://tests/test_paired_fidelity_callback.py#L114-L274",
+          "version": "repo-lines-v1:sha256:841e0ce9fa5f8146466fb539ea66a1ca0ed0380895c93deb12e69374923e5390:eyJzZWxlY3RlZExpbmVDb3VudCI6MTYxLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiJhMDcwZWU5NWU0NTgyZmNjNjdjMjkyMTYyZTBkZWViODRkZjkxOWE4OTg2ZGFjYzBlNTA0NDFlYWNlNjYyM2U3IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI0YmM1NjMzMDQzMWRmYzhiNTE0YTEzNGNmNTQ5MjY3NWE2MjZhZTNjYWNiOGE2ZmNmZWE3N2JkZGU3NmVlZDc2IiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI5MTkwYWYzMzczZjEyODMyZTA1YWZiNGZmZDQzMmM3OGE3ZGVlZWYzZWM0MWU5MDQ4MjY1OWNiN2Q1YTg1MzJmIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MCwiZm9sbG93aW5nQ29udGV4dEhhc2giOiJlM2IwYzQ0Mjk4ZmMxYzE0OWFmYmY0Yzg5OTZmYjkyNDI3YWU0MWU0NjQ5YjkzNGNhNDk1OTkxYjc4NTJiODU1In0"
+        },
+        {
+          "resource": "repo://tests/test_paired_fidelity_ddp.py#L19-L70",
+          "version": "repo-lines-v1:sha256:bb1a558ae1294084763ac1a15733c0dc9035300d5a32efe9a6fbb4cd3506d73c:eyJzZWxlY3RlZExpbmVDb3VudCI6NTIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImRhMWJkMDBkZTBiZTJiNmUwMGJkMmNhOTE4MDMzMjgzMWVmMzE1Y2M2ZmZkZmVlMjQzNDM3NjFiY2Q3MTZkNzYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjYxYzg4NDc5Y2U3MGEyYTZlZGQwOGZhOTcwOTAzMGZhMTc5NTExN2Y0OTNmNTVkNzMyNzc5NWI5NmJmZjQxYTQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijg5ZTk0NDRjOWRhN2MxMGM0NjdhMzQ0MzMxMWQxYTAxYmJhNTRiYTFjYzQwZTQ0ZDA5MjY2ZmViYWE2NzlmMTQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
+        }
+      ]
+    }
+  ],
+  "verification": {
+    "by": "openwiki/0.7.2",
+    "at": "2026-10-24T12:31:51.781Z"
+  }
+}
