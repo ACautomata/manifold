@@ -1,0 +1,514 @@
+{
+  "schemaVersion": 1,
+  "pageVersion": "sha256:e485dc1cb0cad79931120f48de11bfd378589611773770733e67a370989fba44",
+  "claims": [
+    {
+      "id": "claim_e7d4c875400b49aab70e8bb87e16506b",
+      "statement": "The repository implements the diffusers-style four-component vocabulary (Model / Scheduler / Module / Pipeline) as four packages under src/manifold/, with manifold-owned base classes — nothing in the tree subclasses the diffusers library.",
+      "evidence": [
+        {
+          "resource": "repo://src/manifold/models/modeling_utils.py#L1-L28",
+          "version": "repo-lines-v1:sha256:b6d518915a17f190c3457dbffbe3d2df7a1e52e910a9e21143ec916d4d848492:eyJzZWxlY3RlZExpbmVDb3VudCI6MjgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU5NjNmNjhjMzQxMDJjYWUyZmJlZmY4OGQwNTJiOGYwZTMxNDNjZGNhNGU3MTU3ZDljYTEwMGIxMTBiNGIyZjYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImE2YTcxNTI1NzJlZTg0ZjEwOTA2Yzc0YjlmMmE5MjQzNGRkYWIwZTNjNDI4MTNiMDRlNTk3ZWZjZWM5NTFiMjYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImE5ZjRiMTU3NzFmZGViMjlhZDRmNzFkODc5YWFiYmVmZDVlYmJmMjI5ZDZkNTFmYWMxNTkzZWFhOTgyOTc5NDEifQ"
+        },
+        {
+          "resource": "repo://src/manifold/modules/latent_flow.py#L140-L160",
+          "version": "repo-lines-v1:sha256:f6478673621516b9f14bd649d6f51ee0c5ff1d0822ab7285e38089d057a83845:eyJzZWxlY3RlZExpbmVDb3VudCI6MjEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijg4ZmYwNDVjNTU1NTVlM2UxODhlOTc1MDY5OWMzOTg1ZjAxNmI1ZjcyMGU2MmNkZTdjYzIzZTkzMTU5NDBmMzIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjE4MWIwYjcxYTgxMTc5YTk4YjIyZWY0YzkyMWZhODg0MzI2NjU3NmMwZTkxODE4OGYxOTljNzcwNGY4YTE1MTAiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjFkNWVjNTE0YWQ4YmM0YjFlMDYwMDE3NzJiMGJlM2FkNDE2ZDcxNDU4OGJjYWU5NzJiYWU5N2E3NmIzMDVjNGQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjczYjcwZGM3NjQ0MTU2MzgwNmJhMDVjNzk5OTg5ODEzYTJkNTk4ZmU1NzA1NWM5Y2JhY2QwZDIwNmViZjdiOTEifQ"
+        },
+        {
+          "resource": "repo://src/manifold/pipelines/pipeline_utils.py#L1-L24",
+          "version": "repo-lines-v1:sha256:39aa647b9e53ec629101593fd98e487b98c8ace465b659299319a55836c78083:eyJzZWxlY3RlZExpbmVDb3VudCI6MjQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjgyMzIzMWMyYmQxMGU3OTNiMjhlOWYxYThjYjI5MDU3MDEwZWJlN2U4YWZkYmQ2ODFmYWI0NzA5OGRjNmE1ODkiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjQ0ZjM5ZmVmMmMwZjk5MDhhMGMzYTA3YzgwNDZkYWEzMTY5Y2VkZmFkMjQyNGE5ZmEyOTBlM2M1NDRmYmY5ZmUifQ"
+        },
+        {
+          "resource": "repo://src/manifold/schedulers/scheduling_utils.py#L1-L23",
+          "version": "repo-lines-v1:sha256:3ed52b2c45c87e7c830aaba2e702e3f9c87613cf0caf54ff6eea3de3f62eca3f:eyJzZWxlY3RlZExpbmVDb3VudCI6MjMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAzMjBiOTA0NTUwNzQ1ZWViZTBlNmM3Mzg5ZTdiZmE1NWNiMGFjMjI1MzBjNGZhYmRjYzZkZTViNzk2ZTU1MjIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjE1MWI5NzdkN2Y0ZTE2MDRkMTAxNzYzZWUyNjE2N2JhMTEwZDgzNzhjYzMyNmUyMjkyMzQ0NTI2NmNkOTViYTciLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_a36559ea80f540bc82b0b9f2c5446b4f",
+      "statement": "The Scheduler owns the rectified-flow transport and the reverse-time Heun step and no training concern: FlowMatchHeunDiscreteScheduler.add_noise implements z = t·x + (1−t)·e with t→1 clean, and the training Module obtains its noised latent by calling that method instead of re-deriving the noising.",
+      "evidence": [
+        {
+          "resource": "repo://src/manifold/modules/latent_flow.py#L239-L243",
+          "version": "repo-lines-v1:sha256:81198c979dcd7258ebf66cf3ebd42b2770c5e5c9b5a61b6e73ee7833c0636095:eyJzZWxlY3RlZExpbmVDb3VudCI6NSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiYWYzZjY0NTg0ZWI5Njk3NWQzOTY4Y2Q0ZWM2YzE2M2NiODk5NTAyY2QxYjg0NzBjNWIxMjc4MGQzMDMwNzdhNSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMDNmNTY0NzZlZjMxZDA3MDcxMDBkNGQ0NmZlZWUyN2RmMjNjYTFlNjQ5ZTlmNjY2YjYxOGMzMjVjOTI4MGEwOCIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiZGJmYjdkMTc2MDhkOGRlMmQ0MmVlMTNjYzQxYzdlODcwZmM2YmE2NzNhMTk3OTQwMmQyYzE5YmJlZmNkMTEwYiIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiMjM1Y2ZhZWI4MTFmNDliOTdlNWNkM2YwNmNkYjQ3ZWMzZGQ5OWI1Yjk3MWJmYzhjMTlkODEzODE2ZDZmZmUxMCJ9"
+        },
+        {
+          "resource": "repo://src/manifold/schedulers/scheduling_flow_match_heun.py#L43-L50",
+          "version": "repo-lines-v1:sha256:00f93599adea7fc008c70b1f127aec71259f40ea00314e5072ca3f2986ee12fd:eyJzZWxlY3RlZExpbmVDb3VudCI6OCwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiNjExZGRjOTExNzBjYTE4M2I1Y2M0OTRiNmRkNTYyZmQyMjIyYjcyMDA5YjVmYzU3MDY2ZTY3MzM4YTA2NmJiYSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiZGM2NTYxYmVkZmUwNzljNzA4OWMxN2ExZmFkZTBkMDI2MTNlZjJlOTI2NDliNDgyNWYwMjVkMzYzMTY4NWZiNCIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiODhjMzZhMjUxMTJmZjAwZWE0MzQwYTI3MDdlOTQxYTgxYzQ1OGJjYmNhYzcxMzQxMTQ5ZTZiMmMxOTdmNmI2NCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiNGMwMTI2Y2RmMmFhNjlhN2Y4ZTM4ZTA3ZGI2ZDFiY2E1NDNlOThhNjFlYjE4ZTUyODM5ZWU3ZTI5ZTU5YThmZCJ9"
+        },
+        {
+          "resource": "repo://src/manifold/schedulers/scheduling_flow_match_heun.py#L94-L102",
+          "version": "repo-lines-v1:sha256:b927ae9632c394259571ef878bbf5a3af0e3f90c909917336a67978621bd8980:eyJzZWxlY3RlZExpbmVDb3VudCI6OSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiYmYwMDQyOTIzYzcyZGJiNzQxZjkzZmEwYTIzZTc2ZmQ2ZTI3MjQ0ODM3MjU2NDE1NTdjODI5NjJlZDQyODhjOSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiNDVkM2U0NTlmZjA1ZTdkYzQ4NzY2MWE5Mjc3Nzk0NDg0MjlmMzE3OGFmYjQ0MDQ2N2M1ZTcwNmJkOTU4MjAxYSIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiNTBkN2UxZmJlMjU1MjhkNDI0YjUwMGJlMWI2M2I2OTEwYTVhMDNmNjk5MTE0MjAxNzE0MTY0ZWZhNzYwYTE2NCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiYjQyNTIxZWI3N2EwMTY5Y2ZlY2QyNDdmZDhhZWI2ZmFkZTAxNzZkNTIyZTI2MzNjNDk2MDY2MTY2ZWNhOThjZSJ9"
+        }
+      ]
+    },
+    {
+      "id": "claim_8e9f5a2d14b94a838585c02bf3522775",
+      "statement": "The Module owns training-only concerns — logit-normal flow-time sampling, the (1−t)⁻²-weighted MSE on the clean latent, optimizer/LR-schedule wiring — and exposes the x0 Heun sample() that the inference Pipeline delegates to, so the training and inference rollouts are one shared primitive (sample_latent_flow).",
+      "evidence": [
+        {
+          "resource": "repo://src/manifold/modules/latent_flow.py#L228-L260",
+          "version": "repo-lines-v1:sha256:ca164864632660d949c38bb5a33ac25288f307b66e176b089ad2f46f09509a31:eyJzZWxlY3RlZExpbmVDb3VudCI6MzMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijk2OGFiMjgwOTU5MzM1NDAzODdlMzE3MGI5YTdkNzU2MDkzZjNiZDE0MzI4NTk1OTQ2NjE0NjdiM2MyMTJmMjUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjJiYjU0MmE5MDcwY2FhNGM5OTg5ZmQxN2U0NGE5NmIwMmViNTBmY2JjZWQ2N2VhMGU0N2FjODgzZTg5NjgwZGUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijk1MDM3NmE3NDgwN2FkNmQ2N2RmZTFhNDI1YzE2OGQ5ODY4YWEzZDY0MzJlOTk0NTdmNTg4YWVmMGNmMGVlOTMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImE1ZjYyMTY4ZDI5Y2I2ZTQ5NzEzNWFhYmZhMzMwODFlMTRjNTcwMjMxNGFmMDcwN2NkNTNhOTM4ZWFiN2EwNzkifQ"
+        },
+        {
+          "resource": "repo://src/manifold/modules/latent_flow.py#L262-L300",
+          "version": "repo-lines-v1:sha256:4398ee83a63ff832d340d3c3a661cc06110f9a9297cabeec625484283b250276:eyJzZWxlY3RlZExpbmVDb3VudCI6MzksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjA5ODU4YzFjNmQ0MzA1ZWVhZWM4ZDg5NGFjMzgyMzI0MjUxZWRlYWFlMTY2MDUzNzdmMTJhMmZmZWU0NzNjOGEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU5MDlhNTNhNjE4ZDAyOGUxZDMwMDBjMGE3YWJjZWVjYmU1ZmIzN2Y0ZTUxMWVmZTQ2NjQzZmFkNmU2Njg3MmYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjczYTA4ZTFhMzllNzBmNjQ0NGJiMTY1MjlmMzZkYmY1NTBlY2E1ZjcwYTM1MWZhOTE1ZmRhN2UzMmU5MzZlNDQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImQ3ZTUzNWMwNmI3YTFkMGJkNWRhYmM2NDI2NjhlMzA2N2I0OTM1NDM5YmVhMWI0MDFmZjNkZDQ0NTI0YTFhZDcifQ"
+        },
+        {
+          "resource": "repo://src/manifold/modules/sampler.py#L40-L58",
+          "version": "repo-lines-v1:sha256:134f2534c99cec4f5ab675efa81cfbe2e85e65dbf8af8a02b3693e1b6a04138d:eyJzZWxlY3RlZExpbmVDb3VudCI6MTksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImJmYTJmMWUzODM5NTcwZmE5YjEyNTFkMWUwYjg5MWVjMTgxMTFhNjVjOTgyMWUwNzBjY2ExYzE2MWY3YWZiM2YiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjJiOTdhNzQ2ZjYxMzU0OGJjNjE5YmUwYjJjZjg1ZjdhMTRiMzhmODNhNTUwMTcwYmQ2ZDZmODcwYWMzNDAyZDUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImJjMDA2ZDlmMGFhNDUyNGU1ZmRlZjg2ODg1YzQ0OGUwNTk1MmEzMTJhMGZjOWY0Y2Y4YTk3OTIyZDg4MzMyNmUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjJhNTcxYzkwMjVjNWIwNWJmOTVlZmMyMTU1YTBiMGE2ODliMGFhYTY1MThjMDlmZTFlY2M4ZWQ3ZTQ1M2I4ZWEifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_ab1242de4b1041e1939b5f314607053d",
+      "statement": "The Pipeline turns noise plus medical conditions into a decoded volume and owns the native per-component persistence format: save_pretrained writes model_index.json plus one subdirectory per component (unet, vae, scheduler), and from_pretrained reads only that layout.",
+      "evidence": [
+        {
+          "resource": "repo://src/manifold/pipelines/latent_flow.py#L1-L15",
+          "version": "repo-lines-v1:sha256:079fe1a791854eaaa0e93f8f9b4b3d246323f5336b6f3e3e401c104c95fbfe73:eyJzZWxlY3RlZExpbmVDb3VudCI6MTUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjA5NWMwYjBhZmJkNGMxNjhkYzg4OTQ4YTBlOTcxODJlMzg5NzkzZmY3YzI5NWExMDhkOWEzYmUyZGUxOTgzMDQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImEzMDNlY2RkNGE0ZDEwZjE5YzczZmQ0MmZkMTI0MzdmZDMzNTRhODI2ODE2MDVkYTUyNTVhOTdhMzkwNjhkYmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjU1YjZlODcwNmI0MzA0N2YyYTZkYjY3ZjEzMjYzODU5NTYwNGU2N2YzNjk2Njg3NmNlMDE1OGYwMDUzZTZiZDEifQ"
+        },
+        {
+          "resource": "repo://src/manifold/pipelines/latent_flow.py#L36-L97",
+          "version": "repo-lines-v1:sha256:8b1a3043b4525952d550afa75c44f0c8100e6f102168bed3f0efa675affe419d:eyJzZWxlY3RlZExpbmVDb3VudCI6NjIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImEyNmI0YzYxNGIwMjM4OWRhN2E3ZWY1ZWI4NmJmOWEyYTA0YjY2NzEzYTljMmI0ODA2NjBiNzcxNTFhMGM5MzIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjA3MjFlMzgzNGVkMmNhZmUzOWU4YWNjNDQyNzJjMmRlNDQ3NzA0OTVkZjA1OTc1NmQ2MzcwNzU3YTliYTEwMzgiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjYwYzZhYjk0YjJjMWRkMTVlNTM1Yjc4NGE3ZDdlMmU1MTQ1MDZkZmVjODFkNjQ3Y2YzNmU5ZjdkY2ZmZDM3MWMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjZiMDI0ZWJjNjFlNDdhZjQ1OGM1ZWY3ZGYyNGYzNmRmY2E2N2RhNTU5OWJkNjEwM2IxNDJmYjhkYmY2YTRlZWYifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_fba82d08295a4df98897ae303bc903b2",
+      "statement": "scale_factor is owned by the VAE wrapper as a buffer plus config: encode returns scaled latents, decode undoes the scaling internally, encode_raw returns the unscaled latent, and the data stack estimates 1/std(z) over the warmed unscaled cache; the training Module and the inference Pipeline never reference it.",
+      "evidence": [
+        {
+          "resource": "repo://src/manifold/data/latent_dataset.py#L257-L280",
+          "version": "repo-lines-v1:sha256:7da5cb7b7fdf739d1ebd7fb1bfd0d0641eaab941d4d32fcda65d84ee92e13001:eyJzZWxlY3RlZExpbmVDb3VudCI6MjQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjYzYzI2OTlhOGIyMzAxNDczMjM0Y2VmZjQ3MDQ4YzgyNWQwY2Q4ZjEwOGZjYjc3MTMzZjRhNmYyNTYwYjUzNmUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImY5MDNlNDg1NTBjZWU0ZjMyODc2ZGE1Y2FmMDFmMWE3MmI5ODNiOTM1NDdkMzE2ODM2ZmVhMDY0Njk1ZWFjM2EiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijk1YTA1Y2E4OTg1YTE1M2NiZTRhMTEwYzU5YzUzMDYzY2I4ZTQwMmJhOGU4Njc4YThjZmEzNWZkYmVhNWI3MTMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
+        },
+        {
+          "resource": "repo://src/manifold/models/autoencoder_kl.py#L1-L20",
+          "version": "repo-lines-v1:sha256:024d411a134b97ed4d6650be9b8ab3f59fbbaa0a0102782f92e509e3f86404b3:eyJzZWxlY3RlZExpbmVDb3VudCI6MjAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijg3YjU4OTRjOGE0YjExYjdjOGU2OWFjMDFjZWZkNjk2NjM4YTE2ODc2NGQzMzkyYTU3OTMwNTBiZWM1NmFlNTIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImEzMDNlY2RkNGE0ZDEwZjE5YzczZmQ0MmZkMTI0MzdmZDMzNTRhODI2ODE2MDVkYTUyNTVhOTdhMzkwNjhkYmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjU1YjZlODcwNmI0MzA0N2YyYTZkYjY3ZjEzMjYzODU5NTYwNGU2N2YzNjk2Njg3NmNlMDE1OGYwMDUzZTZiZDEifQ"
+        },
+        {
+          "resource": "repo://src/manifold/models/autoencoder_kl.py#L102-L118",
+          "version": "repo-lines-v1:sha256:a222ee34c5b659bccf5c071a8de5ba887adb839b5d24c9c488a6167a51325db8:eyJzZWxlY3RlZExpbmVDb3VudCI6MTcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjgwMDc0NWJkYzg1M2RiMDhlYjNkNTY5NmI4MzIwNjhlN2MzMGFmMDQyN2RkY2I0MmVkNTFkYTEyMGRiOWQxYmIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImNmYjc1Y2NjODhjYzA4YWIwYWQ0MGNhYjQ1YTQwZTVhYzM4M2MzNzM0NDY5Y2YzMTM2NjBhM2M1Y2M4NzZhZDEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImExMjcwNDg1OTVmMzQ3ZjZkNjM2MTlmZmNjMzViZWJjOTM1ODg5M2RkZTNjMzFhYjFiYTY1OGI2MjExYmE2NWQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjQ3MzViNTZlMWNmNzBmMTk5ZDkwYWE0YTE3NDE1YmIzNjFiMDM5ZWY5YzdhYzcxMjNkYTMwNzg1MmIxZjExM2EifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_b2212eff09e4428b982abb861a54828c",
+      "statement": "conditioning is the spacing tensor plus the class-label vector (medical geometry and modality, with spacing scaled by 1e2 inside the UNet wrapper) — not text embeddings or encoder hidden states.",
+      "evidence": [
+        {
+          "resource": "repo://src/manifold/models/unet_3d_condition.py#L1-L22",
+          "version": "repo-lines-v1:sha256:02739367b1784b28a254427fd1dba5ba7add296443f084622e434c21d343d921:eyJzZWxlY3RlZExpbmVDb3VudCI6MjIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjUwYzY4ZTEzY2NmYjBmMTJjNmZjY2ZhMGJkNGY2Mjg0Y2E1N2UwOTk4MWZiYTlhYTBmN2E1Njc3NWRkOWFkNjgiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjBhY2M3NDBhMmRiZjgxOGJlNzUxN2FmNWEwZTAyMDhkMzM5ZGQwODU3NzhiYzkyMmFhMjc2MzA5MWJkNWQ5MGEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjFhYWY3NjM3Y2I2ZTdlNWRiODVkNjM0Mjc0NjAxNGRmMDQxY2NkNTU4YTkyMGIyOWViNmFjNzE5ZDdiYWY1YzIifQ"
+        },
+        {
+          "resource": "repo://src/manifold/models/unet_3d_condition.py#L38-L41",
+          "version": "repo-lines-v1:sha256:0f438be132b51524521011b6b5f10ccf3e21d3863c7168cf28456ba453ba158d:eyJzZWxlY3RlZExpbmVDb3VudCI6NCwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiMDFiYTQ3MTljODBiNmZlOTExYjA5MWE3YzA1MTI0YjY0ZWVlY2U5NjRlMDljMDU4ZWY4Zjk4MDVkYWNhNTQ2YiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMmM0ZGVjOGJmYTIyMzVhZTkyYzFhYjVmNzhhNTdhZDg2MTMyOTM4ZGZlZGU5YTRiMzkxYmZhNWQ2Njc3YmI0MCIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiNDgxOGFjOWM5MjdhOWQzZTgxNzIyM2U0MDgxYjMxZjMzYWUyYmJkNjQ1MGU3ZTQ5MjZkMjZmOTYwZGNkZjM4NyIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiNDYxYzBiN2FiNjc1NDllZmU2ZDViNzZhNGUxNGVlZTIyNzQxN2ZlZTFhYzNhN2NmMWY1NDJjOGYwNGY2YTA0NCJ9"
+        }
+      ]
+    },
+    {
+      "id": "claim_5d9813e6ba354035b4a23b51b4188fb0",
+      "statement": "The two persistence artifacts are distinct: the native per-component directory (read and written by the Pipeline) and the Lightning .ckpt training checkpoint (full training state for resume and selection); export_to_native is the sole checkpoint-to-inference bridge and bakes the raw optimizer weights as the inference UNet.",
+      "evidence": [
+        {
+          "resource": "repo://src/manifold/pipelines/latent_flow.py#L80-L97",
+          "version": "repo-lines-v1:sha256:6c4f985ded30eefcac898457fd4d53b6760c99db2a371f48e5f3aaf973d43e59:eyJzZWxlY3RlZExpbmVDb3VudCI6MTgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjgyMGI0NTNmNWUwYzkyZDVmNmMyNTFhNWVhMTk2MGQ3MmYzYmQwNzk1NmFlODU3ZGEyMGUzMWE4OGM1NTk2OWYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjA3MjFlMzgzNGVkMmNhZmUzOWU4YWNjNDQyNzJjMmRlNDQ3NzA0OTVkZjA1OTc1NmQ2MzcwNzU3YTliYTEwMzgiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjY4Mjg2ZmUyNDViYjNiMWNmMmMzOWZhNmRmMThkZTcwYWMwYjZjMmFhNDA0ZDQyMDJkYmIwYmRjYmRhOTc1ZjIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjZiMDI0ZWJjNjFlNDdhZjQ1OGM1ZWY3ZGYyNGYzNmRmY2E2N2RhNTU5OWJkNjEwM2IxNDJmYjhkYmY2YTRlZWYifQ"
+        },
+        {
+          "resource": "repo://src/manifold/training/export.py#L1-L13",
+          "version": "repo-lines-v1:sha256:e09db60b38034e760618bab0432654bb999104c2ed020b7a250241612bbf820b:eyJzZWxlY3RlZExpbmVDb3VudCI6MTMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijc4NTM2MmM1N2NhNjFjM2JlMzMwNTUxMWQ1NzUyZTQ3ZWQ3ZGU3Y2IyN2RjNDg1MzMwMjkxMmExMWZjMTUxOWIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImEzMDNlY2RkNGE0ZDEwZjE5YzczZmQ0MmZkMTI0MzdmZDMzNTRhODI2ODE2MDVkYTUyNTVhOTdhMzkwNjhkYmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjU1YjZlODcwNmI0MzA0N2YyYTZkYjY3ZjEzMjYzODU5NTYwNGU2N2YzNjk2Njg3NmNlMDE1OGYwMDUzZTZiZDEifQ"
+        },
+        {
+          "resource": "repo://src/manifold/training/export.py#L39-L78",
+          "version": "repo-lines-v1:sha256:496c3d8f54d1e0580317234b2c27bbadd180af7b0a872fea71bd00108ccb4963:eyJzZWxlY3RlZExpbmVDb3VudCI6NDAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImVkNjliMWQ1MGE3YzU4Y2M4NDQyODI0YjZmMjlhYzE4YTFmYTJkYWE0MGQzYWY2NGEwNzdmNDVkNzBmYmUyN2EiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImE2YTcxNTI1NzJlZTg0ZjEwOTA2Yzc0YjlmMmE5MjQzNGRkYWIwZTNjNDI4MTNiMDRlNTk3ZWZjZWM5NTFiMjYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijc5NzIyOThhOTkxZTViZWM3OTlmNTc3MGUzMjExOTA2NzQwZmUzNzU1MGU5MTJmM2FiMTU1YWM0NjkwOGRkNDIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjA4NTlhYzBmNGY5NzVlODc0M2YxZTgyOGU2YWFmM2VhZmE1YTYyNWQyNmRjNTdjNGFhNWQ2MmM1YTMxNzFmNGIifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_4acf721cec1a467ab73b08c7ce4e9307",
+      "statement": "There are two config systems by design: the Experiment config is an OmegaConf launch-time layer (env to recipe to network kwargs, later files replace earlier whole, required paths as ???) that builds components and never persists them, while the Component config is the JSON config.json captured by register_to_config and round-tripped by from_pretrained/save_pretrained.",
+      "evidence": [
+        {
+          "resource": "repo://src/manifold/config/loader.py#L1-L30",
+          "version": "repo-lines-v1:sha256:15d12b3aacff1422841190e51f17d8e5d1d7cd47735dea28e1d8c048f46649c4:eyJzZWxlY3RlZExpbmVDb3VudCI6MzAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImU4MzRlM2RmYTY2MGNhN2JkN2M4YjM2ZjMyZTc3NjllMDk0MWVlZmFjYzljNzFhNDlhM2MwNGU0OTYwOWRjYTEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImEzMDNlY2RkNGE0ZDEwZjE5YzczZmQ0MmZkMTI0MzdmZDMzNTRhODI2ODE2MDVkYTUyNTVhOTdhMzkwNjhkYmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjU1YjZlODcwNmI0MzA0N2YyYTZkYjY3ZjEzMjYzODU5NTYwNGU2N2YzNjk2Njg3NmNlMDE1OGYwMDUzZTZiZDEifQ"
+        },
+        {
+          "resource": "repo://src/manifold/configuration.py#L22-L44",
+          "version": "repo-lines-v1:sha256:6aac7da9b13da1654f1e41626e6c324a9abb9409097c56fa114197e92f25ef8a:eyJzZWxlY3RlZExpbmVDb3VudCI6MjMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU1MDc2MGQxMjUwNzk2NjIyZjA2MzQxNzI5YzFhMTk0ZGY3MDkyN2I4ZDBiZDk3MTFhYTkwMzg1Mzc0Yjg1NGUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijk4Y2Y0NTY4MTgzOTk3YWU2OWVmYTkzOTZiZDM0YzYwYTAzMDQyYWU0OGY0YmEwYzhkNDU5NmQ0NThmZTQ1YmUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjlkMzdhMzNkMDczYWI4ZGEyOWRjNzRjZTZhODkxMzE4MThhNTJhNWMxNjVkMTZmMzFkOTkxOTk3ZjBlNjZjZjciLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6Ijg3MjA0MmQ5ZWU4NzkyN2I1MWFiNmJhNzc3NjRjYzBlMjYyNjdiOTQzNTZjMmU2NTkxZTcyNjllYmU0NzQ5NTkifQ"
+        },
+        {
+          "resource": "repo://src/manifold/configuration.py#L65-L80",
+          "version": "repo-lines-v1:sha256:7a35df9b730d843c38545f963e1e5ecf95be12f48072446129fd675d6a869b38:eyJzZWxlY3RlZExpbmVDb3VudCI6MTYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQxYjI3MTZiZGFiNzhlMDQ5Y2JmNTIwZGRkYWFlNjcyYmYyNGJmNjExOWNhYWRjYjQ4NWRmNTZhNGVjNmQ0NzQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjgzOGMzN2Y0ZWU2NDk2MGZmZmM4OWI5NzY3MGM4ZWE2NDY3YjI2ZjRiZGUxOGZlODUxNGU2OGRhOTViNTliZWUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImQ3N2I4YzU4OWYyMmUxNjkwMDZlNTAzNTE5ZjRjODc5ZTRiODM5NzA3MDA0MzA4OTk5MTAzOGZjMzgwMzQwMzAiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImRhMmU5YjI4MzA4NTEyMTg0OTczNmYxMzQ2ZDM5MjZiMWE3NzcxM2FlZTU5YzZhYTdiYTlhYWEzOGVhNjcwODAifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_86098d6e2e0a490fae67491e6648e49d",
+      "statement": "The CallbackRegistry maps a callback name to a dataclass spec with a build(ctx) method and constructs callbacks in two phases: resolve validates names and knobs at config time (KeyError on an unknown name, ValueError on an unknown knob) and build injects the runtime CallbackContext at fit prep; Lightning's ModelCheckpoint is itself a registered spec (CheckpointSpec).",
+      "evidence": [
+        {
+          "resource": "repo://src/manifold/training/callbacks/checkpoint.py#L25-L40",
+          "version": "repo-lines-v1:sha256:228bf38f0279d2cbf6606e7057af1d423a1e766ed201dd3ef3750af30618dbe0:eyJzZWxlY3RlZExpbmVDb3VudCI6MTYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImY2OWExMzk3NWMyNTZlYzgzMjBlMjAxNjA4M2M5NmRmNjM3Y2EzZDM1YmViZGUyMzE0YmVlM2E0NzExYjU2Y2EiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQ4NGRlMzNkMjlhNDg5NzdlMTJlMDY0YWM3N2I1M2ViMzBjY2JiODk3M2QyNzcwNjJiZWZiNTFiMTdmNTA4NzAiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjRlY2YwYmE5ZmI2YzQzNWUxODJlMGJmNjRlZjQyYzdhNzg3MmI1OGE0NWYxOGY3NmQ2MmQ0YWIxN2UwM2VkMWIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjNjNTQzMDAzYjhhZDJmNTUwODQ1ZGM1NDU3OWEzMDdiY2U2NjgzNThhMTAwZWQ3YWE4M2JlNWU2ZjhhMzE5Y2MifQ"
+        },
+        {
+          "resource": "repo://src/manifold/training/callbacks/context.py#L17-L48",
+          "version": "repo-lines-v1:sha256:68e4dc667f042163c1906b0d695116ed3cde6e50aa3edcee67c45fee3f78bf69:eyJzZWxlY3RlZExpbmVDb3VudCI6MzIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImY2OWExMzk3NWMyNTZlYzgzMjBlMjAxNjA4M2M5NmRmNjM3Y2EzZDM1YmViZGUyMzE0YmVlM2E0NzExYjU2Y2EiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImRiMzdlYzZmMDk0MmY3ZGUyNDJhM2EyNTc3NzFiNzg2ZDY5OTQ1YWExZDE4NzYwMjI3YjZlMjY4NTBhNTI2MzAiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjlkMzdhMzNkMDczYWI4ZGEyOWRjNzRjZTZhODkxMzE4MThhNTJhNWMxNjVkMTZmMzFkOTkxOTk3ZjBlNjZjZjciLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
+        },
+        {
+          "resource": "repo://src/manifold/training/callbacks/registry.py#L30-L51",
+          "version": "repo-lines-v1:sha256:6f5b679dfda5a00adcf0de8115e18b0cc8674d77fed13abdd8e53fb488f2e791:eyJzZWxlY3RlZExpbmVDb3VudCI6MjIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImE1NGYwZWU2NmI4Zjk4ZjUwNWYxYzM4YWE2MGEwZjRmZDMxM2I2N2MwMjA4ZjY3MmI0MmM0MDA5MmZkZWI3NzgiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjRlY2YwYmE5ZmI2YzQzNWUxODJlMGJmNjRlZjQyYzdhNzg3MmI1OGE0NWYxOGY3NmQ2MmQ0YWIxN2UwM2VkMWIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImVmZjNkZWQ0ODMwNjkwM2NhM2E0YzgyN2U2MGY0NjQxZjRiOWQ0MDg3NDMyYTdmZTM1YzVkNDU4MjcyZmVjYTUifQ"
+        },
+        {
+          "resource": "repo://src/manifold/training/callbacks/registry.py#L73-L112",
+          "version": "repo-lines-v1:sha256:3d7771a57cea33ba534cb829e7c7670a61e39a7a9d581c893f0fc2a14e6f8289:eyJzZWxlY3RlZExpbmVDb3VudCI6NDAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjM1NGU4MTU0OTIwNTIwZWEwNDBmYmU4YjA5ZjJkM2JmYjg5ZmRjZDI0ZGNmZGRmYzdlNDRkMDczYTQ3NDE2MDIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjY3Y2IwMjg2NGEwNGQ2ZDY4NGM5YTYxOWVmY2EzNzU4ZDQ0NWRhN2YyM2VmYTQyNDRhNDJiOTQ5NTQzNDU5NTkiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImU5MDM5MzM1YWU1YmZiMmY1Y2JmNzI3NDE1MjlmM2YyOWQ0NWU4ZDYwOWJkNWVkZTZmMWVkYzA5MWEyNDMwMjIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjI3YTI0ZWZjNmNhNDhhZmYxODJhNjMzYmIxMGMzOTQ4NmMyYTBjNzlmYWZlMGYzMjIzYmZjZjIwZjc5MzFhOWEifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_e58f49eed0c54673ba884f1c47c7c0b2",
+      "statement": "TrainingSpine is a composed dataclass (not a base class) that owns callback-name merging, registry resolve/build, checkpoint injection, build_trainer and fit, and is the single caller of the callback registry; seeding deliberately stays in each run_* shell because the spine receives an already-assembled module.",
+      "evidence": [
+        {
+          "resource": "repo://src/manifold/training/core.py#L108-L162",
+          "version": "repo-lines-v1:sha256:81b5f95fde963764f777976878fc5d1462060e263cb01c150530c2d572dbe261:eyJzZWxlY3RlZExpbmVDb3VudCI6NTUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ2YzNmM2U3OGE1ZDFlNjE3NTYxMzU0OTI4Y2Y4NjQ2ODE3NWI1N2Q0ODAwNGFmNTdlMDY1NzljYTY2YTM0NjciLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU1MDQ0MzI2ZTNkNDdhMzQ1YTU3NzUwNTIwYWRjMDVjOWUyYjRhYzU1NDdmOWVmNzgxZjI2YjY0OWVkNjZmOWMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImE1NjAzNmU5NmY1ZDU1ZjQ5YjNlZWQ2MmI0NDczNjg2NjM0ZTY3YWU5MDQ5YTA2YWJiMjMxYWNjODQ1MWJkYmUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
+        },
+        {
+          "resource": "repo://src/manifold/training/core.py#L27-L61",
+          "version": "repo-lines-v1:sha256:09063dc65427d16170ccf8eb822301370c0ac529b8420692b4c5cd9bc685ce6f:eyJzZWxlY3RlZExpbmVDb3VudCI6MzUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImI2ZmJhZTBiOTFkNDRmYzBkNDlmNWRlNjkxZGE2ZmM0MzFmMjYwMTM0YmY3MzFlMGUyMWY3NjQ4MDk0MzM0Y2IiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImNhYjBhYjJkMzBmNjhlNmVlYWIzOWQxMmYyNTg4MDY4YTU3OTFiNjRkNTBkYjY0NzA5MzJiMWJhNTg0YzQzNGEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjYwOTQ3YWU2NGU1YjA1ZjdmN2FhMjA0MTEwZGY3NDUyMjUzM2UwYzc5MGFkNWE1MWQ0NzQyYTM1M2ViZTA4NDYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjI3NzM0ZDdjOTI4Yzc3YjRkM2QzYjNmZjM3MzQzMGMwYTlhNzVlMTVhNWJhNTZjZThjMzc4YTdlOTAwNjE1NDQifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_959dd26e23c346f9a9563060ffa1b508",
+      "statement": "A frozen arm is a registered nn.Module child that is held off the optimizer (requires_grad=False) and off the checkpoint (state_dict strips its keys, load_state_dict is lenient only for the arms); FrozenArmMixin._register_frozen_arm is the single place the freeze is applied and the mixin does not own optimizer arm-selection.",
+      "evidence": [
+        {
+          "resource": "repo://src/manifold/modules/frozen_arm.py#L19-L70",
+          "version": "repo-lines-v1:sha256:fb6cd11a7f066efcf4895240aceb03a4adfe890c677c6288cb41ea51fbd9760e:eyJzZWxlY3RlZExpbmVDb3VudCI6NTIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijc0MGZiMGE2ODNjMjljZWY2MjNkMmI3OWExMWY3YjhkNjc3ZmUzOTgxNjBjMmIxOGEyZmJlZjc4NDQwYmM4YzEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjEwYzAyNDhjZTk5Mzk1YjFhNDJkNGRmYzkyMmUyYTEyZTA0ZGZkOTVlZjY0ZjUxMjdkOGZjMjI1N2Q1ZTgyZmUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImE0MTJkODZiY2MwZmRmYzkyM2EwNGEyNDIyMzg4NzUyNTZkODVhYWYxNDYzNDY2OGY2N2QxNjU4ZmY4MTdmODIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjUwODUyZDlkMzYyYTA2ZGY1MDRjNmIzN2NlN2U1NjAwMjk1MjIzZDRkNDVlZmZjMmU1YWE4MjgxNTVjNTkxMmYifQ"
+        },
+        {
+          "resource": "repo://src/manifold/modules/frozen_arm.py#L72-L120",
+          "version": "repo-lines-v1:sha256:c95ebd21854db4e088281873c968dea4ab65c8dc604531897c9f9109191c768a:eyJzZWxlY3RlZExpbmVDb3VudCI6NDksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjA2NTBjNjE1ZGE3NWU1NjJkNzQ4YWM3YTA2MTQ4MjNlMzFjNjhhNzFhZGFhZmY2MWUyZTY4OTQ5NTFmNjFkYjEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjdhYTgwZTI3OTI5NzBkNjVlZGQ5ZjljYWY1ODFhNWI4YWZmNDUwYjk5NDU5Yzk4MjJmODVlOTI3MjA2MDk3ZmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjgwYjFlMjhkNDY4Yzc4MWMxODhhM2FlNjUzZDZiNmY2MGI2YTU2MDBlYTUwZmFhNzdhZjlmMjNlMGJiYWYyNmIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjQyNzJjNWFmOGRhNTNjMzdlZjFhZDdhZjk0MmI4MTUxMDhjYjAwZDI0OTEzZjQyMjcwNzE0MWRkZGJlODFlYjEifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_9731e02e545a496494b8b3bd7cd35b2e",
+      "statement": "DevicePolicy is the single owner of the per-rank CUDA device before the process group exists (pin performs the one-time set_device, device is a side-effect-free read, warm_device resolves the post-process-group VAE-warm device), and is distinct from Lightning's automatic .to(device) that owns in-Trainer frozen arms.",
+      "evidence": [
+        {
+          "resource": "repo://src/manifold/modules/frozen_arm.py#L1-L11",
+          "version": "repo-lines-v1:sha256:0797f01da74f2247b8300cd8ae07400087b077616bd3483065f0af7499b52aa3:eyJzZWxlY3RlZExpbmVDb3VudCI6MTEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjRiMjg4NzQ1YTkzNTFjYWVlNjhmYjJiMWY2YTA1MWE3NGI0NjMzMDJhNzFlYTcxYjY5MDQxMjZhMGI4NDYyMDIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImEzMDNlY2RkNGE0ZDEwZjE5YzczZmQ0MmZkMTI0MzdmZDMzNTRhODI2ODE2MDVkYTUyNTVhOTdhMzkwNjhkYmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjU1YjZlODcwNmI0MzA0N2YyYTZkYjY3ZjEzMjYzODU5NTYwNGU2N2YzNjk2Njg3NmNlMDE1OGYwMDUzZTZiZDEifQ"
+        },
+        {
+          "resource": "repo://src/manifold/training/device_policy.py#L1-L27",
+          "version": "repo-lines-v1:sha256:51924b9fcd425ba13cf81034616df14e0c2562cd0752462b7727e70f05679cbf:eyJzZWxlY3RlZExpbmVDb3VudCI6MjcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjEwYmIyYzc2Yjk1YWQxMWI3ODcyMDE5MTc1MjkwZjNmNTI1ODYyMTY1NGJiOWM0MTY0ZjBmOTA2YjNkYmQyYzgiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImEzMDNlY2RkNGE0ZDEwZjE5YzczZmQ0MmZkMTI0MzdmZDMzNTRhODI2ODE2MDVkYTUyNTVhOTdhMzkwNjhkYmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjU1YjZlODcwNmI0MzA0N2YyYTZkYjY3ZjEzMjYzODU5NTYwNGU2N2YzNjk2Njg3NmNlMDE1OGYwMDUzZTZiZDEifQ"
+        },
+        {
+          "resource": "repo://src/manifold/training/device_policy.py#L38-L85",
+          "version": "repo-lines-v1:sha256:fcc6ceac433a1ffa150100c3ae2a00e3a185a0ce7c778bdce7c0c9d7b76022d5:eyJzZWxlY3RlZExpbmVDb3VudCI6NDgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjhlODVlZjAwZGJkMjgyYzc3ZDU4YjFjNDI1Y2RmZDliYmViN2ZmZTlkZmM3NmYzZDM2NmY1YWIyN2UyZjgyYzIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjM5MjdiMTAwZDMyYzdhYTA5NjI5ZGIxMTg0ZDlhN2Y5OGY4NDJjM2ExZWU0ZjE5ODhjY2U2YzI0YTcxYmJmMzUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImYxOWZmNWIwZjkyYzlkZTM5ZDlhYWNhNTExNmJkZjIwNjZmM2YwMmI4OTRlMGY3MGE1YWNkNjY5MTU4ZWU4MTEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_fdf7057be11b49aa965f428c09e7e48f",
+      "statement": "Collective-count invariance in the FID path is enforced by an error-flag all_reduce(MAX) rendezvous before every reduction-bearing phase, so a rank-local failure makes all ranks take the same abort branch (log val/fid = +inf and return) instead of diverging into a deadlock.",
+      "evidence": [
+        {
+          "resource": "repo://src/manifold/metrics/fid/callback.py#L134-L153",
+          "version": "repo-lines-v1:sha256:e117d196d430b23c2bfe49dfc4d00427415b1bd39805c4493dae76c1d3ca1ce2:eyJzZWxlY3RlZExpbmVDb3VudCI6MjAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjUzZmUwYzJjOWRhMjJlNzljNjE0NjBkNWE4OTY5ZTc5MTI1NjMwZTE3ZWU2YjIxYTYwNzM4Y2Q4OWY5YmVjNzciLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU5MDlhNTNhNjE4ZDAyOGUxZDMwMDBjMGE3YWJjZWVjYmU1ZmIzN2Y0ZTUxMWVmZTQ2NjQzZmFkNmU2Njg3MmYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImVhNmY4YjkwODlmMGJlMTU5OTUwMjEwM2IzNzlkZjIxNmU2NzhlN2E5MjE4ZjcwZjZjMTE4Zjg1ZjBiNjk4MDYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImU2ZmUwMGFkYjQ2MmNkMGI1MzhkMDg4MWJmMzczMmYyNTkzMjU1MGYxYzRkMmQ3ZjA1YTI4M2I2YmE2YzU5NzAifQ"
+        },
+        {
+          "resource": "repo://src/manifold/metrics/fid/callback.py#L233-L257",
+          "version": "repo-lines-v1:sha256:e303b2ce8902f689ec975b8215263ca93143155a08e22f5b5b54224208c3b3d7:eyJzZWxlY3RlZExpbmVDb3VudCI6MjUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImI1NjljYjA5MjgwZWUwNzgxOTQ1ZTQ4ZDQwNDFiZDJkZmFhZTY5MWFkMmVhYmY1ZDNjYmEwODQ2YzcyMTZjYWEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImYyYWI1NmFjMGE4NjliZjgwOWVlZTFiZGRjZTM4OGFmMDc3YzlmYjM2NzI1MjFkYzdmYzk1ZTIwOWExMTc3Y2EiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjI3MjhhNzA4MzNhNmZkYmMyZjUwYmQyNzFkMDRhMjRiNmZjYTNkNGMzNWVhOGM1MGNlYzNhZGQ4YzgxODI1OTMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjRiMmM5YTQ3MDU0NGEzZmE5NDc5NDcyYzU1OWM3ZmI2Mzk5NmI4OTgzNGUxYjc1ZTA1MmVjNTk1NWM1ZGQzNDcifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_0cd59730d19840f6b3ea7d06dafa73ae",
+      "statement": "The Reward Model is a Model in the four-component sense: a MONAI PatchDiscriminator wrapper whose forward returns the per-sample mean of the final raw patch-logit map (no sigmoid), scoring latents unconditionally and owning no generation rollout.",
+      "evidence": [
+        {
+          "resource": "repo://src/manifold/models/reward_model.py#L1-L14",
+          "version": "repo-lines-v1:sha256:16651cbb72f9e9cdbd3efc04017baf48f986e5c27599f524173b6b46fd518049:eyJzZWxlY3RlZExpbmVDb3VudCI6MTQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjIzOTI4Y2M3MWQ4MGMzMTQ2OWEzNTM0ZmM1MGMzNDU4MDVhYjVkNjg1N2Q1N2MxYjY0MmJjYjY3MWJmOTY2ZDMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImEzMDNlY2RkNGE0ZDEwZjE5YzczZmQ0MmZkMTI0MzdmZDMzNTRhODI2ODE2MDVkYTUyNTVhOTdhMzkwNjhkYmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjU1YjZlODcwNmI0MzA0N2YyYTZkYjY3ZjEzMjYzODU5NTYwNGU2N2YzNjk2Njg3NmNlMDE1OGYwMDUzZTZiZDEifQ"
+        },
+        {
+          "resource": "repo://src/manifold/models/reward_model.py#L64-L87",
+          "version": "repo-lines-v1:sha256:987e044d3496e3f9db537082782b662b2b119bd291fd2ed5a4600e2d15b86918:eyJzZWxlY3RlZExpbmVDb3VudCI6MjQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjFlM2U3NWFhMzI2NmE5NzE2YjMxOTU3OTI3Yzg1ZGQxZDRhYzcyZmM0MDcyN2E0NDJmNzBmNjI0Y2NlZjEzNDgiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijk5OTEwNTViMmE4Y2M5YzRiMTBkODkxYjI4NGVhZmZmZWFiZWYyNmZkMmFmZGU5NjgxM2QyOTkzMTYwNTY1YWMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImJiNzdhNGZhMjM5YTU5NTA4MjA0MDc0NjJjNWNkMzQ5MGNhZjk5MzZjM2Y0ZDU1YjlmNzk3YzU4YjVkMGU3ZGYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_2515a5bf491244b98407cbd63f846e29",
+      "statement": "The Reward Module is the spt.Module that owns preference-pair construction and the Bradley-Terry pairwise loss; it holds the frozen JiT denoiser as a registered frozen arm and rolls fresh pairs inside each fit step, while validation pairs and the generated-end probe are precomputed once.",
+      "evidence": [
+        {
+          "resource": "repo://src/manifold/modules/reward.py#L1-L40",
+          "version": "repo-lines-v1:sha256:c3e0740b4c71140e02ab24c914b349783474b8963eda0d9057e77e7d9b3f01ad:eyJzZWxlY3RlZExpbmVDb3VudCI6NDAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijg5NGUyOGMwNTFlNjk0YTdhMTAzNzk3NjlmMGY1ZmM4ZGRiZDcwZGE4MmEzYTE0MjRhYzFkOWM2Y2Q3MDE3ZmIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImEzMDNlY2RkNGE0ZDEwZjE5YzczZmQ0MmZkMTI0MzdmZDMzNTRhODI2ODE2MDVkYTUyNTVhOTdhMzkwNjhkYmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjU1YjZlODcwNmI0MzA0N2YyYTZkYjY3ZjEzMjYzODU5NTYwNGU2N2YzNjk2Njg3NmNlMDE1OGYwMDUzZTZiZDEifQ"
+        },
+        {
+          "resource": "repo://src/manifold/modules/reward.py#L186-L206",
+          "version": "repo-lines-v1:sha256:40f78dbb43f2d29211afef2feb81c7e9122ea4a193a793ac63e94ee92cc254ec:eyJzZWxlY3RlZExpbmVDb3VudCI6MjEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjIwYzIwYzE5ZmNkYmFmMWM5ZWY1N2M0YTVmNjhlYzFlZmEyOTRlZWY5YjhmYWU3N2VmMGIyYjAzZDdlZGE5YzkiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImEyYTNiZjY4MTcyYTAyOTJkOGY2M2M3NGI5ZDFjN2JkNTY2YTdmNGU5NjU0YTA4OWI1ZjU1MjdmMmZjY2E2OTYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjczYjc4ODRhNzUxZWZhMzhhN2UxMjVlYjFmMjUwNTc5YzE0MDIxNWVhZjVmZDA5NzIwZDUyNTFjZTAyNmY1ODkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjkyOWRmMjA5M2IwN2VmOWNlNDgwZDAwMWU0MGRmNDAyODM4NmM0Y2VkZDM3MzQ5ZGU3MTU0MTE2YzZkMzQ4MTgifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_264a7ed1e07741539eb7b8e03f667261",
+      "statement": "A preference pair is built from one clean latent at two full-range flow-times t_a, t_b drawn from U[0,1); the winner is the larger t (less corrupted) and the loser the smaller, so the two corruption ranges overlap and no single clean-ness threshold can separate them.",
+      "evidence": [
+        {
+          "resource": "repo://docs/adr/0010-online-rollout-in-the-loop-preference-pairs.md#L1-L18",
+          "version": "repo-lines-v1:sha256:2864683ab5b299177a1746364791da2376ff7504b058c486058f3c09c413be7c:eyJzZWxlY3RlZExpbmVDb3VudCI6MTgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijc0Y2Q3OGM4ODgzNzc4YWFkZTNlNGFjMmE5YjU3NDc3YjliZmY3ZDlkMzMxN2UxMGU5YmFiNGI3NTk2N2Y4ZTUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjE1ODI4ZWQ5MWMzMmZlYWI2N2U4MGMwMTA5MmUxZGQzYjQyMjE4YWQ5MTI3NzVlZTk4ZmQyZjU5OGM3YTkzMDkiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjI3MmJhNGUzOWRlZTVmMDA5N2Q2M2QzOTBkZTBhYTI1MDFlZDc0OGYzMDcwMDBjZjI2ZTg0M2ExNDgwYTUzZTEifQ"
+        },
+        {
+          "resource": "repo://src/manifold/modules/reward.py#L12-L27",
+          "version": "repo-lines-v1:sha256:65f22dc9be0ce6062ede816dae92d14373657867d02851be4726cf66d861887d:eyJzZWxlY3RlZExpbmVDb3VudCI6MTYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjZkNjQxYzNhOWQ4MTBhMDhkNTRjYWNmYjlkMGI5OTc3NDllZWMzMWM3YTdlZjcyNTA3NDRkZjQyMWY1ZTU3NWIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijg5NWE2MWY1MWMwZjRmZWQ5YmRkM2EwOGY3ODY2YzU4MTVkMmE3NzcwOTU0ODQ3YjY3ZjAyMzdhM2RlODc1ZTAiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjI0MzBlOWNkZmVjOWQ2Zjk4ODQ2ODFkMDI4OTc3ZmVkZjAzY2FkODMyOGZlOTUyOWMwODI1OGUxOWM2NzZkNmYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImQyNmZjMzU0ZmU5MTZhNTAwZWI3YWY2NmYwYzdiMzNiYzJjNmFjNjJkNTYyNmRmNTljMjM2YzM2MmNlZThkZjYifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_34410d904f9b4b9491f00c2593e6347e",
+      "statement": "The GRPO vocabulary maps to concrete code: the anchor trajectory is the deterministic Heun rollout run through FlowMatchGRPOScheduler.rollout_range, singular branching forks exactly one stochastic SDE step off the anchor and then a deterministic suffix, the transition policy is the Gaussian kernel returned by sde_step_mean whose log-density gaussian_log_prob the clipped objective ratios, and the group is the G siblings over which group_advantage normalizes the advantage.",
+      "evidence": [
+        {
+          "resource": "repo://src/manifold/modules/grpo.py#L1-L26",
+          "version": "repo-lines-v1:sha256:7407c774e190ac09f03034fe360785462e8434eb06c1623444fe14ad4b51c6ab:eyJzZWxlY3RlZExpbmVDb3VudCI6MjYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU0ZGVmM2E2MjkwMmIwOWZjZWE5NGVjMWNhOGQ2ODdlNmRjNDZmM2Y4ZjA4MTY2ZDQ4YmRjYzAwY2VkNzVkZjkiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImEzMDNlY2RkNGE0ZDEwZjE5YzczZmQ0MmZkMTI0MzdmZDMzNTRhODI2ODE2MDVkYTUyNTVhOTdhMzkwNjhkYmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjU1YjZlODcwNmI0MzA0N2YyYTZkYjY3ZjEzMjYzODU5NTYwNGU2N2YzNjk2Njg3NmNlMDE1OGYwMDUzZTZiZDEifQ"
+        },
+        {
+          "resource": "repo://src/manifold/modules/grpo.py#L54-L112",
+          "version": "repo-lines-v1:sha256:fd5c11132bd8baf0909d03c5f5449eb2bcc8a48971b2e9f3e8289f6e2cf47d2f:eyJzZWxlY3RlZExpbmVDb3VudCI6NTksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjgxODIxODA0Y2EzNjljNWE3YzMzOWNhNGUwZDFkMjA1Mjc2MDMxMzg1MzhhNTVhZjhjZTUxNTJmYzYzNmZmNWQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjY3MjNlNWQ4YTc4YTQ1ZGQ4ZGZjOGY1NmJlOWI4YzZmNzdkNTdhNGFhOGNkYjVlNWQ0NmM0MDdkNWNlZGZhMjAiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImVlMTRlNGZhNmNlOTk4YzFiNTgwN2JlMGVlZWIzZDRjNTFhNmM4YzJiMmYzZjgwNDRlOGUyZGFkMzRhYWQ5NWIifQ"
+        },
+        {
+          "resource": "repo://src/manifold/schedulers/scheduling_flow_match_grpo.py#L1-L24",
+          "version": "repo-lines-v1:sha256:63465f232cb8bc2a8ec6cfc3030d03e21ccf48b923f8b453f833c36d2c192a12:eyJzZWxlY3RlZExpbmVDb3VudCI6MjQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ1ZDdjNjJiYWI2MTZhZTE1NTU2ZmE2ZTEzYWM1YzA3ZmYxMGNlYmY3ZWQ0MzZmNmI4MTUzMDY5OWQyMzQzMWEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjExNTBhYmY4NzQzYmU0ODZlNjA2ZmRjODViYTA4ZTMwNjY4OTRjMjhlMGY3NGMyOWQ4NTk2NTM0MWRkNWJjZDciLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjFhYWY3NjM3Y2I2ZTdlNWRiODVkNjM0Mjc0NjAxNGRmMDQxY2NkNTU4YTkyMGIyOWViNmFjNzE5ZDdiYWY1YzIifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_13d3097243ea49ea953e88c18e44f9bc",
+      "statement": "The Policy Module (GRPOModule) overrides training_step rather than forward, holds either the trainable JiT UNet or a frozen base UNet plus a trainable ControlNet — the choice is derived from whether a controlnet is present in the inputs, not from a numbered mode — and holds the frozen reward model and optional frozen reference policy as registered dual-excluded arms, with no EMA.",
+      "evidence": [
+        {
+          "resource": "repo://src/manifold/modules/grpo.py#L246-L284",
+          "version": "repo-lines-v1:sha256:3c0915242fde454bae35635c495ef4a4fe24706c1e8162b185a19ade440a097b:eyJzZWxlY3RlZExpbmVDb3VudCI6MzksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImFlMGFjNTMzMTFmMzJiNjNlZjMzOTdmNjAzZmYwMTdkY2Y2MzgyYjI3ZDBhMDlmNWFmMWJmZGYxYTM1MjlhZWEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjI2YTM2YWMzNjI4M2E2MTI2ZmJlZjU0MjRiM2NkNDUwMDFlNjQ3MGVjNmVlYTk1OWQ0MzhlMWJlZjhlYjJkZGEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjcwZTMyYzc3ZTIzNzAwNTFmMTkzNWY3MDBlMmMyYzNkMjM5NTNmM2IzMTVhNjc2YWM1ZGZiMWE2MDhjODYxNTMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjE0YjMxYTI5MTIyZGY0Mzc0NTVhNzA3YWIxZGUzMjk0ODNhNTk0Y2Y3ZmQ3ZGVmMDI3OTFkYjlhZTI5NWM0ZGEifQ"
+        },
+        {
+          "resource": "repo://src/manifold/modules/grpo.py#L346-L388",
+          "version": "repo-lines-v1:sha256:ba7d8a22a0d34833f130a9ca21f9a3214518ba579e9a87a9a7c70c6adddbb064:eyJzZWxlY3RlZExpbmVDb3VudCI6NDMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijg5ZjM2ZDEyN2UxMTUyM2JmNGRkMTU0OTAzNGJiNmEwYjA5MmIyY2MyYWNlMWViNzdhYzllM2M1MzBlNzg5ZjEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImRkNDc1YjcxYzhhOGQxM2M2ZTdhYjFjMjkwNWRkZDlmNjI5NmQ1ZWJjOWY0Mzk5YmQ2NDUxOGNkMzFhMDE3NmQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjkwNGQ2YmJlZmQyMTkyZTQ3ZTFmZDFjMWU1NGIyNzM5MjAwZThmMmNjNDEyOGVlYWNlZDM5YjgxNjlhY2E1MjgifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_b7295bf82e2b473bb69d22f17cc210bf",
+      "statement": "The ControlNet is a trainable adapter over the frozen noise-to-data JiT UNet: a clone of the base encoder plus zero-conv layers whose residuals are injected through MONAI's native down_block_additional_residuals / mid_block_additional_residual forward args; x_src enters as a control signal, and the zero-initialized zero-convs make the initial behavior the pretrained JiT UNet unchanged.",
+      "evidence": [
+        {
+          "resource": "repo://src/manifold/models/controlnet_3d.py#L1-L28",
+          "version": "repo-lines-v1:sha256:ef49f0e87323946d40401bdd6fb505c3f659d835c98df22ffcae0ff05ef8d566:eyJzZWxlY3RlZExpbmVDb3VudCI6MjgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjkzNTMxN2I1ZjcwYWM3ZDgwM2RhY2RkYTVkZDUyYWIyOWEyYTIzOGNjYTQwYTY3ZTBhYWUyYjFlZTNjZGM0ZGEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImEzMDNlY2RkNGE0ZDEwZjE5YzczZmQ0MmZkMTI0MzdmZDMzNTRhODI2ODE2MDVkYTUyNTVhOTdhMzkwNjhkYmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjU1YjZlODcwNmI0MzA0N2YyYTZkYjY3ZjEzMjYzODU5NTYwNGU2N2YzNjk2Njg3NmNlMDE1OGYwMDUzZTZiZDEifQ"
+        },
+        {
+          "resource": "repo://src/manifold/modules/controlnet_latent_flow.py#L1-L35",
+          "version": "repo-lines-v1:sha256:200dd3cf9f4b60da7f9b60e12ba1d4c29f8d42b4a311daffd76931a8346ebccb:eyJzZWxlY3RlZExpbmVDb3VudCI6MzUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjE4MTA5Y2RmNGY3MDM4NWQzMmM4YWU4N2I4MDUxMDMyZWU5MjQxMGRjNWE5MGEwOWQzMjM3MmQyMzY4ZjZlZGIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImEzMDNlY2RkNGE0ZDEwZjE5YzczZmQ0MmZkMTI0MzdmZDMzNTRhODI2ODE2MDVkYTUyNTVhOTdhMzkwNjhkYmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjU1YjZlODcwNmI0MzA0N2YyYTZkYjY3ZjEzMjYzODU5NTYwNGU2N2YzNjk2Njg3NmNlMDE1OGYwMDUzZTZiZDEifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_9d6ca6d8dc8c4734941c8d5abe1fc4b9",
+      "statement": "The direction head lives on the ControlNet's class-embedding path as a direction MLP over concat(embed(src), embed(tgt+offset)) with the paired_direction_offset knob breaking A-to-B symmetry; it replaced the summed-label conditioning that used to live on the (now frozen) base UNet.",
+      "evidence": [
+        {
+          "resource": "repo://docs/adr/0014-paired-jit-conditioning-concat-and-summed-labels.md#L1-L16",
+          "version": "repo-lines-v1:sha256:81febcebd79ffdb4b7bef90545492889becb79752aff8b8c309dd5fe0769fe39:eyJzZWxlY3RlZExpbmVDb3VudCI6MTYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImIzMTI1N2RkMjI1M2NjNTQyZDkxYjZlNDg0NDc2MDhhNGFkMTMyMTI4NmEyMGI4NjBkOTEwNGI4YTQyNGFkOGIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjA4MGQ1Y2JjNDU5ZjJlNTAwM2Y4NTA1YjMwZjY0Y2Q2ZjU2YTRiYjQyZTYzMTc1Y2JiOTRiMGMwNGFhYmRmYTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjI3MmJhNGUzOWRlZTVmMDA5N2Q2M2QzOTBkZTBhYTI1MDFlZDc0OGYzMDcwMDBjZjI2ZTg0M2ExNDgwYTUzZTEifQ"
+        },
+        {
+          "resource": "repo://src/manifold/models/controlnet_3d.py#L20-L24",
+          "version": "repo-lines-v1:sha256:1e9a9b4381f733e677d7a202cd346de2fbaafad00585a33eedf3e746122174a7:eyJzZWxlY3RlZExpbmVDb3VudCI6NSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiZThmZTA3YjhlOGMwZTM4MzJhYTQ5YjI0ZTk2ZDE5NWRmOWIxOWFjZWY4MjNlMGM2YmM5M2YwY2IyMGIyZmI4MCIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMGQwMWYwYWQ5NTMxMGQ0YWRmOWFmZGE3N2QzNGZjNDBmYWYyM2QyNWFjODk3NTViNDM3OTlhMjc3MWEzZjlmMyIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiODRlNDcyZWQ2ZjAyMzUxNmY2MjNkOWVhNDdhY2MzN2Y4YjI0MWYxZmM0MGZkMTA3Zjk4ZDE5YzA5ZTkzMjI0NyIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiNjBkY2E1YzliZjg4MmVkNTVhZjQ1MGVjYzM5YTM4NTcxZWQyNTI3YjljMDJjYjA2MDA2NzgyOWM0ZmRlYTQxMSJ9"
+        },
+        {
+          "resource": "repo://src/manifold/models/controlnet_3d.py#L266-L282",
+          "version": "repo-lines-v1:sha256:f0cc979ff0b0c744bad00253b432b0879896470e1d31b78e6d72ca6bafa51b3c:eyJzZWxlY3RlZExpbmVDb3VudCI6MTcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjY2YzMyYzgxMjM2OTUxNjczODg5OGE0ZWM1YjM0ZTJmYjVjNzE1YjcxNjBmYjFhOTM3YWM5MzliNzJkYTdhMjQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImMwMjk1NWUzNjcwYzgxOGQ0YjIxYmU2Yjk5YWVjYzgzNWVmOWEzMTRhMzc4MTNjOWMyNDc0NmY1YjI0NDFlZjIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImIzMzE3OWZjY2E0ZjY4MTgzMGE5ODE3YzQ0YjgyM2EyMWI3OTIxNmNiZjE3NzI1YWJhOTQwODlhYTlmZWVmZGUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjkzMWQ2MjExNzUzZDc4ZDBhYmRjOGZiM2RmOWNiNGFhMzk1MDg2ZTgxMzk5MGEzMmNmYmU5NzU1Njg5NTZiOGUifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_44c8862277e14cdebd2311b5619c14ad",
+      "statement": "The paired dataset contract is dataset-agnostic — the latent dataset emits src_latent, tgt_latent, src_label, tgt_label and spacing — while BraTS-specific any-to-any enumeration (all ordered within-subject non-self contrast pairs, 12 per 4-contrast subject) lives in the manifest builder that the dataset consumes.",
+      "evidence": [
+        {
+          "resource": "repo://src/manifold/data/paired_brats.py#L1-L16",
+          "version": "repo-lines-v1:sha256:fedb0a4dd1b1e8f6ac205cf854bf3735a513880e6d7e2fe811c0a4cae21ed331:eyJzZWxlY3RlZExpbmVDb3VudCI6MTYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijk5ZjViYjU4MjM0ZTA1ZjJkY2MxZTNhYmRjYjBmOWIxMjExYTIxZGZjMzgzOWI4NDA2MmExMDU0Zjk4NjkwNDgiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImEzMDNlY2RkNGE0ZDEwZjE5YzczZmQ0MmZkMTI0MzdmZDMzNTRhODI2ODE2MDVkYTUyNTVhOTdhMzkwNjhkYmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjU1YjZlODcwNmI0MzA0N2YyYTZkYjY3ZjEzMjYzODU5NTYwNGU2N2YzNjk2Njg3NmNlMDE1OGYwMDUzZTZiZDEifQ"
+        },
+        {
+          "resource": "repo://src/manifold/data/paired_brats.py#L52-L70",
+          "version": "repo-lines-v1:sha256:91491cb1e46942cca880ef482fb0c2d9a6518b217d0e1bcc1b0bb5e905e9a256:eyJzZWxlY3RlZExpbmVDb3VudCI6MTksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImJlYTY1MGE1ZjM5NTBiMTUxZmExMjRkNDAwYmFkZDQzZDgwYTNkYmQ2OWIzOGFhYzZiNzczNGQxZTM1MWM5NmEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjdiNzNhYThiOTYwOWUyYWUzYTExZjhjYWIyODcxODA0MTliZDM4MTYyOWQyM2Q5NGQ2OGVmNjk2YmY3Zjc0ODkiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjAyMTQ2NjU1Y2E1NjgwMzdlNzAxZTlmZjk3YjY2ZWRmOGQ1ZDhiZDdmMGJiNTQ5ZTAwMDA1ZjBlNTY4YzJhY2YiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImQ2N2NlZDAzMmU0ZjY5OWNlMDA0ZmFlOWZlYTlhYTdjYjgzN2EwYmJhMjkyMzI4MWEwYmZhN2U1ZjY3YmY4YzAifQ"
+        },
+        {
+          "resource": "repo://src/manifold/data/paired_latent_dataset.py#L1-L21",
+          "version": "repo-lines-v1:sha256:ab643410476d1557dfc8ec1ccc2ce459d231a133584dda915a374164fcd4cd2e:eyJzZWxlY3RlZExpbmVDb3VudCI6MjEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjBjZjdmZTk4OWQ0NmY2OGU1NGY0NjIzZjIwNDNjOGJkYzMzYmEzNmE4Y2MxMmM5NGI1Zjc1Mjg3Y2NhYzc5MDEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjljNjRjODRhZGFjMTc3NWZkNGE1NjM5MTQ5ZjcxZDU2ZDZjYTRkNWVlOThhZWNkNGZlYjliMzYyYmE0YjI5OTQifQ"
+        },
+        {
+          "resource": "repo://src/manifold/data/paired_latent_dataset.py#L182-L203",
+          "version": "repo-lines-v1:sha256:522c8fc969cd497265528d52cdb861d9e2162673eded29cadefb54ebe1f5d011:eyJzZWxlY3RlZExpbmVDb3VudCI6MjIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjcwMDM3MmVlNGQxMTdjYzI3YjlkY2ExZTQ1ZGU4OWVmM2JmOGM4NTA2NWFlNDUzMDI3NWNlNzk0OWQzOTU4YTUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImU2YjA0NDkxNDY5NzIyZTgzNjNhOTRlNDA0NDUzOGUwMTNhMmEyMTdlMzZiMWU1NjhiYTYwYWNiN2I0YzhmMmUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjJiYzVlNjU2MzhkOTM5NThhMTE1YTgxZmY2ZjIzOTY3MDU1Y2JmMjcyYTBkNGRiNzVjMmFhMzdjMWQ4NjE3ZDQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImNjZWQxMTM1NTkwZTUwNjI2NDliMzYwZTYxYmFhNzQ1NmZhZjZiNmE5ZDlkZWU1ODVmZDliNTY5MmU3ZmQ4OTUifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_4c4924330a8d49a1aa41011e03c44b7b",
+      "statement": "Paired fidelity is one metric with two protocols: 3D PSNR and 3D SSIM over per-sample min-max normalized decoded volumes with data_range = 1.0, used both as the observe-only in-training monitor (val/psnr, val/ssim) and as the offline before/after comparison, so the two numbers are directly comparable.",
+      "evidence": [
+        {
+          "resource": "repo://src/manifold/metrics/paired.py#L1-L15",
+          "version": "repo-lines-v1:sha256:2237824a578a705808f0d2de9c69d7ac397aac7e7cc77f569d73284fe731ee17:eyJzZWxlY3RlZExpbmVDb3VudCI6MTUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImE1OWNmNTg4ZjQyMTNkZjRjZmJjZDFjZWU5MDhjNjJlYjU0MGZkODM0NjQwYTJiNWI1NGRiMjIxYmFkZDY2MTciLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImEzMDNlY2RkNGE0ZDEwZjE5YzczZmQ0MmZkMTI0MzdmZDMzNTRhODI2ODE2MDVkYTUyNTVhOTdhMzkwNjhkYmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjU1YjZlODcwNmI0MzA0N2YyYTZkYjY3ZjEzMjYzODU5NTYwNGU2N2YzNjk2Njg3NmNlMDE1OGYwMDUzZTZiZDEifQ"
+        },
+        {
+          "resource": "repo://src/manifold/metrics/paired.py#L42-L66",
+          "version": "repo-lines-v1:sha256:d3747ebf3878f577ab206e644a8ac5bc9eedd5999df8dca02efe808d327f397c:eyJzZWxlY3RlZExpbmVDb3VudCI6MjUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImNjMTJiN2U2ZDk3MGU1ZDBjZTIxYzE0NjY4OTdiZDEyYzU1YTEyNzQwMmE4MWFkZjY1MTM1Y2Y3ZjRjMzE5OTAiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjViODM1NGNiOWJiMWE3ZDM4MWNjZGZiN2MzNzQ3NDAxOWY0NmNhZmNiN2ZjNTlhZDU2YzM5OWVhODdhNjRmZDQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjkyN2Q3N2FhMDc3NzZkYjg2MjJkYmM3MGZkMTUyMTMwOGEyMTUyYzI3NTNlY2JlYWU3ZDBiNGQ4NjQwZmI5ZGIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
+        },
+        {
+          "resource": "repo://src/manifold/metrics/paired_callback.py#L1-L29",
+          "version": "repo-lines-v1:sha256:4a18ef56a296f7054c2e16f65485deaf58032217aa270a95fc8eaa82b304e402:eyJzZWxlY3RlZExpbmVDb3VudCI6MjksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjEwZDRlZGM2MGM3MmJkMjRkY2Y3MTZiNWZmZjcyMDQ5NDcwZGM1NmU1NzZkZjFkMTQ2OTczNmE3NmIzZGQ5MmIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImEzMDNlY2RkNGE0ZDEwZjE5YzczZmQ0MmZkMTI0MzdmZDMzNTRhODI2ODE2MDVkYTUyNTVhOTdhMzkwNjhkYmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjU1YjZlODcwNmI0MzA0N2YyYTZkYjY3ZjEzMjYzODU5NTYwNGU2N2YzNjk2Njg3NmNlMDE1OGYwMDUzZTZiZDEifQ"
+        },
+        {
+          "resource": "repo://src/manifold/pipelines/pipeline_utils.py#L26-L43",
+          "version": "repo-lines-v1:sha256:dd122d6dc1889d50fab432e7bf7aaee3d34496e86896526cef80d6f922291a9e:eyJzZWxlY3RlZExpbmVDb3VudCI6MTgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjM2OTFlNjBiOWFiMmRkY2E3ZGYzZTM3Njg0ZTA0Y2Q0MGE3M2UzZTA3MzEwYmIyNzAzYmFlY2QzYjlmYTc3ODkiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImEzMDU5ZTM4MjAzZTE5YTA5ZDVmZjYzMDRiZDY3MDAyMWFjMjRkOWY4M2NmMzI5ODM4Zjc0MGVlNTE4ZTgyNzMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUyOTlhMTFlZjMyMTYwNjQzYmMxNDc1ODNmNTIzYmI5ZGQ1YTJhMjc2ZDk0Y2JiYTliYTI3NGFhMzYxMWFjODMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_87b5306788ba4396b1a234bffb50e2b8",
+      "statement": "Fixed-sample validation reuses the same small validation subset and re-seeds the generation noise every epoch (each rank generating its strided slice from seed + i), so only the model changes between epochs and quality drift is not confounded with sampling stochasticity.",
+      "evidence": [
+        {
+          "resource": "repo://src/manifold/metrics/fid/rollout.py#L1-L8",
+          "version": "repo-lines-v1:sha256:9c3a3535f66d7d2348d92721e0ddc98e3e347da528bd05f8fa209ae4a590240f:eyJzZWxlY3RlZExpbmVDb3VudCI6OCwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiNDZjOGJlZDIxMDM5NjdjZjEwYTZmNDdhNmRlZDMwY2M0ODJlN2FhYzVkZjVmNTdkNzRhNjM5ZDIxNDNmOWFkYSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiYTMwM2VjZGQ0YTRkMTBmMTljNzNmZDQyZmQxMjQzN2ZkMzM1NGE4MjY4MTYwNWRhNTI1NWE5N2EzOTA2OGRiYiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjAsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiZTNiMGM0NDI5OGZjMWMxNDlhZmJmNGM4OTk2ZmI5MjQyN2FlNDFlNDY0OWI5MzRjYTQ5NTk5MWI3ODUyYjg1NSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiNTViNmU4NzA2YjQzMDQ3ZjJhNmRiNjdmMTMyNjM4NTk1NjA0ZTY3ZjM2OTY2ODc2Y2UwMTU4ZjAwNTNlNmJkMSJ9"
+        },
+        {
+          "resource": "repo://src/manifold/metrics/fid/rollout.py#L60-L80",
+          "version": "repo-lines-v1:sha256:34e46947d40b32c837e13e41a0dfd9634a35d3d84372826f0dd9fd80c9af9ec8:eyJzZWxlY3RlZExpbmVDb3VudCI6MjEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjI0NWNlOWRlZmJiMzFlMmU1OTU2ZDJiNGIzMGM5YzI0NjNjYjFjZDkzZGJhMjQ3NDQ3YjdkYmRkMWM2NWNjN2EiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU1MDMyZTk2NGQwOTMyMzUxZTVkMTg1MjY5MjgxYjE3MWEzYTA5YjA4YjI4NmU2NjFlYTQ3MDMyM2M4MmViNGQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjgyYTdlNzk1MjQ2MmE1MTlkZWE0MGI2ZWUyOTQ1MmJhZGQ4MmFiNWQxODVhMThkZmIzYzdlNzhkNWFlZjA3OGYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_dcf858a514a24d0f8c460aa88924c520",
+      "statement": "Unbiased FID is the small-sample-bias-corrected Fréchet distance: it subtracts the exact Tr(Sigma)/n upward bias of the mean term, uses the unbiased 1/(N-1) covariance, ridge-stabilizes before the matrix square root, extracts 2.5D features over three orthogonal planes, and uses a RadImageNet ResNet50 backbone.",
+      "evidence": [
+        {
+          "resource": "repo://src/manifold/metrics/fid/math.py#L1-L20",
+          "version": "repo-lines-v1:sha256:28459b3bb30982626f8f092106f9fb80376f99a4e775a5b5b8ed9d93adef1e34:eyJzZWxlY3RlZExpbmVDb3VudCI6MjAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImM1MDc0ODRkMDg3Mjk0MThhMjBjMmNkYzBkNTZmNDBhMzQ0YWEwMzJlNzkxODY2MDM4YmIxNjRlMTYzMjRhYTgiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImEzMDNlY2RkNGE0ZDEwZjE5YzczZmQ0MmZkMTI0MzdmZDMzNTRhODI2ODE2MDVkYTUyNTVhOTdhMzkwNjhkYmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjU1YjZlODcwNmI0MzA0N2YyYTZkYjY3ZjEzMjYzODU5NTYwNGU2N2YzNjk2Njg3NmNlMDE1OGYwMDUzZTZiZDEifQ"
+        },
+        {
+          "resource": "repo://src/manifold/metrics/fid/math.py#L37-L60",
+          "version": "repo-lines-v1:sha256:cf93ff2214f319f53d4fdb54fec9b0fd9f784a22def729b24593c10496331cea:eyJzZWxlY3RlZExpbmVDb3VudCI6MjQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjYwZGU5MjgyYWJhYjJmYzcxYjExZjdhZWMxODZmYjU1NTg2NjM4MGM4ZWQ0OTM3NDc4YTU3N2RhMTA3MTlmZTAiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjJmZTQ0Njg0YmIxNDE4YmExM2JmYmRhMzQyM2IxMmM5MzM3NGI4NjNiZWM4MTEyMWVmMmMwZDI2MDU5OWVlNmEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjRmZDc3OTc2NDAyYmFmMzFkMDNjODhmMTZkYjc5ZjhhOWJlMmEzMTQ4NGJlZTE5OTU4Y2E2YTllMzMwNWMyY2IiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6Ijk1ZWU5YWZkYmIxOTYwZWQzMTJiNzJjMGE2OTFhMjk4OGIyZDRiMzEzZDU0NjcwYTY4OTA3ZjZlMDc4OGQ5NzEifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_2da5f0b332494096b92c2d3771c17a55",
+      "statement": "The Paired JiT src-to-tgt transport is superseded history: paired MRI generation now runs the noise-to-data transport with x_src as a ControlNet control signal, so the two-data-latent transport and the base-UNet concat/summed-label conditioning no longer exist in the code.",
+      "evidence": [
+        {
+          "resource": "repo://docs/adr/0013-paired-jit-reuse-transport-data-endpoint.md#L1-L14",
+          "version": "repo-lines-v1:sha256:3f5bbde10edc806e327cbed1a7fd3f101acb7e9a04f5811f71b5834284ceccea:eyJzZWxlY3RlZExpbmVDb3VudCI6MTQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImFmMzUxMWQxMzAyZTdkOWZmMzhjMzdlMjE0MDc2MzQzYjQ4MjdkZDAzMjFkOTAxNjk0MWNkYjU4MWViMWU2ODkiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjZjYzM5ODliNzAxMjVkNzA1MmE0MjkyMmU4OWU1NjMzMTAwNzJjZTRjZDYxMjE0NmMzN2NmNGExOTgyYmEzMmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjdiNmJmMGYyYTA1ZmQyMjU0ZTgxNzYwZjgzMDA4ZjNiOTMzYzg3Yjc0YjJhZDUwNDZiMjk5MjVjZjNiYjg3ZGMifQ"
+        },
+        {
+          "resource": "repo://docs/adr/0026-controlnet-via-monai-native-residual-interface.md#L1-L16",
+          "version": "repo-lines-v1:sha256:ecbd2fab02e34e19888cf6a74ea34d0fa7e76582837dee6068ff7530c55904ed:eyJzZWxlY3RlZExpbmVDb3VudCI6MTYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijc3OTc3Y2ZjMzM1Yjg3NGY5MmFmODZlYTk5ODlhMTJhMTdkMjQ5M2VmYWVmOTY4YzY3NTlkNzk4Yzg3MzhmOTQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImY1N2M3MjJjNmUzZGUwYWJhMWNmYWRmZGQ0N2JkMjczNzlhYTQ2ZDk5OGQwNzcxZWYwYzAxMDVkODk4MzczMGEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjI3MmJhNGUzOWRlZTVmMDA5N2Q2M2QzOTBkZTBhYTI1MDFlZDc0OGYzMDcwMDBjZjI2ZTg0M2ExNDgwYTUzZTEifQ"
+        },
+        {
+          "resource": "repo://src/manifold/modules/controlnet_latent_flow.py#L5-L14",
+          "version": "repo-lines-v1:sha256:012effe6b8d11131bb9b7dffece09b328d833e1e5cf819ea602754afe198a673:eyJzZWxlY3RlZExpbmVDb3VudCI6MTAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ1MzdkNjY0ODI2MzlkNDVjYTdmNjg0MzA2OTU2M2Y4MzU5YTBkMDFiYmU1OTdmY2ZkMDFjODNkMjM3NzhjZjEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjRiZTMyY2RhMWYxMDc0OGZjOTkxZDQ1NjhlYTNlZjY0ZGRiOWFhYjUxYTJkMDBlYjA0NWY5MzE5YmQ3MjUzMjEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjA2MDVlNDY3Y2UyNGZlMzllZjA5YWQ0OTU2Yjg0ZDZmNDM4ODUxOWM3OGE0YTU5MGY4OTg2ZDYzMTJmNTMxNzUifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_eac132511cf84ce487a85f4462a37a51",
+      "statement": "The condition-aware paired reward and its offline fake cache are deleted: both the UNet policy and the ControlNet policy are scored by the same unconditional realism RewardModel on the terminal latent z_K, and translation fidelity comes from the ControlNet conditioning, the supervised init and the KL anchor instead of a condition-aware reward.",
+      "evidence": [
+        {
+          "resource": "repo://docs/adr/0034-one-realism-reward-both-grpo-policies-delete-condition-aware.md#L1-L12",
+          "version": "repo-lines-v1:sha256:3736b61e4fb63f5be0311d7bd7d923d07c3ce49c3afbb6225ac61f7176872e63:eyJzZWxlY3RlZExpbmVDb3VudCI6MTIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImI5ODg5Y2UwZGVlMjgwYjczN2MyMDlmNDliMzViOWI2OWE1Y2JiMzEwMmUyZDIwM2NmNjE1NjgwMzFhOWViMjciLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjNiMzlmNmFiNjIxZDlkYThjODcxYWJlNjNiM2UwOGQwMmZlMDg4OTc5NjdkZDQwYmM4Y2U2MTQ5MDg5NWQxOTIifQ"
+        },
+        {
+          "resource": "repo://src/manifold/modules/grpo.py#L270-L284",
+          "version": "repo-lines-v1:sha256:c924dc424fcc4e808868ab9e162fe37ab4d5a64a15a12078327c11851338262b:eyJzZWxlY3RlZExpbmVDb3VudCI6MTUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjZiMGVlYTNmZmZjOWM2ZTYzYWEzZjA2YjBiYjIwNmI0ZThmYTgyNzVhYjAxMmVkZWE3MDY3NTlkMDc4NjAwNjkiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjI2YTM2YWMzNjI4M2E2MTI2ZmJlZjU0MjRiM2NkNDUwMDFlNjQ3MGVjNmVlYTk1OWQ0MzhlMWJlZjhlYjJkZGEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjQ5OTEzNjRlMGExMjE2NTg1MDYxOGQ1NDM0NjE5ODgzMGE3OWE5NWUxNDY5MzUyZjhmNjUxY2NhOGIyNmE5ZWIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjE0YjMxYTI5MTIyZGY0Mzc0NTVhNzA3YWIxZGUzMjk0ODNhNTk0Y2Y3ZmQ3ZGVmMDI3OTFkYjlhZTI5NWM0ZGEifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_a1034da1ad024a60b882d32bba62b694",
+      "statement": "The Mode-1 / Mode-2 GRPO numbering and the paired Brownian-bridge GRPO are retired vocabulary: one GRPOModule infers the policy from whether a ControlNet is present, and the bridge scheduler and its forked rollout were deleted in favor of the shared grpo.py spine on the equimarginal noise-to-data SDE.",
+      "evidence": [
+        {
+          "resource": "repo://docs/adr/0028-two-mode-grpo-unify-controlnet-delete-bridge.md#L1-L22",
+          "version": "repo-lines-v1:sha256:a0b2f36a2b1835f122138639148d91d5a8951186fdf64b18d187580db5b719b2:eyJzZWxlY3RlZExpbmVDb3VudCI6MjIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjJiNTdjZmQ5OTZiNTVjMDQxNWY4MjNmMTFhYThiZmQ5NGY3ZTI1MmVhYTczNGQwNWFjNDkyNDhiOGNhOTVjNjkiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImVmMmRlZGVhYzQ0ZjU1NTFhYmM3ODcwMGE4OGQ0M2FmZjQwNDc2ZjI1ZDUyYzg3ZDM2NzVjODZmZjgzYTRjNDgiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjI3MmJhNGUzOWRlZTVmMDA5N2Q2M2QzOTBkZTBhYTI1MDFlZDc0OGYzMDcwMDBjZjI2ZTg0M2ExNDgwYTUzZTEifQ"
+        },
+        {
+          "resource": "repo://src/manifold/modules/grpo.py#L346-L359",
+          "version": "repo-lines-v1:sha256:9807ce43b0909a5d399af45afbeadc249b1a8447e0f142526ff76930ed1fb1c9:eyJzZWxlY3RlZExpbmVDb3VudCI6MTQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijg5ZjM2ZDEyN2UxMTUyM2JmNGRkMTU0OTAzNGJiNmEwYjA5MmIyY2MyYWNlMWViNzdhYzllM2M1MzBlNzg5ZjEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjVhMjlkMGVjYzJmZGE2YjFkNGQ1ZmEyZGEwN2IwZGQzY2JiMDBhZThiMDdiZTdhNWYwZDgwOGU2ZTA5NDBjOTciLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImRkNDc1YjcxYzhhOGQxM2M2ZTdhYjFjMjkwNWRkZDlmNjI5NmQ1ZWJjOWY0Mzk5YmQ2NDUxOGNkMzFhMDE3NmQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImEzYjJmMzk4ODQyMjFjNzRlYTE1MjlmYWE3NzU1ZDdjOTc5NWQ0ODJmZmM4NDkxNGFjMGVmODFlNGZkNjVhNTAifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_2dde3aaa315743f1a41d72ee46737fa0",
+      "statement": "Four training shells call TrainingSpine.run (JiT, reward, GRPO, ControlNet) and register their callback specs on its registry; the fifth historical shell, the paired-reward CLI, was deleted together with its pipeline, and the console entry points declared in pyproject.toml no longer include it.",
+      "evidence": [
+        {
+          "resource": "repo://pyproject.toml#L61-L86",
+          "version": "repo-lines-v1:sha256:b1ee01c37a9ac9e35c208e65a536f6d936293829fedc11c0da962d78ee3e2321:eyJzZWxlY3RlZExpbmVDb3VudCI6MjYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjRlYWI0ZWM2M2RlNTE3ZGE0Y2Q4ZTVjODMwN2ZiMmM3NzM3ZDM5MTkwYWI2OWYzMmE1ZTllZjgxZWE0NDE2ZGUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjZmYWY3YjU0NDA2NGFiMTYyYTgwZTNjZmQzMTA2MDRiYjRmOTYyZmRmOWYwZGM1OWVmZDk0NTQ1MDdlODRjYTMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjdmZGYxYzI3YWYyZjU5ZTliZjVmMzM3NzBiMzM3NGNjYThlNWU4MmFjNGJmYTFjOTY4NTMxODljNDVjNTk0NmIifQ"
+        },
+        {
+          "resource": "repo://src/manifold/training/cli.py#L220-L241",
+          "version": "repo-lines-v1:sha256:1e1a90813aefa49d1674fd48f73440a423f622f0dacdc3b6fd1ec338895a7d86:eyJzZWxlY3RlZExpbmVDb3VudCI6MjIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjVlNWFkMDBiMzlmM2ZhZDhlMWRlZDYwM2RmMDIyMjc5YzRkODFkYTA0Y2M3Yzc2ZGNiMWZkNDQ3ZDI3NGExMTEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ4OTNmNDBlMzc4MWViODk2YzgyZDA0NmEwODA2N2ExMWUzNWNkZjJmMWRmYWYyNmZlYTkwYjhkYjY2NzY0MTMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImNlMDc1YWE0NjIxNDA1ZjA2NmE5OTM2ZDZhOGJhNjc2Nzg3MGIxYTQ3NjBkNDQ5YjllYTM1MDBhYzZlZmM1YTIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjliMGRhMTg0YmVkMGNjYTNiZTlkODg3MDA3YWZlZmI5YjY5ZmMyYzI2ZGQzZmU0Y2U0MDcyMjE2ZTQ2ZWQ1ZTkifQ"
+        },
+        {
+          "resource": "repo://src/manifold/training/controlnet_cli.py#L168-L188",
+          "version": "repo-lines-v1:sha256:944cb6e1cc0d0c339d50f767d103dc5428e22850faa595393f4705d07393abd0:eyJzZWxlY3RlZExpbmVDb3VudCI6MjEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQxNDY3NzExZGVmNzE4MTU5YjIwOGYyNGJmZTdhOTMwMzVmMThkZGU4NjZiZDg2MGQwYjkzODc3MTNlYTI3OGMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImJjMTZiN2YzZjAxMTVkMDU5OTU0NTg5OTAzZDM3YjU5ODM1YjQ3OGEwNmZhYzM5MDhjMjM0N2Q0ZWJmYWI2OTYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjJkN2NlMGU0OGZjNmRlODA2YTdjMThhNzQzZWM5NzE5OWE4ZTJlYmMxOGFlYzdjNjg1ZDE3YzE2NTg5MDAzZTAiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjdjNmYxMmM2MTQ2Y2I5NDFhMmNlNzc0NTMxN2NjMTcwM2Q5NDdkM2RlOGM0MTY2Y2QxMmNmMDY0ODcxYjE0ZmIifQ"
+        },
+        {
+          "resource": "repo://src/manifold/training/grpo_cli.py#L236-L239",
+          "version": "repo-lines-v1:sha256:6486e2855500720d481deb78df23192e7b9b1dbca7b00a3cf0f3343be0716b3b:eyJzZWxlY3RlZExpbmVDb3VudCI6NCwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiZDE0Njc3MTFkZWY3MTgxNTliMjA4ZjI0YmZlN2E5MzAzNWYxOGRkZTg2NmJkODYwZDBiOTM4NzcxM2VhMjc4YyIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMmZmNjQ5MzE3ZTExYjFjYTU3ODA4OGNmYWMxM2FkY2ZiOWM2OGZhYTM0Y2RmMjc5YTcxZDM1ZjBlMGI3MTkyOCIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiMWFiNDdhNzM0NTkzYjNiNmMyYTgwOGJkMmI2Y2IwOGFlZTk4MDQ0ZmYyNDY4Y2I4ZTdlZGYyN2M5M2ZmZmY0OCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiYmJmOWIxOTJmNTE1NWVjNmZlN2U2MWJjNGEyY2Y3ODU4YjBlMTNkNmVlMDM2Zjk2MTMwM2M2MTg5MWU3NWEzOSJ9"
+        },
+        {
+          "resource": "repo://src/manifold/training/reward_cli.py#L171-L173",
+          "version": "repo-lines-v1:sha256:f4ee696ff1ef5f0145f7da0b36950682b92e45e51bc566462af113f6e6601e4e:eyJzZWxlY3RlZExpbmVDb3VudCI6MywiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiZDE0Njc3MTFkZWY3MTgxNTliMjA4ZjI0YmZlN2E5MzAzNWYxOGRkZTg2NmJkODYwZDBiOTM4NzcxM2VhMjc4YyIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMmZmNjQ5MzE3ZTExYjFjYTU3ODA4OGNmYWMxM2FkY2ZiOWM2OGZhYTM0Y2RmMjc5YTcxZDM1ZjBlMGI3MTkyOCIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiNzA0ZTZmZWVjYzRjNTdiZmJhOTM1NzhjZGNlZDI1MWI2N2U2ZmJlNDBjYWI0MDAzOTQ2YjNlNzAxOTRlNzZiNSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiZWJmMDliZGZjMGNiYzU4YjY3MWVkZTkxZjZlNTEwNTRiOWJmOWVlYmM0NDcwOTJmYWU1YjliMDE5OTRlMDZjYSJ9"
+        }
+      ]
+    },
+    {
+      "id": "claim_6174c94ab7174016984161e3577841a4",
+      "statement": "ADR-0017's recorded \"proposed\" status is stale relative to the code: the latent warm-up runs inside DataModule.setup() after Lightning has created the process group, which is what makes the rank-sharded warming branch reachable.",
+      "evidence": [
+        {
+          "resource": "repo://docs/adr/0017-latent-warmup-in-datamodule-setup.md#L1-L12",
+          "version": "repo-lines-v1:sha256:777d3ebdb61b6ac359f35a8fdeaeb83007bbe4d2dab6fe6d3c3b7878673ab0ae:eyJzZWxlY3RlZExpbmVDb3VudCI6MTIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImY1MmQ3MTExMDNkNTBhNDM3ODMwYzZmYmNkMDRmYjRiYWI0OWEwZjgyZjZkMjZkMWM3OTFjNmU4NDg4ZGQwOTAiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImZlNzM3Mzg3OTAzYzE2NzU3YmIzOTNmNDJjYzg0OWQyZWUzM2MzYjBhM2Y3ZmFkYTNhZWYzNzhlYmM2YzI5YmYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjRlM2M0NzcwMjg3YTE1YTQ1ZGU1ZTY2NjVkMjQ3MzU3ZjM3OWU4MzkxZmYyNTIwYmE5MDJlOTUxMDU2MjQ4ZjYifQ"
+        },
+        {
+          "resource": "repo://src/manifold/data/warm_datamodule.py#L197-L225",
+          "version": "repo-lines-v1:sha256:ad05c790e5db38de7658a91e8508ff22c170b6aa931592e611c645171d00c55f:eyJzZWxlY3RlZExpbmVDb3VudCI6MjksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijg4MmRhZjE0OWFiZTU3ODgzMThjOGY1ZjNkNGYwMGIwNDBjMTZhYmI2NDk1MzE1ZmRlNDMzMjBjMzVjM2QwZDEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU1MDMyZTk2NGQwOTMyMzUxZTVkMTg1MjY5MjgxYjE3MWEzYTA5YjA4YjI4NmU2NjFlYTQ3MDMyM2M4MmViNGQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjMxMTU5MzM2YmYyM2FhNmEwNWJkN2NjNDRlZGZhYTc4NGNkNTQ0NTk4NDkxNTIxNDA4YzYxMTUyZjZkZmJkMGEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjM1YzE4ODU2OTYwNzU5MWQ5ZmQ5OTAyMTg1OGIzNTMxMTcwMDdlOGYzNzMxNTQ3ODY5ZTJmZWU5NWM5ZWRhZmQifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_e51f762ad85e453bafb5363ad41da9d7",
+      "statement": "The ADR-0037 in-training paired-fidelity monitor is shipped rather than planned: PairedFidelitySpec is registered under the name paired_fidelity and is part of the default callback set of the supervised ControlNet shell, and it stays observe-only (never a checkpoint monitor, never in the loss).",
+      "evidence": [
+        {
+          "resource": "repo://src/manifold/metrics/paired_callback.py#L1-L29",
+          "version": "repo-lines-v1:sha256:4a18ef56a296f7054c2e16f65485deaf58032217aa270a95fc8eaa82b304e402:eyJzZWxlY3RlZExpbmVDb3VudCI6MjksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjEwZDRlZGM2MGM3MmJkMjRkY2Y3MTZiNWZmZjcyMDQ5NDcwZGM1NmU1NzZkZjFkMTQ2OTczNmE3NmIzZGQ5MmIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImEzMDNlY2RkNGE0ZDEwZjE5YzczZmQ0MmZkMTI0MzdmZDMzNTRhODI2ODE2MDVkYTUyNTVhOTdhMzkwNjhkYmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjU1YjZlODcwNmI0MzA0N2YyYTZkYjY3ZjEzMjYzODU5NTYwNGU2N2YzNjk2Njg3NmNlMDE1OGYwMDUzZTZiZDEifQ"
+        },
+        {
+          "resource": "repo://src/manifold/training/callbacks/paired_fidelity.py#L36-L58",
+          "version": "repo-lines-v1:sha256:6b22a7e4047f4c9986b8f5168d8cf005e77aa0091684a5baf293a87f42d7a7e5:eyJzZWxlY3RlZExpbmVDb3VudCI6MjMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImY2OWExMzk3NWMyNTZlYzgzMjBlMjAxNjA4M2M5NmRmNjM3Y2EzZDM1YmViZGUyMzE0YmVlM2E0NzExYjU2Y2EiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijg4NzQ4YjIwODRhNDU2Y2E1NTRlMTRiYWUyZDZkYzE1MGQzMWNjYjRjZDY5M2UwNmUyMzcyZmJhMGEwNjlhMDIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjRlY2YwYmE5ZmI2YzQzNWUxODJlMGJmNjRlZjQyYzdhNzg3MmI1OGE0NWYxOGY3NmQ2MmQ0YWIxN2UwM2VkMWIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImY3Yzg0NWRjOWRmNTNhMzkwZDhhZjZiYWMyNWM0NzJmYjMxYzM5NzUxYjRhNzU3ZTE4ODM5M2U0NWEwZTYyYjIifQ"
+        },
+        {
+          "resource": "repo://src/manifold/training/controlnet_cli.py#L168-L188",
+          "version": "repo-lines-v1:sha256:944cb6e1cc0d0c339d50f767d103dc5428e22850faa595393f4705d07393abd0:eyJzZWxlY3RlZExpbmVDb3VudCI6MjEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQxNDY3NzExZGVmNzE4MTU5YjIwOGYyNGJmZTdhOTMwMzVmMThkZGU4NjZiZDg2MGQwYjkzODc3MTNlYTI3OGMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImJjMTZiN2YzZjAxMTVkMDU5OTU0NTg5OTAzZDM3YjU5ODM1YjQ3OGEwNmZhYzM5MDhjMjM0N2Q0ZWJmYWI2OTYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjJkN2NlMGU0OGZjNmRlODA2YTdjMThhNzQzZWM5NzE5OWE4ZTJlYmMxOGFlYzdjNjg1ZDE3YzE2NTg5MDAzZTAiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjdjNmYxMmM2MTQ2Y2I5NDFhMmNlNzc0NTMxN2NjMTcwM2Q5NDdkM2RlOGM0MTY2Y2QxMmNmMDY0ODcxYjE0ZmIifQ"
+        }
+      ]
+    }
+  ],
+  "verification": {
+    "by": "openwiki/0.7.2",
+    "at": "2026-10-31T14:25:43.516Z"
+  }
+}

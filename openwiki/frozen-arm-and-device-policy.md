@@ -1,26 +1,66 @@
 ---
 type: Reference
 title: Frozen arms and per-rank device policy
-description: FrozenArmMixin (register + dual-exclude off the optimizer / checkpoint) and DevicePolicy (the per-rank CUDA device decision that replaced resolve_warm_device and the pre-PG set_device twin).
+description: FrozenArmMixin (register + dual-exclude off the optimizer / checkpoint, Lightning owns placement) and DevicePolicy (the per-rank CUDA device decision that replaced resolve_warm_device and the pre-PG set_device twin).
 tags: [frozen-arm, device-policy, ADR-0031, ADR-0035]
+verified:
+  - by: openwiki/0.7.2
+    at: 2026-10-31T14:25:43.516Z
+sources:
+  - id: openwiki-source-bdb26e011dbdfd0846537627
+    resource: repo://docs/adr/0031-device-ownership.md
+  - id: openwiki-source-0b3288e3dba4430c1bb2668c
+    resource: repo://docs/adr/0035-devicepolicy-per-rank-device.md
+  - id: openwiki-source-f6308550d1ec17a2ebed8f58
+    resource: repo://src/manifold/metrics/paired_callback.py
+  - id: openwiki-source-a4a6e4b18ed70c8f8195546e
+    resource: repo://src/manifold/metrics/vae_stage.py
+  - id: openwiki-source-aefad772862dded74740a681
+    resource: repo://src/manifold/modules/controlnet_latent_flow.py
+  - id: openwiki-source-487431944da97854e8cb6d33
+    resource: repo://src/manifold/modules/frozen_arm.py
+  - id: openwiki-source-ffd9f2f79ca81385e197ae7f
+    resource: repo://src/manifold/modules/grpo.py
+  - id: openwiki-source-82594a5d307aebca75251b76
+    resource: repo://src/manifold/modules/reward.py
+  - id: openwiki-source-cb9c9c415ab8026b88012d9e
+    resource: repo://src/manifold/training/cli.py
+  - id: openwiki-source-28b61e3219922e44e25b13ad
+    resource: repo://src/manifold/training/controlnet_cli.py
+  - id: openwiki-source-deca8f8f4a3d2dbbba47ac16
+    resource: repo://src/manifold/training/device_policy.py
+  - id: openwiki-source-4bdb3113f633b5c6a86fd01d
+    resource: repo://src/manifold/training/grpo_cli.py
+  - id: openwiki-source-b4f781de2a8cfd17bbaf7eef
+    resource: repo://src/manifold/training/reward_cli.py
+  - id: openwiki-source-7131b0d80871bbec1bff1bff
+    resource: repo://tests/test_controlnet_cli.py
+  - id: openwiki-source-95fa8f50a78d587065883999
+    resource: repo://tests/test_controlnet_module_training.py
+  - id: openwiki-source-6db58ef83ad3e6a34ce75117
+    resource: repo://tests/test_ddp_warm.py
+  - id: openwiki-source-54aad16b0d9e880d1e1286dc
+    resource: repo://tests/test_device_policy.py
+  - id: openwiki-source-9c5f114a4443114e6c506f09
+    resource: repo://tests/test_frozen_arm_mixin.py
+  - id: openwiki-source-d4a3306929ca8168b983ec89
+    resource: repo://tests/test_grpo.py
+generated: { by: "openwiki/0.7.2", at: "2026-10-31T14:25:43.516Z" }
 ---
 
 # Frozen arms and per-rank device policy
 
-Two mechanisms own the cross-cutting "what is frozen / which GPU does it land on"
+Two cross-cutting mechanisms own the "what is frozen / which GPU does it land on"
 concern that every training CLI has to get right:
 
 - **`FrozenArmMixin`** (`src/manifold/modules/frozen_arm.py`, ADR-0031 A1) — the
   shared "register + dual-exclude" implementation that keeps a frozen arm off
   the optimizer and off the checkpoint while letting Lightning own its device
-  placement through the standard submodule machinery. Used by `GRPOModule`
-  (frozen `unet` arm on the ControlNet policy path; frozen `reward_model` and
-  frozen reference policy on the GRPO reward path), by
-  `ControlNetLatentFlowModule` (frozen `unet` arm), and by `RewardModule`
-  (frozen `reference_unet`).
+  placement through the standard submodule machinery. Used by `GRPOModule`, by
+  `ControlNetLatentFlowModule`, and by `RewardModule`.
 - **`DevicePolicy`** (`src/manifold/training/device_policy.py`, ADR-0035) — the
   per-rank CUDA device decision. Replaces both the duplicated pre-PG
-  `set_device` twin that lived in every training `main()` and the
+  `set_device` twin that lived in the GRPO / reward training `main()`s and the
   `manifold.data.latent_pipeline.resolve_warm_device` free function used by the
   post-PG VAE warm. Three methods: `pin` (one `set_device` side effect pre-PG),
   `device` (side-effect-free read), `warm_device` (post-PG per-rank CUDA
@@ -30,6 +70,26 @@ The two are paired concerns (one decides what is frozen, the other decides where
 the GPU lands) and share an ADR-0035 test pattern: source-level guards via
 `inspect.getsource` keep the retired free function / twin / mixin bypass from
 sneaking back in.
+
+### Who owns which device decision
+
+Device ownership is deliberately split across several owners, because the calls
+happen on opposite sides of the process-group boundary:
+
+| Decision | Owner | When |
+|---|---|---|
+| Where a *frozen arm* (in-`Trainer`) lives | Lightning — the arm is a registered `nn.Module`, so the automatic `.to(device)` places it per rank | inside `Trainer.fit` |
+| Where a *pre-`Trainer` model* is staged (policy rollout, ControlNet base) | `DevicePolicy.pin()` — the launcher's `LOCAL_RANK` snapshot | pre-PG, in the shell's `main()` |
+| Where the *VAE cache-warm* runs | `DevicePolicy.warm_device(fallback)` | post-PG, inside `DataModule.setup()` |
+| Where the *VAE* lives during a validation decode | the module's own device, via `VaeStage` (`src/manifold/metrics/vae_stage.py`) | post-PG, inside the callback |
+
+The last row is the boundary to keep in mind: `DevicePolicy` owns **only** the
+per-rank launcher decision. The paired-fidelity monitor
+(`src/manifold/metrics/paired_callback.py`) does **not** go through
+`DevicePolicy` — it stages the VAE through `VaeStage` onto the module's own
+device (`next(self._module.unet.parameters()).device`), because by then the
+module has already been placed by Lightning and the VAE is simply following it
+onto the same GPU for the decode, then restored to CPU.
 
 ## FrozenArmMixin: register + dual-exclude
 
@@ -71,7 +131,9 @@ without dragging in Lightning's forward/optim machinery.
 - `self._frozen_arm_names |= {name}` (the arm set is fixed at init)
 
 That single call is the only place the "register + dual-exclude" prep is
-applied — adding a frozen arm cannot forget the freeze.
+applied — adding a frozen arm cannot forget the freeze. The arm-name set lives
+on the mixin as a class-level `frozenset` default, so a host with no frozen
+arms degrades to a no-op rather than `AttributeError`.
 
 ### The three dunder overrides
 
@@ -86,11 +148,13 @@ applied — adding a frozen arm cannot forget the freeze.
   **trainable** keys, lenient only on the frozen arms. The checkpoint never
   carries frozen-arm weights (state_dict strips them); the arms are rebuilt
   fresh each launch (the reward from its own `.ckpt`, the reference policy via
-  `deepcopy`, the ControlNet-policy base from the native export). The frozen
-  arms being absent from the checkpoint is the one tolerated mismatch. A
-  missing or unexpected **trainable** key still raises with the standard
-  `RuntimeError("missing")` / `RuntimeError("unexpected")` (no blanket
-  `strict=False`, which would resume on stale or random weights).
+  `deepcopy`, the ControlNet-policy base from the native export). Stray frozen
+  keys carried by a stale pre-refactor checkpoint are stripped from the
+  incoming dict before the load. The frozen arms being absent from the
+  checkpoint is the one tolerated mismatch. A missing or unexpected
+  **trainable** key still raises with the standard `RuntimeError("missing")` /
+  `RuntimeError("unexpected")` (no blanket `strict=False`, which would resume on
+  stale or random weights).
 - **`train(mode=True)`** — re-applies `eval()` on every registered frozen arm
   after `super().train(mode)`. Registration makes Lightning's recursive
   `train(True)` flip the arms to training mode; the override re-freezes them so
@@ -103,6 +167,19 @@ stays in each host's `configure_optimizers` (GRPO → unet/controlnet, reward �
 frozen arms. `configure_optimizers` excludes frozen arms by construction (see
 the host tests: `tests/test_grpo.py`, `tests/test_controlnet_module_training.py`,
 `tests/test_reward.py`).
+
+### Which host freezes which arm
+
+| Host | Frozen arms (`_frozen_arm_names`) | Optimized arm |
+|---|---|---|
+| `GRPOModule` (`src/manifold/modules/grpo.py`) | `reward_model` (always), `unet` (the ControlNet-policy base — a derived invariant of `controlnet is not None`), `reference_unet` + `reference_controlnet` (the KL anchor, when a reference policy is passed) | the UNet (UNet policy) or the ControlNet (ControlNet policy) |
+| `RewardModule` (`src/manifold/modules/reward.py`) | `denoiser` (the frozen JiT x0-denoiser held for the online rollout) | `reward_model` (the discriminator) |
+| `ControlNetLatentFlowModule` (`src/manifold/modules/controlnet_latent_flow.py`) | `unet` (the frozen base) | `controlnet` |
+
+In the UNet-policy path the GRPO `unet` is the *trainable* policy and is
+deliberately never registered as a frozen arm; the `None` reference arms stay
+plain attributes, so they contribute no keys to `state_dict()` and no params to
+`parameters()`.
 
 ### MRO detail
 
@@ -133,6 +210,17 @@ owns device placement) but `requires_grad=False`, absent from the optimizer
 groups, and absent from `state_dict()`. The `ControlNetLatentFlowModule` host
 test exercises the same contract on the production `spt.Module` MRO.
 
+| Host-level behavior | Test |
+|---|---|
+| GRPO frozen arms registered but dual-excluded (reward + reference; the UNet policy stays trainable) | `tests/test_grpo.py::test_frozen_arms_registered_but_dual_excluded` |
+| GRPO `state_dict()` strips in place on the shared destination / through a DDP-style `module.` prefix / under a nested `grpo.` prefix | `tests/test_grpo.py::test_state_dict_filters_destination_in_place`, `test_state_dict_strips_frozen_arms_through_wrapper_prefix`, `test_state_dict_strips_frozen_arms_when_wrapped` |
+| GRPO strict load with the frozen-arm allow-list | `tests/test_grpo.py::test_load_state_dict_strict_except_frozen_allowlist` |
+| GRPO `train()` keeps the frozen reward in eval | `tests/test_grpo.py::test_train_keeps_frozen_arms_in_eval` |
+| ControlNet base registered but dual-excluded; optimizer wires the ControlNet only | `tests/test_controlnet_module_training.py::test_base_is_registered_but_dual_excluded`, `test_configure_optimizers_is_adam_over_controlnet_only` |
+| Backward reaches the ControlNet, not the frozen base | `tests/test_controlnet_module_training.py::test_backward_routes_grad_to_controlnet_not_base` |
+| Reward module holds the frozen denoiser registered + dual-excluded | `tests/test_reward.py::test_module_backward_updates_discriminator_only` |
+| Lightning's automatic `.to(device)` places the registered frozen denoiser (the manual `on_fit_start` move is gone) | `tests/test_reward.py::test_run_reward_training_writes_ckpt_and_logs_metrics` |
+
 ## DevicePolicy — the per-rank CUDA decision
 
 ### Why this exists (ADR-0035)
@@ -152,7 +240,8 @@ this rank use":
 
 ADR-0035 collapses all three into a single `DevicePolicy` class with three
 methods. The behavior is byte-identical to the prior code paths; the change is
-de-duplication.
+de-duplication. (ADR-0031 §A2 had *specified* a centralized policy but never
+landed one; ADR-0035 creates the object and deletes the free function.)
 
 ### Construction
 
@@ -160,7 +249,7 @@ de-duplication.
 policy = DevicePolicy()  # side-effect free: snapshots LOCAL_RANK (missing -> 0)
 ```
 
-`__init__` only reads `os.environ.get("LOCAL_RANK", "0")` and stores the
+`__init__` only reads `os.environ.get("LOCAL_RANK")` and stores the
 result. It touches neither CUDA nor the process group. The snapshot is taken
 **once at construction** — post-PG callers do **not** re-resolve via
 `dist.get_rank()`. A `torchrun` launch always sets `LOCAL_RANK`; a single-process
@@ -172,8 +261,8 @@ launch does not, and the default 0 is correct in that case.
 device = policy.pin()
 ```
 
-This is the call every training CLI `main()` makes **before** Lightning
-initializes the process group:
+This is the call the training shells that stage a model **before** Lightning
+initializes the process group make (`grpo_cli`, `reward_cli`, `controlnet_cli`):
 
 - If `torch.cuda.is_available()`:
   - if `local_rank < torch.cuda.device_count()` → `torch.cuda.set_device(local_rank)` (the one side effect), then return `torch.device(f"cuda:{local_rank}")`.
@@ -191,8 +280,11 @@ stateDiagram-v2
     [*] --> Constructed: __init__ snapshots LOCAL_RANK, default 0
     Constructed --> Pinned: pin()
     Constructed --> ReadOnly: device()
+    Constructed --> WarmResolved: warm_device(fallback)
     Pinned --> ReadOnly: device()
     ReadOnly --> ReadOnly: device()
+    Pinned --> WarmResolved: warm_device(fallback)
+    ReadOnly --> WarmResolved: warm_device(fallback)
     state Pinned {
         [*] --> CheckCuda
         CheckCuda --> CudaAvailable: torch.cuda.is_available()
@@ -210,8 +302,15 @@ stateDiagram-v2
         CudaRead --> ReturnCuda: return cuda local rank
         CpuRead --> ReturnCpu2: return cpu
     }
+    state WarmResolved {
+        [*] --> CheckFallback
+        CheckFallback --> PGLiveCuda: cuda fallback and PG initialized
+        CheckFallback --> KeepFallback: any other case
+        PGLiveCuda --> ReturnCudaRank: return cuda local rank
+        KeepFallback --> ReturnFallback: return fallback unchanged
+    }
 ```
-*Figure: `DevicePolicy` state transitions — `pin()` performs the one-time pre-PG `set_device` (with the twin's out-of-range guard), `device()` is the side-effect-free read.*
+*Figure: `DevicePolicy` state transitions — `pin()` performs the one-time pre-PG `set_device` (with the twin's out-of-range guard), `device()` is the side-effect-free read, and `warm_device()` resolves the post-PG VAE-warm device from the fallback plus the PG state.*
 
 ### `device` — side-effect-free read
 
@@ -253,6 +352,24 @@ PG is initialized, so under DDP it is the default `cuda:0` (the rank's
 `DataModule.setup()`), `LOCAL_RANK` names the rank's actual GPU and
 `warm_device` returns it.
 
+### Where the three methods are called
+
+| Shell | Call | Notes |
+|---|---|---|
+| `src/manifold/training/grpo_cli.py::main` | `device = DevicePolicy().pin()` | real path only; the `data_provider` CPU smoke stays `torch.device("cpu")` |
+| `src/manifold/training/reward_cli.py::main` | `device = DevicePolicy().pin()` | same CPU-smoke seam |
+| `src/manifold/training/controlnet_cli.py::main` | `device = DevicePolicy().pin()` | same CPU-smoke seam; replaces the bare `cuda:0` resolution |
+| `src/manifold/training/cli.py::_warm_data` (JiT) | `warm_device = DevicePolicy().warm_device(device)` | the warm runs inside `DataModule.setup()` (post-PG) |
+| `src/manifold/training/controlnet_cli.py::_real_inputs` | `warm_device = DevicePolicy().warm_device(device)` | mirrors the JiT warm |
+
+The JiT shell keeps its launch-time `device` as the bare
+`torch.device("cuda" if torch.cuda.is_available() else "cpu")`; that is safe
+because it stages **nothing** on the GPU pre-PG — the VAE is built on CPU
+(`build_encode_pipeline(cfg, device=torch.device("cpu"))`) and the warm
+re-stages it inside `warm_fn` on the per-rank device. The controlnet CLI has
+no such latitude: it stages the frozen base UNet and the fresh ControlNet
+before `trainer.fit`, which is exactly the PR #156 `cuda:0` pile-up.
+
 ### Acceptance matrix (DevicePolicy)
 
 The behavior contract is locked down by `tests/test_device_policy.py`:
@@ -264,18 +381,45 @@ The behavior contract is locked down by `tests/test_device_policy.py`:
 | No CUDA → `cpu`, zero side effects | `test_pin_cpu_unavailable_returns_cpu_no_side_effects` |
 | LOCAL_RANK unset → defaults to 0 | `test_pin_local_rank_unset_defaults_to_zero` |
 | `device()` returns the same value as `pin()` but never calls `set_device` | `test_device_returns_cuda_local_rank_side_effect_free` |
+| `device()` without CUDA → `cpu` | `test_device_cpu_unavailable_returns_cpu` |
 | `warm_device` under live PG + CUDA fallback → `cuda:3` | `test_warm_device_local_rank_under_ddp` |
 | `warm_device` non-CUDA fallback returned unchanged under DDP | `test_warm_device_non_cuda_fallback_returned_unchanged` |
 | `warm_device` single-process fallback returned unchanged | `test_warm_device_single_process_fallback_returned_unchanged` |
 | `warm_device` PG-up + CUDA-fallback + no CUDA still resolves (no `is_available` gate) | `test_warm_device_pg_up_without_cuda_still_resolves_cuda_fallback` |
 | `import torch.distributed` is lazy (inside the method body, not at module level) | `test_warm_device_dist_import_is_lazy` |
 
-The source-level guards at the end of the file (`test_grpo_cli_main_pins_via_device_policy_not_inline_set_device`,
-`test_reward_cli_main_pins_via_device_policy_not_inline_set_device`,
-`test_controlnet_cli_main_pins_via_device_policy_not_bare_cuda`,
-`test_p1_warm_fn_uses_local_rank_device_not_launch_device`,
-`test_p1_controlnet_warm_uses_device_policy_not_resolve_warm_device`)
-keep the prior call patterns from sneaking back in.
+The **source-level guards** keep the prior call patterns from sneaking back in.
+They live in two files:
+
+| Guard | File |
+|---|---|
+| `test_grpo_cli_main_pins_via_device_policy_not_inline_set_device` | `tests/test_device_policy.py` |
+| `test_reward_cli_main_pins_via_device_policy_not_inline_set_device` | `tests/test_device_policy.py` |
+| `test_controlnet_cli_main_pins_via_device_policy_not_bare_cuda` | `tests/test_device_policy.py` |
+| `test_p1_warm_fn_uses_local_rank_device_not_launch_device` | `tests/test_ddp_warm.py` |
+| `test_p1_controlnet_warm_uses_device_policy_not_resolve_warm_device` | `tests/test_ddp_warm.py` |
+
+The two `test_p1_*` guards are the *warm* counterparts of the `pin` guards: they
+assert that the JiT `_warm_data` and the controlnet `_real_inputs` closures
+build the VAE on CPU pre-PG, rebuild the encode_fn on the per-rank device, and
+no longer mention `resolve_warm_device`.
+
+The end-to-end per-rank proof is a 2-rank DDP smoke:
+`tests/test_controlnet_cli.py::test_main_real_path_pins_each_rank_to_local_gpu`
+drives `controlnet_cli.main` on the real branch under spawn with `_real_inputs`
+stubbed, and asserts the two ranks receive **different** devices (`cuda:0` vs
+`cuda:1`) — the PR #156 regression lock (a bare `cuda:0` resolution would
+collapse both ranks onto GPU 0).
+
+## Retired patterns — never reintroduce
+
+| Retired pattern | Status | Guard |
+|---|---|---|
+| `manifold.data.latent_pipeline.resolve_warm_device` free function | deleted (ADR-0035 close-out); no runtime call site remains — only docstring provenance notes | `tests/test_ddp_warm.py::test_p1_*` |
+| The pre-PG inline `set_device` twin in `grpo_cli.main` / `reward_cli.main` | deleted; both route through `DevicePolicy().pin()` | `tests/test_device_policy.py::test_*_cli_main_pins_via_device_policy_not_inline_set_device` |
+| The bare `torch.device("cuda" if torch.cuda.is_available() else "cpu")` in `controlnet_cli.main` | deleted on the real path; the CPU smoke keeps `torch.device("cpu")` | `tests/test_device_policy.py::test_controlnet_cli_main_pins_via_device_policy_not_bare_cuda` |
+| The `object.__setattr__` registration bypass for frozen arms | retired by ADR-0031 A1; arms are normal registered submodules | `tests/test_frozen_arm_mixin.py`, `tests/test_grpo.py::test_frozen_arms_registered_but_dual_excluded` |
+| A hand-rolled per-host `state_dict` / `load_state_dict` override | the mixin is the single owner of the dual-exclude contract | `tests/test_frozen_arm_mixin.py` |
 
 ## Source map
 
@@ -285,12 +429,15 @@ keep the prior call patterns from sneaking back in.
 - Hosts that consume the mixin: `src/manifold/modules/grpo.py`,
   `src/manifold/modules/controlnet_latent_flow.py`, `src/manifold/modules/reward.py`
 - Device policy implementation: `src/manifold/training/device_policy.py`
+  (imported by the shells as `from .device_policy import DevicePolicy`; it is not
+  re-exported by the `manifold.training` barrel)
 - CLI shells that call `pin()`: `src/manifold/training/grpo_cli.py`,
-  `src/manifold/training/reward_cli.py`, `src/manifold/training/controlnet_cli.py`,
-  `src/manifold/training/cli.py` (JiT)
+  `src/manifold/training/reward_cli.py`, `src/manifold/training/controlnet_cli.py`
 - VAE-warm closures that call `warm_device()`:
   `src/manifold/training/cli.py::_warm_data`,
   `src/manifold/training/controlnet_cli.py::_real_inputs`
+- VAE staging for validation decodes (a different owner):
+  `src/manifold/metrics/vae_stage.py`, `src/manifold/metrics/paired_callback.py`
 
 ## Focused tests
 
@@ -309,7 +456,8 @@ For a CLI shell change to the `pin()` / `warm_device()` wiring, also run:
 
 - `pytest tests/test_ddp_warm.py tests/test_training_cli.py tests/test_controlnet_cli.py -q`
 
-The `inspect.getsource`-style guards in `tests/test_device_policy.py` are the
-load-bearing acceptance: any regression that re-introduces the inline
-`set_device` twin, the bare `torch.device("cuda")` in the controlnet CLI, or
-the `resolve_warm_device` free function will fail those tests loudly.
+The `inspect.getsource`-style guards in `tests/test_device_policy.py` and
+`tests/test_ddp_warm.py` are the load-bearing acceptance: any regression that
+re-introduces the inline `set_device` twin, the bare `torch.device("cuda")` in
+the controlnet CLI, or the `resolve_warm_device` free function will fail those
+tests loudly.

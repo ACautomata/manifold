@@ -1,0 +1,40 @@
+{
+  "schemaVersion": 1,
+  "pages": {
+    "/openwiki/architecture.md": {
+      "pageVersion": "sha256:97a6784f86e06d9eafd2a1686258c7e7bba629c7ee5700b82c47aa8e282f7f41",
+      "completedBy": "openwiki/0.7.2",
+      "completedRunId": "9f746791-bf93-4274-8e3f-db543c0a328b",
+      "gitHead": "5adac66405717ae4dbca5532b3cfe85bd84ee5b3",
+      "sourceFingerprint": "sha256:4de90acdbd7547c0a86e89f11f0f1aaa5015328e25ba836f948477ca9602ac1d"
+    },
+    "/openwiki/callback-registry.md": {
+      "pageVersion": "sha256:446845ea5a7c0a0c189af8dd82396a40e34ef935751cccf79306171d69da6f76",
+      "completedBy": "openwiki/0.7.2",
+      "completedRunId": "9f746791-bf93-4274-8e3f-db543c0a328b",
+      "gitHead": "5adac66405717ae4dbca5532b3cfe85bd84ee5b3",
+      "sourceFingerprint": "sha256:4de90acdbd7547c0a86e89f11f0f1aaa5015328e25ba836f948477ca9602ac1d"
+    },
+    "/openwiki/concepts.md": {
+      "pageVersion": "sha256:e485dc1cb0cad79931120f48de11bfd378589611773770733e67a370989fba44",
+      "completedBy": "openwiki/0.7.2",
+      "completedRunId": "9f746791-bf93-4274-8e3f-db543c0a328b",
+      "gitHead": "5adac66405717ae4dbca5532b3cfe85bd84ee5b3",
+      "sourceFingerprint": "sha256:4de90acdbd7547c0a86e89f11f0f1aaa5015328e25ba836f948477ca9602ac1d"
+    },
+    "/openwiki/evaluation.md": {
+      "pageVersion": "sha256:cb85d6bbf90e47194079e3b27b3652c75fe56d2b27143e8243415fd71d40a49e",
+      "completedBy": "openwiki/0.7.2",
+      "completedRunId": "9f746791-bf93-4274-8e3f-db543c0a328b",
+      "gitHead": "5adac66405717ae4dbca5532b3cfe85bd84ee5b3",
+      "sourceFingerprint": "sha256:4de90acdbd7547c0a86e89f11f0f1aaa5015328e25ba836f948477ca9602ac1d"
+    },
+    "/openwiki/frozen-arm-and-device-policy.md": {
+      "pageVersion": "sha256:8c31ea81e614f6fc6b49c4ec534cfcd9b8ba249d79080fc5d5da73bf50135679",
+      "completedBy": "openwiki/0.7.2",
+      "completedRunId": "9f746791-bf93-4274-8e3f-db543c0a328b",
+      "gitHead": "5adac66405717ae4dbca5532b3cfe85bd84ee5b3",
+      "sourceFingerprint": "sha256:4de90acdbd7547c0a86e89f11f0f1aaa5015328e25ba836f948477ca9602ac1d"
+    }
+  }
+}

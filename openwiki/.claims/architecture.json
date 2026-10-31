@@ -1,0 +1,242 @@
+{
+  "schemaVersion": 1,
+  "pageVersion": "sha256:97a6784f86e06d9eafd2a1686258c7e7bba629c7ee5700b82c47aa8e282f7f41",
+  "claims": [
+    {
+      "id": "claim_e475003793224e09859fe0e91f986a1e",
+      "statement": "Manifold keeps the diffusers-style four-component layout (Model / Scheduler / Module / Pipeline) with manifold-owned base classes — it does not subclass the `diffusers` library — and the Model components wrap rather than reimplement MONAI MAISI backbones (`AutoencoderKL`, `UNet3DConditionModel`, `ControlNet3DConditionModel`, `RewardModel` over `PatchDiscriminator`).",
+      "evidence": [
+        {
+          "resource": "repo://CONTEXT.md",
+          "version": "repo-file-v1:sha256:699cfc96f28ee81cde3fd8f1af0ccf82dd9c755fbce32ffc41633379f7031864"
+        },
+        {
+          "resource": "repo://src/manifold/__init__.py",
+          "version": "repo-file-v1:sha256:27e1834aa2e478956fed97aeff717499b56b7769c5bb218e0edb02cf83845de1"
+        },
+        {
+          "resource": "repo://src/manifold/models/__init__.py",
+          "version": "repo-file-v1:sha256:45a14f7ad56edaca3422febe7743dec50cc5557bd0fe96ab08f24afec0aef2a1"
+        }
+      ]
+    },
+    {
+      "id": "claim_94a31be3e0ef4ab2afb65afc51e2271b",
+      "statement": "The supervised ControlNet path registers the `paired_fidelity` callback by default (`PairedFidelitySpec` under that registry name, in the spine's default callback-name set), so `manifold-train-controlnet` logs observe-only `val/psnr` / `val/ssim` on every gated validation epoch while the checkpoint monitor stays latent-space `val/x0_mae`.",
+      "evidence": [
+        {
+          "resource": "repo://src/manifold/metrics/paired_callback.py",
+          "version": "repo-file-v1:sha256:2d78c68acfbf98d12fd04e32a4f389c475e78b3fecb22202dbb21d1882c221e0"
+        },
+        {
+          "resource": "repo://src/manifold/training/callbacks/paired_fidelity.py",
+          "version": "repo-file-v1:sha256:09c5b8bb0451cd41f6c98d678177eb1d52639198fcd4bd89a0a29b6af1339273"
+        },
+        {
+          "resource": "repo://src/manifold/training/controlnet_cli.py#L152-L198",
+          "version": "repo-lines-v1:sha256:6a9fc176c58fa0adc4b448b528b61d811f8445278c564d74335647d56862c434:eyJzZWxlY3RlZExpbmVDb3VudCI6NDcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjIzMDc5MTY0YjgzNDY1NzIyZjNjZDUyNGE4M2ViMWRkMTlhY2I2ZGE3OTA1NjQ5MjNiYjJhNDA0MDM2NDAxOTciLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjMwYzFmMTg4ZjE0MmVkN2E4MjQ2ODBiMjA3MTcyYzU1MTliYzYxNGE0OGZkYTdjZjE2N2VkYjhkZGY3OTk1NmMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjQ2ODQxMWIxZTI4NTEyMWJjNzc3YTQwN2MxYjZiY2JmMjhkYWIyNTNlM2Q1NWZlOGRhOTJlYjc4MTRmY2FkNmEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImQ5OWU0NWJiM2Y4MzZjZWUwZmJkOWI1NWFmZTkxMWI2YzcxYzU0YTIwM2RlODI5YWU0YzcxM2JlOTRmMmJhOWQifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_fe626fa609d74a57b35c9c04a0eeba98",
+      "statement": "The in-training paired-fidelity monitor and the offline before/after comparison score through the same metric and the same normalization: the monitor rolls the module's own full Heun ControlNet rollout, decodes generated and real target, applies `min_max_to_unit` per sample, and calls `PairedFidelityMetrics`, exactly as `BeforeAfterEval` does, so the in-training curve and the offline number are directly comparable.",
+      "evidence": [
+        {
+          "resource": "repo://src/manifold/eval/before_after.py",
+          "version": "repo-file-v1:sha256:ff5b7013e86e044b859edc917ce46c246182162a4802fbb05dfdf1f608cfc40f"
+        },
+        {
+          "resource": "repo://src/manifold/metrics/paired.py",
+          "version": "repo-file-v1:sha256:1a388bde3ad7969aedbd81e1f240df70e48bb327a68f1a08b9b0f83a7078ebd1"
+        },
+        {
+          "resource": "repo://src/manifold/metrics/paired_callback.py#L172-L217",
+          "version": "repo-lines-v1:sha256:8a5fe6a011d00b9e64fe6c4b3492118be10ac54fae4796a2389098205a7e61b4:eyJzZWxlY3RlZExpbmVDb3VudCI6NDYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImZjNTcwYjRjMjQzNGE3NWRhNWE1M2JjYTQzODdmNGEzYjU0ZmJiZmFhNDNhYmVkZTIzZDdjNzJkZGRmNjU4NTkiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImVhMDNiZWU4ZjU0OTcwNjA0NzRlNDQzNWJmOGViZjNlZTVkOTM3Zjc3MzU1YTkwYjU4YTgzNmQ3ZDQ2MDljNTkiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjAzNTg4ZmEwNjRmOWEyZGMwZmFiNTM0Mzc1NDU5OWNkNjRlM2E4YzJkYjY5NjY2NzFmYzgwYjYzZTVkN2VkOGMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImNlNWQ2NWM2NTk5ZDE4M2FkODJjZjZkYjc2NWZiZjk0YjkwZDVhNDNiYjVhNmJjNjc1MWE4YTI3NzQ3ZDc1YWEifQ"
+        },
+        {
+          "resource": "repo://src/manifold/pipelines/pipeline_utils.py#L26-L43",
+          "version": "repo-lines-v1:sha256:dd122d6dc1889d50fab432e7bf7aaee3d34496e86896526cef80d6f922291a9e:eyJzZWxlY3RlZExpbmVDb3VudCI6MTgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjM2OTFlNjBiOWFiMmRkY2E3ZGYzZTM3Njg0ZTA0Y2Q0MGE3M2UzZTA3MzEwYmIyNzAzYmFlY2QzYjlmYTc3ODkiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImEzMDU5ZTM4MjAzZTE5YTA5ZDVmZjYzMDRiZDY3MDAyMWFjMjRkOWY4M2NmMzI5ODM4Zjc0MGVlNTE4ZTgyNzMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUyOTlhMTFlZjMyMTYwNjQzYmMxNDc1ODNmNTIzYmI5ZGQ1YTJhMjc2ZDk0Y2JiYTliYTI3NGFhMzYxMWFjODMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_7e7868cec1094144b1da78c0322c1c7c",
+      "statement": "The paired-fidelity monitor is observe-only by construction: it runs under `torch.inference_mode()`, never contributes to the loss, and never drives checkpoint selection — `val/psnr` / `val/ssim` are declared only so the registry's `validate_monitor` accepts them as validatable monitors.",
+      "evidence": [
+        {
+          "resource": "repo://src/manifold/metrics/paired_callback.py#L1-L29",
+          "version": "repo-lines-v1:sha256:4a18ef56a296f7054c2e16f65485deaf58032217aa270a95fc8eaa82b304e402:eyJzZWxlY3RlZExpbmVDb3VudCI6MjksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjEwZDRlZGM2MGM3MmJkMjRkY2Y3MTZiNWZmZjcyMDQ5NDcwZGM1NmU1NzZkZjFkMTQ2OTczNmE3NmIzZGQ5MmIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImEzMDNlY2RkNGE0ZDEwZjE5YzczZmQ0MmZkMTI0MzdmZDMzNTRhODI2ODE2MDVkYTUyNTVhOTdhMzkwNjhkYmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjU1YjZlODcwNmI0MzA0N2YyYTZkYjY3ZjEzMjYzODU5NTYwNGU2N2YzNjk2Njg3NmNlMDE1OGYwMDUzZTZiZDEifQ"
+        },
+        {
+          "resource": "repo://src/manifold/metrics/paired_callback.py#L82-L217",
+          "version": "repo-lines-v1:sha256:816898ab80a9ed1563b1a55d4e27cf24332025a7d1b47b8c599f43ed0152bf68:eyJzZWxlY3RlZExpbmVDb3VudCI6MTM2LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiIyODU5OWJiNWYyMDU5NTVkNzk3MzlmNTIyNTRkMTYzNTUwN2JjNTE0YzI0MDkzMWYzMzk1YjAwNWQ0NmZmMDk3IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiJlYTAzYmVlOGY1NDk3MDYwNDc0ZTQ0MzViZjhlYmYzZWU1ZDkzN2Y3NzM1NWE5MGI1OGE4MzZkN2Q0NjA5YzU5IiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI2ZDVjNTQ5Mjg5NmNlOThiOWM0Nzk5NDM1MmNjNDFmOGRjYzBiYTI5NDMwNmEyNGQwMjUyYWJhZmM3N2RmZjJmIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiJjZTVkNjVjNjU5OWQxODNhZDgyY2Y2ZGI3NjVmYmY5NGI5MGQ1YTQzYmI1YTZiYzY3NTFhOGEyNzc0N2Q3NWFhIn0"
+        }
+      ]
+    },
+    {
+      "id": "claim_b628f80b1948499bbce88485b6a1a4ff",
+      "statement": "`VaeStage` (`src/manifold/metrics/vae_stage.py`) is the single VAE-only stage/restore implementation — it snapshots the VAE's CPU state, moves it to the device for a decode, and restores it to CPU even if `__enter__` fails partway — and `VramStage` (`src/manifold/metrics/fid/vram.py`) composes it, adding only the FID-specific feature-net build, so the paired-fidelity decode and FID cannot drift on the VRAM path.",
+      "evidence": [
+        {
+          "resource": "repo://src/manifold/metrics/fid/vram.py#L66-L101",
+          "version": "repo-lines-v1:sha256:0ce3987d14795d0c462c5e55457708ca4a87366c8dd4733abf228339813c2367:eyJzZWxlY3RlZExpbmVDb3VudCI6MzYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImU1ZGYzNGIzYmQ3ZWIyM2Y3OTRmYTMyZWExNTg5YzI3NjlhMDA1ZjJlYjMxZGIwODc3ZDFjY2FhODAzZmIzMjgiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjdjZGNmZWIzNDE2NWU2NzA3YTQyZTIxY2RlNmEzYjAyNTFlYWVjYTNiNTg4OWE0ODkwMzMxZGU4OWVkZDE3ZGYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjA1OWY5NGI2Njc5YmE4ZWMzMDRiNmI3NDMwMTliNjg5YzFmMDllNzkwYjI4ZTk5ZDc5YTU0MzI3ZmU2NzcyOGIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImM4MDM3MWE4ZDAwMTIzNTc0ZWM4MDZhOTMyZTAyYzYzYjNlODIxZTBkMDVlOGZmYTU3NDJhOWJkNDAzYmNmOWUifQ"
+        },
+        {
+          "resource": "repo://src/manifold/metrics/vae_stage.py",
+          "version": "repo-file-v1:sha256:cced06259497b2cb6857a30ad765865d1ccc878ab3e9a3c48de60671ef305563"
+        }
+      ]
+    },
+    {
+      "id": "claim_069f5608fda548d8a10c0fe2a4973df0",
+      "statement": "`PairedFidelitySpec` exposes the monitor's knobs (`subset_size`, `every_n_epochs`, `num_inference_steps`, `seed`) as dataclass fields validated by the callback registry, and the rollout step count is recipe-primary: `build` reads `num_inference_steps` from `CallbackContext.inference_recipe`, which the supervised shell fills from the existing `controlnet.num_inference_steps` config knob.",
+      "evidence": [
+        {
+          "resource": "repo://src/manifold/training/callbacks/paired_fidelity.py",
+          "version": "repo-file-v1:sha256:09c5b8bb0451cd41f6c98d678177eb1d52639198fcd4bd89a0a29b6af1339273"
+        },
+        {
+          "resource": "repo://src/manifold/training/callbacks/registry.py#L73-L108",
+          "version": "repo-lines-v1:sha256:4b2443053e896efe4a367a1e257a081625d88a47057e11c5419312bacb7dd091:eyJzZWxlY3RlZExpbmVDb3VudCI6MzYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjM1NGU4MTU0OTIwNTIwZWEwNDBmYmU4YjA5ZjJkM2JmYjg5ZmRjZDI0ZGNmZGRmYzdlNDRkMDczYTQ3NDE2MDIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU2MjJiNzc0YjExYTI1NGRlOTU1MmMyMWIxOTYxMWE3MTg1NzY1YTIxMDZmY2QzOTJkZTQ1YWZjYWMwMzk5ODgiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImU5MDM5MzM1YWU1YmZiMmY1Y2JmNzI3NDE1MjlmM2YyOWQ0NWU4ZDYwOWJkNWVkZTZmMWVkYzA5MWEyNDMwMjIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImI3YWJjZGI5ODA2YWFiZGEzM2E4ZWRjZDQ1ZjY0MGJhY2FlNjZiYWQ5Y2JjMmE3OTNjMTVlZGJhMjk4ZDJiNzYifQ"
+        },
+        {
+          "resource": "repo://src/manifold/training/controlnet_cli.py#L172-L183",
+          "version": "repo-lines-v1:sha256:b01bd7df459543ad33d9a286fbfaa54b25260b64d2e6a5e120cf431077dec97b:eyJzZWxlY3RlZExpbmVDb3VudCI6MTIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImU0YjU3NTM1MDQ2Y2VmMDk0OTgxYWI0ZTBlZTc1MWFiNTY1MjBlYTQ0YzYwZGZjMjFmYmYwMWM1Zjk2MjBhMDgiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjMwYzFmMTg4ZjE0MmVkN2E4MjQ2ODBiMjA3MTcyYzU1MTliYzYxNGE0OGZkYTdjZjE2N2VkYjhkZGY3OTk1NmMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjM3Mzg5NjBlMDFiMzlmY2Y4MDc4YTkxZDk4ZTBmNzA0MzJhMDgwNmNmOWQ5NzkzMzkzNTdiMWRiZTMxODRkYjIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImJiZjliMTkyZjUxNTVlYzZmZTdlNjFiYzRhMmNmNzg1OGIwZTEzZDZlZTAzNmY5NjEzMDNjNjE4OTFlNzVhMzkifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_53b9c5756c8544ce8f4843770f00be2f",
+      "statement": "The paired-fidelity monitor resolves its fixed validation subset lazily at the first gated epoch (`getattr(datamodule, \"val_latent_ds\", datamodule)`), so the cold path's post-`setup()` replacement of the warmed validation dataset is honored rather than captured at build time.",
+      "evidence": [
+        {
+          "resource": "repo://src/manifold/data/datamodule.py#L40-L46",
+          "version": "repo-lines-v1:sha256:16d609e42beb8162286062a63720504274cb54a7a4d90354334153a74aaa2586:eyJzZWxlY3RlZExpbmVDb3VudCI6NywiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiZjNkMDBjZjI3MDk2NGQ0NGExM2RmYWM4NzUyYjA5ZmNjNDM1YjBmMTliMzE2YWJjZjgxYTdhYTY0YmIxMjJkNiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiYTg0OWJlYTYzMjc1MWY4ZTNiOWY3MTFhZmMwM2RmYjUwYjliZjM0ZGRlNTAwZWM0ZDBhZGEwMTU5NDA1Nzc0YiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiMGZhNTFkOGI0ODY5ZTZlMmQxZWYyMGM5MDEwNTE1NzM3MTc5ZTYzNzg0OThjZmRlYmJjNDhkYjJiZGU2NGY0MiIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiN2ZjMzg0NTI2MjYyOTlkMjZkOGRmZTQyMTAzNDEzMzNlMTIyMzU2MjZhZGEzZGQxZmUxMTcxZWE2NGM5MDNjZiJ9"
+        },
+        {
+          "resource": "repo://src/manifold/metrics/paired_callback.py#L125-L146",
+          "version": "repo-lines-v1:sha256:3175cd9f3cec4eb18fe33df9a6911bba48dd61d1cccc699a006b8f023224ee8b:eyJzZWxlY3RlZExpbmVDb3VudCI6MjIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjJkZDRlMzNkYzYyNDBhNTgxZjM5NDU4YWUyYTU3NWM5NDA3ZjVhYjM5ZjY0NDRkYmI4NTFlNWVjNzA1Nzg3YjUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjJlYWJiOTcwZWVlMjYyNmIwMTUzNDI4YzA4NTFlM2Q0ODZmNDNkZGZmYmI0NTFiODQxYzI2MjkzOWFmZGZlMGUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImZkZjY1YTk3OTgzZTNiYTQxM2I3Y2ZiODM5NDg5NjFhOWVjOWRiOGNiM2UwMjY1YzM5OGVkYTE5YWE1ODQ4MzAiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjkzMzY2OGYzY2NmNDQ2ZGRiYWFjNzM1NzgxYTIwOTJiYmU4YjZmMjE0NTZjZjc4NTVlMDEwNGE2ZDRlNWE1MDUifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_6e4b5ce61e0a4e3f9b778771eba0a4aa",
+      "statement": "Under DDP the paired-fidelity monitor is redundant evaluation: every rank scores the same fixed subset under the same seeded noise on DDP-synchronized weights, so the only cross-rank interaction is Lightning's torchmetrics sync — no FID-style sharding or error-rendezvous machinery is needed.",
+      "evidence": [
+        {
+          "resource": "repo://src/manifold/metrics/paired_callback.py#L22-L28",
+          "version": "repo-lines-v1:sha256:53e5296f948ef16052ab4a8dbcd5b65c117dc575d3f849d542bd7308aaf1d387:eyJzZWxlY3RlZExpbmVDb3VudCI6NywiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiMDFiYTQ3MTljODBiNmZlOTExYjA5MWE3YzA1MTI0YjY0ZWVlY2U5NjRlMDljMDU4ZWY4Zjk4MDVkYWNhNTQ2YiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiODk2YmJjOTRkZDY3YWM1ZWM3ZmZkOWUzNTgzMTkyZmIzMWRhOWFiZDRiMjFhNzMyMmZkYWJkMTg0N2I4YzRmYiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiMzc0Mjc4NzNmNTFkNGFlMzcwNTBiY2VkNTJjYWRkNmM2MWY5Yjk3YTY4NDgxMDQ1MDBjY2UwZjA1MWIxNTQ4MiIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiMWFhZjc2MzdjYjZlN2U1ZGI4NWQ2MzQyNzQ2MDE0ZGYwNDFjY2Q1NThhOTIwYjI5ZWI2YWM3MTlkN2JhZjVjMiJ9"
+        },
+        {
+          "resource": "repo://tests/test_paired_fidelity_ddp.py",
+          "version": "repo-file-v1:sha256:cc8f0743bf83fa5a93ef7607cf485eb72f8c8a5454d7e89f933ac62f133817a7"
+        }
+      ]
+    },
+    {
+      "id": "claim_ed74949d8b6a46fdb1959271a4820768",
+      "statement": "`TrainingSpine.run`'s merge order is the single source of truth for the callback set: default names → per-name knob overrides → a name-list replacement from the CLI `--callbacks` flag or the YAML `callbacks:` list, with `forbidden_callbacks` / `forbidden_monitors` enforced after the merge so no override can re-enable a forbidden callback or monitor.",
+      "evidence": [
+        {
+          "resource": "repo://src/manifold/config/loader.py#L155-L167",
+          "version": "repo-lines-v1:sha256:236cc0aaeca209a4be379584db38dbf4585067a49256aad247c1b00baf3088b2:eyJzZWxlY3RlZExpbmVDb3VudCI6MTMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImY1MTE5MzIxYjZmMDU5NDQ5ZDc3YWMyNzI1ZGNkZDlmZDIzZDA2MDk2MTZkYTU1NDcxODVkMThjMTM0YmVlMDEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImY0YTY3MThmNDZkYjc4MjM1NDM3OTczYjE3NDM4Y2M3NWIwNDhmNWZhNjhjYjhlNjdmOWExZDYzZjY0YTg0YTciLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjQzN2NiN2E3NGJiYzFkMjZlMjE5ODBkNjFmYjczNDg3ZDE2YjY3OGVmZjE0NzA4MDY5NWI2YTRkYjg0ZTE3MmIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
+        },
+        {
+          "resource": "repo://src/manifold/training/core.py#L42-L140",
+          "version": "repo-lines-v1:sha256:88abab3595e5f980845ccd167137dc8a29cbfc3247b169df6fdd5274c4f31e1c:eyJzZWxlY3RlZExpbmVDb3VudCI6OTksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAwOGNkOTc5NjliOTRmN2NhYmQ5YWI4NTJjZGVjZGM5Y2U5OWU1MmQ3MmVjMWNkMThiOGFlY2EyOWE5ZTJiZTIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjNlOTM2MzVlN2M2ZWIxOTI1NTI0Yjk0NDU4MTU1MDM0YWJkODFjODgwN2Q4YTlkOGJjZjgzMGEyYzAxMGFkYTciLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImE3YmZiYWE4OWY1OGU5YmNlYTU3OTUzOTI0ZGJlY2M5ZmUxZTk5MTVjZmQwNTNmYTc5OGZmYmNhMzdkZmYyMjYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjQyY2M1NWE2Zjg0YzVlMjZlMDcwOGEzODQ1NTczM2Q5YzA1ODkyMWU2MDQ0ZmJiNjExOGZlNzhlZjYyZTNhNzUifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_c4707c642f554d6795e6ec251cd63c36",
+      "statement": "The launch-time experiment config (OmegaConf, composed env → train → network with whole top-level replacement and `_base_` inheritance) and the persisted component config (the JSON `config.json` a component writes via `register_to_config` / `ConfigMixin`) are two distinct layers: the experiment config builds components and is never persisted, while the component config round-trips independently of how the component was launched.",
+      "evidence": [
+        {
+          "resource": "repo://CONTEXT.md",
+          "version": "repo-file-v1:sha256:699cfc96f28ee81cde3fd8f1af0ccf82dd9c755fbce32ffc41633379f7031864"
+        },
+        {
+          "resource": "repo://src/manifold/config/loader.py",
+          "version": "repo-file-v1:sha256:e36a17846c5402b006ca01668e9dfd6c94e8cc7c2fe9dbd6913e0eccc9b05ec5"
+        },
+        {
+          "resource": "repo://src/manifold/configuration.py",
+          "version": "repo-file-v1:sha256:6df782f13514633642a95857845d01e5699f33a7f74b46accbd05c1b31db2405"
+        }
+      ]
+    },
+    {
+      "id": "claim_10fb5cfaa9cc4dc493235c56ee7b1325",
+      "statement": "The scheduler layer owns the rectified-flow transport, the timestep/sigma grid, model-input scaling, Heun integration, and the stochastic GRPO SDE transition (`FlowMatchGRPOScheduler.sde_step_mean` inherits the transport and Heun steps verbatim); the paired-GRPO Brownian bridge is no longer part of the tree.",
+      "evidence": [
+        {
+          "resource": "repo://docs/adr/0034-one-realism-reward-both-grpo-policies-delete-condition-aware.md",
+          "version": "repo-file-v1:sha256:ab63de45fe9112825e9a55405cef1eada429f422dd3b18d5297df3df7271fb25"
+        },
+        {
+          "resource": "repo://src/manifold/schedulers/scheduling_flow_match_grpo.py",
+          "version": "repo-file-v1:sha256:bf84e8e68b0b736ef9f7155df5ef967d40f4602e41405e7d89efa26e4b14190c"
+        },
+        {
+          "resource": "repo://src/manifold/schedulers/scheduling_flow_match_heun.py",
+          "version": "repo-file-v1:sha256:d605741daacd1b6f3b1ef9da4f4df72ba95f4a5f85d6e0a6d88d9d53ca535019"
+        }
+      ]
+    },
+    {
+      "id": "claim_07ea15634b314e5da29f1c92f89eb17c",
+      "statement": "`manifold-eval` infers the policy from the before artifact's own `model_index.json` (`pipeline_class`) instead of accepting a mode flag, and it exports the after Lightning `.ckpt` into a native directory through the existing ADR-0006 export bridge before reloading both sides.",
+      "evidence": [
+        {
+          "resource": "repo://src/manifold/eval/cli.py#L132-L160",
+          "version": "repo-lines-v1:sha256:b80125ee3a743e8b483397f17141a5c0953991ed467f782d99f101a534a99d64:eyJzZWxlY3RlZExpbmVDb3VudCI6MjksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjY0M2YyNWNhZWQ0MTgxODdjZDdhMGJhZWQwOWRiMmM2Y2JkMjE0ZTcwODk1NGE4MWVjNzdjMDBkOTEzM2Y2NmIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAyN2UzYTE4ODQ3YWM5NDgyOGFkY2U5YjBmMzRmOTg4NDhhNmQxODM5YTlkNjVhZjFmMTk0MzkzNmEzOWJmNDIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjY2NTRlNWVkOWE0YTAxYWViNDgyYWNlYzJlOWY3NjZlYjIxZjg2MzRlODU2NTRhZjg2MGM5ZmQ0ZjFhZjM3MTMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjVlYWRhYjUxYWNlZDNiOWNhNTczYzMwNThjYzRiODU2NzgzNDk2MTVlMTExNWRiMTA1MjBkMzA0ODIxNDg0NzIifQ"
+        },
+        {
+          "resource": "repo://src/manifold/training/export.py",
+          "version": "repo-file-v1:sha256:d4918c2e41551a8218fef4797b53c15c0a9eb65b0234424303322463df077066"
+        }
+      ]
+    },
+    {
+      "id": "claim_5af2dd07b9224438bbc43b0faf5ac18f",
+      "statement": "Native inference directories hold per-component configuration and weights plus a `model_index.json`; Lightning `.ckpt` files are training state that pipelines never load directly, so the one-shot export is the sole bridge from a training checkpoint to an inference pipeline.",
+      "evidence": [
+        {
+          "resource": "repo://src/manifold/configuration.py",
+          "version": "repo-file-v1:sha256:6df782f13514633642a95857845d01e5699f33a7f74b46accbd05c1b31db2405"
+        },
+        {
+          "resource": "repo://src/manifold/pipelines/pipeline_utils.py#L19-L23",
+          "version": "repo-lines-v1:sha256:56f4bb7aa245633193f76f185839e60637bd1b039e1a72ddc5ead9c563db854b:eyJzZWxlY3RlZExpbmVDb3VudCI6NSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiM2M3N2ViODQxMWUxOTEzMDA0OGJkMmQxNDQ5YmZlY2JiZWNkZDQ4MDFlNmExOTVmN2ViZjk4M2I0NzIxOGI4YiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiYTUwNGE0NGE0OThhMDU0MWI0OTMwYjdiODQ2MGFhYWU5MGQ0YWI4NTNhMTAyNjE0YzU0ZTJkMWZjMmVhMTE2MyIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiYTBjMDk5NTgzMTEwZGY4Yzg2NjQ4ZjY5OTk5ZWYwMGU0OTU3NjI2OGFmNmJjZjljNjhjNjgxOGRmZTgxMjJmOSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiNWE2NmJlNjhlODkzNjUzYWIzM2VhZTA0MTAxZGUzYmIyMzg4ZGU2NzljYmVlMzc0OTY3Y2EyY2YyYzE1YWZkNCJ9"
+        },
+        {
+          "resource": "repo://src/manifold/training/export.py",
+          "version": "repo-file-v1:sha256:d4918c2e41551a8218fef4797b53c15c0a9eb65b0234424303322463df077066"
+        }
+      ]
+    },
+    {
+      "id": "claim_469865fe2d7440f0b0339a7e86287490",
+      "statement": "Training-time sampling and native inference share one rollout primitive per policy family — `sample_latent_flow` for JiT and `controlnet_rollout` for ControlNet — so the Module's `sample()` and the Pipeline cannot drift into parallel integrators.",
+      "evidence": [
+        {
+          "resource": "repo://src/manifold/modules/controlnet_latent_flow.py#L218-L257",
+          "version": "repo-lines-v1:sha256:eaacd3de2a64688df337ee4d4cc445d8b1a0f1f48f23fe87637c66313ce08460:eyJzZWxlY3RlZExpbmVDb3VudCI6NDAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjA5ODU4YzFjNmQ0MzA1ZWVhZWM4ZDg5NGFjMzgyMzI0MjUxZWRlYWFlMTY2MDUzNzdmMTJhMmZmZWU0NzNjOGEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU5MDlhNTNhNjE4ZDAyOGUxZDMwMDBjMGE3YWJjZWVjYmU1ZmIzN2Y0ZTUxMWVmZTQ2NjQzZmFkNmU2Njg3MmYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjFjODVlOGI0YzY2ZmVmNmE1Mzk2ODEzYmUxYzM1YThkOGMxY2I4YzUwMmVhNGM2YjdmMTIzZGQ1MDgwYzg0NDgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjM4MmQ1OTQ4MGMxZjM3YWRmMTYxYTAxYjcxOTM4ZDU3MDgxNDRiZmJhZDJmYTJlYjJhYjcyNTlhM2VjZmI5OTAifQ"
+        },
+        {
+          "resource": "repo://src/manifold/modules/controlnet_sampler.py#L113-L113",
+          "version": "repo-lines-v1:sha256:fd46e0f7b96910d9eea30be51c8e05acf0edefe4ff65dc2aad7fc2b877edee7c:eyJzZWxlY3RlZExpbmVDb3VudCI6MSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiZmQ0NmUwZjdiOTY5MTBkOWVlYTMwYmU1MWM4ZTA1YWNmMGVkZWZlNGZmNjVkYzJhYWQ3ZmMyYjg3N2VkZWU3YyIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiZmQ0NmUwZjdiOTY5MTBkOWVlYTMwYmU1MWM4ZTA1YWNmMGVkZWZlNGZmNjVkYzJhYWQ3ZmMyYjg3N2VkZWU3YyIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiOGNjNGE3ZDFjYzc5NmFiYTNlNDY3MjMzMjdmNTE3ZTlmODExOTgyZDI1MGYwNzAyOTg2ZTRiNTc2NGFkOTU4OSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiZDUxMjYyMmY3OTlhMmNkYjUyZmRiMjE4OTc3NGI4YWRhOGZkMjFkZDM1MWU0YWM3MTg1NzhhOWIyZjRhZTdlYiJ9"
+        },
+        {
+          "resource": "repo://src/manifold/modules/sampler.py#L40-L40",
+          "version": "repo-lines-v1:sha256:bfa2f1e3839570fa9b1251d1e0b891ec18111a65c9821e070cca1c161f7afb3f:eyJzZWxlY3RlZExpbmVDb3VudCI6MSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiYmZhMmYxZTM4Mzk1NzBmYTliMTI1MWQxZTBiODkxZWMxODExMWE2NWM5ODIxZTA3MGNjYTFjMTYxZjdhZmIzZiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiYmZhMmYxZTM4Mzk1NzBmYTliMTI1MWQxZTBiODkxZWMxODExMWE2NWM5ODIxZTA3MGNjYTFjMTYxZjdhZmIzZiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiYmMwMDZkOWYwYWE0NTI0ZTVmZGVmODY4ODVjNDQ4ZTA1OTUyYTMxMmEwZmM5ZjRjZjhhOTc5MjJkODgzMzI2ZSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiMWYxNmIwZDExODgyODA2YjMzMmE2OTY1NzViYWU4MWNjMDljYTJmNjY4OGIwNzQxMzlmMzU1YjQ0N2Q5YjMwNiJ9"
+        }
+      ]
+    }
+  ],
+  "verification": {
+    "by": "openwiki/0.7.2",
+    "at": "2026-10-31T14:25:43.516Z"
+  }
+}
