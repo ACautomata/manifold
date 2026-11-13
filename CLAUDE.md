@@ -21,6 +21,6 @@ Single-context repo (`CONTEXT.md` + `docs/adr/` at root). See `docs/agents/domai
 
 ## OpenWiki
 
-See [AGENTS.md](AGENTS.md) for OpenWiki agent instructions.
+@AGENTS.md
 
 <!-- OPENWIKI:END -->

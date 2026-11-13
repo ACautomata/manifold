@@ -1,0 +1,47 @@
+{
+  "schemaVersion": 1,
+  "pages": {
+    "/openwiki/architecture.md": {
+      "pageVersion": "sha256:84b761355b6b65e4a563a2a67b530138f4b3f4c6e11b494d4ccbf42d9cd20a63",
+      "completedBy": "openwiki/0.9.0",
+      "completedRunId": "106adbfe-c1e9-4b2c-8b78-c376910a0ced",
+      "gitHead": "5adac66405717ae4dbca5532b3cfe85bd84ee5b3",
+      "sourceFingerprint": "sha256:29bf577b8f2802422cda3a41fe0baeab292b52fa6863c04a58635c07b1672cbf"
+    },
+    "/openwiki/callback-registry.md": {
+      "pageVersion": "sha256:a6c084de0c163bb535d429f688d287d9bd30236c95fa5b45655d5bc2d6fda8d5",
+      "completedBy": "openwiki/0.9.0",
+      "completedRunId": "106adbfe-c1e9-4b2c-8b78-c376910a0ced",
+      "gitHead": "5adac66405717ae4dbca5532b3cfe85bd84ee5b3",
+      "sourceFingerprint": "sha256:29bf577b8f2802422cda3a41fe0baeab292b52fa6863c04a58635c07b1672cbf"
+    },
+    "/openwiki/domain-vocabulary-and-decisions.md": {
+      "pageVersion": "sha256:eef4ad2741f0ffab4123d51081a2a50648926ca0921532555f3b81aad94fde20",
+      "completedBy": "openwiki/0.9.0",
+      "completedRunId": "106adbfe-c1e9-4b2c-8b78-c376910a0ced",
+      "gitHead": "5adac66405717ae4dbca5532b3cfe85bd84ee5b3",
+      "sourceFingerprint": "sha256:29bf577b8f2802422cda3a41fe0baeab292b52fa6863c04a58635c07b1672cbf"
+    },
+    "/openwiki/evaluation.md": {
+      "pageVersion": "sha256:cce9bcddcda873bf2559f6447cdc3daf719422f3f93c94fea1d689f42d063c07",
+      "completedBy": "openwiki/0.9.0",
+      "completedRunId": "106adbfe-c1e9-4b2c-8b78-c376910a0ced",
+      "gitHead": "5adac66405717ae4dbca5532b3cfe85bd84ee5b3",
+      "sourceFingerprint": "sha256:29bf577b8f2802422cda3a41fe0baeab292b52fa6863c04a58635c07b1672cbf"
+    },
+    "/openwiki/frozen-arm-and-device-policy.md": {
+      "pageVersion": "sha256:6a13d1e65e20402f0860b924b1a94b96de121b656996478c4639e2098843093d",
+      "completedBy": "openwiki/0.9.0",
+      "completedRunId": "106adbfe-c1e9-4b2c-8b78-c376910a0ced",
+      "gitHead": "5adac66405717ae4dbca5532b3cfe85bd84ee5b3",
+      "sourceFingerprint": "sha256:29bf577b8f2802422cda3a41fe0baeab292b52fa6863c04a58635c07b1672cbf"
+    },
+    "/openwiki/operations-and-testing.md": {
+      "pageVersion": "sha256:e43e1d81c34e0ec638d191ed095fc7b4ce7570be2f42bf6edb61ad19ad35480c",
+      "completedBy": "openwiki/0.9.0",
+      "completedRunId": "106adbfe-c1e9-4b2c-8b78-c376910a0ced",
+      "gitHead": "5adac66405717ae4dbca5532b3cfe85bd84ee5b3",
+      "sourceFingerprint": "sha256:29bf577b8f2802422cda3a41fe0baeab292b52fa6863c04a58635c07b1672cbf"
+    }
+  }
+}

@@ -1,0 +1,294 @@
+{
+  "schemaVersion": 1,
+  "pageVersion": "sha256:6a13d1e65e20402f0860b924b1a94b96de121b656996478c4639e2098843093d",
+  "claims": [
+    {
+      "id": "claim_194e355596b24909ab770086f4be493b",
+      "statement": "FrozenArmMixin._register_frozen_arm applies the uniform frozen-arm prep once at construction: it calls arm.eval(), sets requires_grad_(False) on every parameter, registers the arm as a normal nn.Module submodule via setattr (so Lightning's automatic .to(device) owns its placement), and adds the name to the _frozen_arm_names frozenset, whose class-level default is an empty frozenset so a host with no frozen arms degrades to a no-op instead of AttributeError.",
+      "evidence": [
+        {
+          "resource": "repo://src/manifold/modules/frozen_arm.py#L50-L70",
+          "version": "repo-lines-v1:sha256:d06bef4d34e642212da808617846e6929e11ee815fa2d97ef914ac9e94817e60:eyJzZWxlY3RlZExpbmVDb3VudCI6MjEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjUyZGIxYWQ2Y2QxNmQ1MDYyMzVmNjgzYjM3MTBjZDkxZWIyYTc2MTcxM2EzYmI5Yjk5MDg0Zjk5Mjk2MTI1ZGUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjEwYzAyNDhjZTk5Mzk1YjFhNDJkNGRmYzkyMmUyYTEyZTA0ZGZkOTVlZjY0ZjUxMjdkOGZjMjI1N2Q1ZTgyZmUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImFkZDliM2E0YzJkNDgwNGMyNTAwNzQ2YzAzNmIyYTI0MGFhZDI2N2NiYTVhOWU5MTRkNmY0MjgzMWU5YjBjODgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjUwODUyZDlkMzYyYTA2ZGY1MDRjNmIzN2NlN2U1NjAwMjk1MjIzZDRkNDVlZmZjMmU1YWE4MjgxNTVjNTkxMmYifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_41821829d0944fb39e1b0c68e1495960",
+      "statement": "The mixin's state_dict override keeps frozen arms off the checkpoint by deleting their keys in place from the shared destination dict and matching them under the caller-supplied prefix, so a frozen arm cannot leak into a checkpoint collected through a wrapper or DDP's 'module.' prefix (PyTorch discards the child's return value and reads the destination it passed in).",
+      "evidence": [
+        {
+          "resource": "repo://src/manifold/modules/frozen_arm.py#L82-L105",
+          "version": "repo-lines-v1:sha256:19414104e9bdf43116dce701b0afa36a6380b2553b09a125335ff357101a56ab:eyJzZWxlY3RlZExpbmVDb3VudCI6MjQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImI4ZmQ5MGFiNjkxOGQwYmJiNDE2MzJlM2Q0ODkzNTkwMjY3M2M0MjA0OGY3ZTA4OTI5NjNjYTEyNmE4OTg4YjUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImUzZWVhZThiYjVjZjhiMDkxZTIyNWQyYzlkOGZhYjJhMDRkNmViNTc3ZTY0OGNiMDk3NWYyZDEwODRlMmFjMDgiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImE3NjE3MGFkODdmZmM4YjE1ZDQyNTU2NWEzMTU5MzM4YjQyZTA4Yjg5YzYwYmJlNDZlNTIyNjZjM2M3YjhkMzMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImE5MmQ5ZWM5Y2E0MTliOTdmMDRlZmQwMjYxYmNiMjdmMzlmZDQ0YTY3YWE5OGIxYWM0ODdiMTIyYTJmNTgyMmMifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_71355d3231ab4284992dbfc41bc995fd",
+      "statement": "The mixin's load_state_dict override is strict on the trainable keys and lenient only on the registered frozen arms: it strips stray frozen keys from the incoming dict, loads with strict=False, then raises a RuntimeError naming 'missing'/'unexpected' for any non-frozen mismatch when strict=True — the frozen arms' absence from the checkpoint is the single tolerated mismatch, and there is no blanket strict=False that would hide a missing trainable key.",
+      "evidence": [
+        {
+          "resource": "repo://src/manifold/modules/frozen_arm.py#L107-L138",
+          "version": "repo-lines-v1:sha256:3f0cb03d88c3fca2831aad4e930fe3a8d9cb078a961eedaab02122cea0c2993b:eyJzZWxlY3RlZExpbmVDb3VudCI6MzIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjUwMjQ3OWMyNWE4YmNlODc4ZjJhMzNhYWRiZDMxMzM4NWYzMDhkMTEzYjI3MDViMDMwOTYyYmQ0NzU0Y2IyYTEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjFmNzdlZjMxOGY4Mjg2ZmNkYTYwNDU0ZWYwNGM3YWNjZDE4ZDQ2Y2U3NWU4OTllYzFjYjI4NGYzNDA4MzcwMDciLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjkyNTY5NGIzMmQxZjhlMzQ3MTc2N2I1NTg1MjI3ZjBiM2I5NjkxODI2ZWM4MmFhNzBlNDFlYWJjYjAxNDhiM2YifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_d4bc63a8fe9945ef9657945bada29f18",
+      "statement": "The mixin's train(mode) override re-applies eval() to every registered frozen arm after super().train(mode), because registration makes Lightning's recursive train(True) flip the arms back to training mode, which would let a frozen arm's BatchNorm running stats drift during rollout or reward evaluation.",
+      "evidence": [
+        {
+          "resource": "repo://src/manifold/modules/frozen_arm.py#L140-L154",
+          "version": "repo-lines-v1:sha256:5f4ad8ae48c456480b02b363184c35777d7e60e21d3463710ef0369b94866962:eyJzZWxlY3RlZExpbmVDb3VudCI6MTUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQwNDllZGJkNDJkMDYzZmYzMzFhMzk0ZTFkM2U4MjIwOTZiOTcwNjg0YTU4ZTU2NWMyZjJhNzY3M2Y0ZjhjZDIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijc3MmY5Njk1Yzc0NjdjNzQ3NzNjOWNlN2ZjNDI5YzVkMGQwZTQ4N2YzYzUxZDE1ZDY2NjhhM2QyNDA3MmJiOTUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImJhNjJiNDM5YWE4ZWJmOGY0MTQwNDkxZjIzMzRjZWQ2YmVlOGVjNDM1YmFkYzc1MTUyM2Y5NzJhNzBhOTdhMzEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_d9aa1ec4130648f68bfcb16c7d390dd2",
+      "statement": "The mixin deliberately does not own optimizer arm selection: each host keeps its own configure_optimizers, which builds Adam over the trainable arm only (GRPOModule: controlnet on the ControlNet policy or unet on the UNet policy; RewardModule: reward_model; ControlNetLatentFlowModule: controlnet), while the mixin contributes only the requires_grad=False layer and the checkpoint overrides.",
+      "evidence": [
+        {
+          "resource": "repo://src/manifold/modules/controlnet_latent_flow.py#L271-L280",
+          "version": "repo-lines-v1:sha256:5f3047c27d35707c30d8e1ef4d1ca6bdb86d1b2f93280ed38124778bf052fa19:eyJzZWxlY3RlZExpbmVDb3VudCI6MTAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImEyY2UwY2VhYWI4ZTRlMDg4MGQ0ZWM5M2U1MjJlM2MxMjI5Yzg3ZmE1MTEwNzAwOGRjMDYxZTE0ZDlhMWFjZTMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjM2ZDBkYzIyMzkzOTc0Yzg5ZmNkMmRjNmI2OThjZjM5NDZlYzZmZmY0MWFhZWNjNWM0Zjk2YzNkMjgwNGIxMWIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImIxMjFjODY5ZWYyZDQyODVmNjJkNWYxYzVhZTVjNDViZmQ0NzM5MWYyNzFmMDVkOWY4NDJmMGI2ZjQ5Yjc4MWQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImMxM2RiMTdlYjM5ZWU1ZGI4NDM3YzRhYTA4YjRlYmFkMzRjZDY5MzhlNjdhNTVkNzQxNzI1NDRiYWFmMjRhYjkifQ"
+        },
+        {
+          "resource": "repo://src/manifold/modules/frozen_arm.py#L29-L34",
+          "version": "repo-lines-v1:sha256:eddc928ba806d230c5ea57126bbbd0611fac54e28dcf409c0bd879916eaef172:eyJzZWxlY3RlZExpbmVDb3VudCI6NiwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiNmQzYjA3NjljNDFmNTgwODQ1YmI2ZjVmZmE3NDMwNzEyN2Y0ZTRhMWYyNmI0NzA1YzVlYTRmZDg2OTk1OWQxZCIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiOWQzNzg0MDQ1ZjA1ZmRiNDZjNjgxOWQxMjBmMTkxNzY3MGY1ODZkNWMzN2U3YzM4YTE2NTQ1YmUzMTQ0ZmExOSIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiZWM2ZWFmMzEzYjg0NjUzYjc4NmJiNDE5ZWYwYTg1YWE4NDk0MWQzMjg4YWRiNGQ0OWQ4N2EwZjg0ZWIzYjc5MSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiZGU3MjFmNTIyMjA4ZWRhMzhlYzg1ODRiMGY2YzFjMWI4NWQ2NTJjZDI2MzM3MGJjZDI4NTcyNDdjYWUyMmY0MCJ9"
+        },
+        {
+          "resource": "repo://src/manifold/modules/grpo.py#L546-L553",
+          "version": "repo-lines-v1:sha256:06016ab0768bb3e17abfac97c76d8dc091656fbea4b07da824b41396eb386a68:eyJzZWxlY3RlZExpbmVDb3VudCI6OCwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiYTJjZTBjZWFhYjhlNGUwODgwZDRlYzkzZTUyMmUzYzEyMjljODdmYTUxMTA3MDA4ZGMwNjFlMTRkOWExYWNlMyIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMzA5NTJmOTZkMzk1OGU0ZWFmODEwOTFkMDQ3ZjAxNDQ0MzIwYWU0Nzk5YWRhMWVjMjg2ODg5Zjk1YjIyNjY2YiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiYWJhNjcyZjAyNTljMzE1NzE3NGVlZWQzZjQ1MDgyN2NiYzJiYTg5ZTAxNmJmOTAxMzI2OTE3YWNkOTc2NDdjYiIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiMjJhMGVjNjYzNDU5YjlhZWE5NDk3YzE3NmY0NDZkZTU0NzAwNDUwYzA2NDVhNzJjOTYzZjRmZjIwODQxZWUwMCJ9"
+        },
+        {
+          "resource": "repo://src/manifold/modules/reward.py#L371-L379",
+          "version": "repo-lines-v1:sha256:726ae223ddb35ea5d7c59c3d6e74aacb5dfeac7bf8911c2dae15ac877e02963c:eyJzZWxlY3RlZExpbmVDb3VudCI6OSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiYTJjZTBjZWFhYjhlNGUwODgwZDRlYzkzZTUyMmUzYzEyMjljODdmYTUxMTA3MDA4ZGMwNjFlMTRkOWExYWNlMyIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiN2ZiN2YyMzk4Y2MxMDdlMDcyYmM2MGI3NjI0OWY2NWFmZGFjNGFjZDcyY2U4NTY0MDgxOWYyMjEyMjNhZWQ4OCIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiNDRlOGFlMTA0ZWViNTgwNzY0NjhiNDIyNDhkYTMxMjJmZWFhMDg2MWNlYWFjZDc4NDgzZjBkYjljYjMxNzk3MCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjAsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiZTNiMGM0NDI5OGZjMWMxNDlhZmJmNGM4OTk2ZmI5MjQyN2FlNDFlNDY0OWI5MzRjYTQ5NTk5MWI3ODUyYjg1NSJ9"
+        }
+      ]
+    },
+    {
+      "id": "claim_c55d40fc9ecb43d185a0185e5f6dd8bb",
+      "statement": "Host attribution of frozen arms: GRPOModule registers 'reward_model' always, 'unet' as the frozen base only on the ControlNet-policy path (the trainable-policy path assigns unet plainly), and the KL-anchor arms 'reference_unet' / 'reference_controlnet' when a reference_policy is supplied; RewardModule registers its frozen arm as 'denoiser'; ControlNetLatentFlowModule registers the frozen base as 'unet'.",
+      "evidence": [
+        {
+          "resource": "repo://src/manifold/modules/controlnet_latent_flow.py#L128-L140",
+          "version": "repo-lines-v1:sha256:6b13385105e68ed8de4c4840be628f1893c1ca5db45b8b4b0be82937afc483da:eyJzZWxlY3RlZExpbmVDb3VudCI6MTMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImIyNzg0Mjc4YzJjZjVmNWY1YjU4N2IyZmQ4MGRiM2JmM2VmYmJkNzVlMzI1Y2NlYzJmMmQ3YmY3M2JmNDU0YmUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQ0MWY2ZWRmMWMxODc3YjY0ZjA2ZTE5NjhiOWYxNjA3MjQ0NDIxMGI1NThlODM0MzhjZGRhMGNhMmEyNThlOGUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImNiYzk4ODdjZTUwNmZlYTVkMmJjNDk4NmRlY2ZmMjFhNmE0ODBmMGRlZjhmZTYwMGE2YmIyMzE0OGJlMmFiMzgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImM2ODFhOTQ4ZGVkZjA3MTM5Nzc2NDNjZjJmMjNlYmQ4M2UyMGM0Y2E2MDc2YWUwZTY2M2Y4YzZmYzI4M2NlODMifQ"
+        },
+        {
+          "resource": "repo://src/manifold/modules/grpo.py#L344-L386",
+          "version": "repo-lines-v1:sha256:f88b60ae58648ce60a97e6172ac8a7091eca0aafd5f8eb2418e5f12a915066a3:eyJzZWxlY3RlZExpbmVDb3VudCI6NDMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjIxOTcxNjYzMjdjZDYyZmEyNTA4ZThhZjVjMGZkZmYyMWQ4ZGQ4NDEzNmIxNGE4NDQ1ZWMzN2Y2MTFhNzVjYTAiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQwYzYxY2E3OWU2YzkzZjNiMGM5NDY3ZTg4ZTllYjVhNTJmODM1ZWJlZDU5YjVlMzU3MThjYTk3MzliYmY2NjgiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImY2NjdlZGYyZWE3NzE5YTJiODE2YTViMTVmYmYyODMxNjQ4NzI5OTc5ZTNjY2IwOTQ1MGFiNGU2YzgxNDYzNDgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6Ijg4OTM1ZWU4YTU0MjE2ZmNiNGIwY2M4YzU5NDlkODhhNWVkNjA4MTdmMmM1Mzc5ZGQ5YzliN2Q3MDI5ZWQ4OWEifQ"
+        },
+        {
+          "resource": "repo://src/manifold/modules/reward.py#L186-L200",
+          "version": "repo-lines-v1:sha256:725ac861186c8753e3a081cba230a896b955731ed2795f753009775fe9a3c6ae:eyJzZWxlY3RlZExpbmVDb3VudCI6MTUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjIwYzIwYzE5ZmNkYmFmMWM5ZWY1N2M0YTVmNjhlYzFlZmEyOTRlZWY5YjhmYWU3N2VmMGIyYjAzZDdlZGE5YzkiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjMxM2UzMmJhOWMyYTQ5MGE0MDcxOWU3NTBlOGNiZWI5YThmNDFiMGZmMmU2NzRiNTYzODZmZjc3ZmRiMjRmMjMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjczYjc4ODRhNzUxZWZhMzhhN2UxMjVlYjFmMjUwNTc5YzE0MDIxNWVhZjVmZDA5NzIwZDUyNTFjZTAyNmY1ODkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6Ijc3OTBiNTk3ZDYzM2RhYmIwM2FhYjhiNzM0ZDgzMTljOWEzNGYyMTA1ZDYxMWM0N2YxNGU5ZjNjMGJhZGY4MWEifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_3a4a91e42a4e459d96fb2d8c1d7b7f49",
+      "statement": "Hosts declare the mixin first in the MRO (class XModule(FrozenArmMixin, spt.Module)) so the three dunder overrides precede the Lightning base and chain to nn.Module through cooperative super(); the mixin's own contract tests mirror that ordering with a minimal nn.Module-based host to stay independent of Lightning's forward/optimizer machinery.",
+      "evidence": [
+        {
+          "resource": "repo://src/manifold/modules/controlnet_latent_flow.py#L61-L61",
+          "version": "repo-lines-v1:sha256:ddef4b80cb3d5051d192e847c584a12eb791df75137889efd24a1c08daac6920:eyJzZWxlY3RlZExpbmVDb3VudCI6MSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiZGRlZjRiODBjYjNkNTA1MWQxOTJlODQ3YzU4NGExMmViNzkxZGY3NTEzNzg4OWVmZDI0YTFjMDhkYWFjNjkyMCIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiZGRlZjRiODBjYjNkNTA1MWQxOTJlODQ3YzU4NGExMmViNzkxZGY3NTEzNzg4OWVmZDI0YTFjMDhkYWFjNjkyMCIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiZDIxNTczNTY1MGI0YzhmZjFkNjI2YmRjOWE0MjNjZTY5Y2Y3Y2NjMjY2NzRmOWIyY2UwMjg1MmMxNGNiMGFiZCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiNjZjYzIzMGEyZTIyZGQ5NjA0NWJiM2YwODA2Yzc3MzY4NTA2NTRjNWRkNzBiMDJjZGU0NmM4ZjY2YzM1NTMzNCJ9"
+        },
+        {
+          "resource": "repo://src/manifold/modules/frozen_arm.py#L36-L41",
+          "version": "repo-lines-v1:sha256:eefce29c376ad866d2669abfad200bd32dbe7d6a50e0e1b003f9fa787dc2ac2e:eyJzZWxlY3RlZExpbmVDb3VudCI6NiwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiMDFiYTQ3MTljODBiNmZlOTExYjA5MWE3YzA1MTI0YjY0ZWVlY2U5NjRlMDljMDU4ZWY4Zjk4MDVkYWNhNTQ2YiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMDk1ODQ1ZjAzYWVlZTc2YTFmZGIyYzEzZjNjNmI1ODM0ODg2NGE3OWYxZDE0N2FiZWI0ZDlhNWZjNDRiMGE0YyIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiZTRhYWMzN2QzZWRkNDFiMzU0YTNiMDAzYTEyYjk1NGVhOTJiYmRjZmU0ZDFhMTdiODRiZWVkNjNmZjRmNDM5OCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiODg5ZjQ5MzZiMWZhOGEzMzgyMTU3ODJlOTE0N2I2YThkZjQwZjMzZWJjODFjYzk3NjZkZTI4ZTY5YzNiOTMwYiJ9"
+        },
+        {
+          "resource": "repo://src/manifold/modules/grpo.py#L246-L246",
+          "version": "repo-lines-v1:sha256:ae0ac53311f32b63ef3397f603ff017dcf6382b27d0a09f5af1bfdf1a3529aea:eyJzZWxlY3RlZExpbmVDb3VudCI6MSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiYWUwYWM1MzMxMWYzMmI2M2VmMzM5N2Y2MDNmZjAxN2RjZjYzODJiMjdkMGEwOWY1YWYxYmZkZjFhMzUyOWFlYSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiYWUwYWM1MzMxMWYzMmI2M2VmMzM5N2Y2MDNmZjAxN2RjZjYzODJiMjdkMGEwOWY1YWYxYmZkZjFhMzUyOWFlYSIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiNzBlMzJjNzdlMjM3MDA1MWYxOTM1ZjcwMGUyYzJjM2QyMzk1M2YzYjMxNWE2NzZhYzVkZmIxYTYwOGM4NjE1MyIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiMzIzNDc0NDlhY2MyMmU4YjZjMDMwZGJlNzY2Y2VjNGM4MzljZDA2ZTUyNjhmMDBkMTc0MTQyZWNjNDBkM2IwZCJ9"
+        },
+        {
+          "resource": "repo://src/manifold/modules/reward.py#L128-L128",
+          "version": "repo-lines-v1:sha256:d5af6f1139dcbd18f122c46214fd1e2deb01c062cd1a60ef124c2db96bb31e74:eyJzZWxlY3RlZExpbmVDb3VudCI6MSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiZDVhZjZmMTEzOWRjYmQxOGYxMjJjNDYyMTRmZDFlMmRlYjAxYzA2MmNkMWE2MGVmMTI0YzJkYjk2YmIzMWU3NCIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiZDVhZjZmMTEzOWRjYmQxOGYxMjJjNDYyMTRmZDFlMmRlYjAxYzA2MmNkMWE2MGVmMTI0YzJkYjk2YmIzMWU3NCIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiMjI4MjZjNTQ2NmI3OGEzOGViZjI5ZjU0MjU2Mjc1OGFiNTVmZDk3YTdkMTJjM2YxYTI5NGFkNTkzMGEwOGM4MCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiYTU4ODkwNTM0MDE1OWI4MDAwOTkxNjc4OWUzNDVlMzJkYmI3NzNkMTkwMWRmYjA3NDE1NjI2YmQ1ZjNhOTlhNiJ9"
+        },
+        {
+          "resource": "repo://tests/test_frozen_arm_mixin.py#L30-L52",
+          "version": "repo-lines-v1:sha256:e6c4d75d854b93df863e2396925adb6d0afe9bb44dd6aa025624985d93cbb1e1:eyJzZWxlY3RlZExpbmVDb3VudCI6MjMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImZkNGMyZjA0MzE4NzFjNjhkMjYyMWI0Zjc0MmFmMTMwMWVlODhlZWUwZmRlNGU2YTczNzBlOGYwYTAyZTNjNmMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImQ4M2QwZTI3NjViNzZkZDRmMWUzMGJiZmVmZTU1MGJlMDYyZDYxNTJiOTBhZDg5YjkwYzllYjRhZmFiODQ4YTMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6Ijk0MjkyZTIxNGIyZjBkYTA0MTEyNzViYTUyY2UxOGVjYzQ5N2VlMzA1ZjdhNWRlMWY2NDk4ZDg0YWQ3ZDllZWQifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_e70a3421116046ab8cac14855bb1499a",
+      "statement": "The mixin contract is locked by seven behavior tests in tests/test_frozen_arm_mixin.py (registration prep, in-place strip, wrapper-prefix strip, strict-load allow-list, train re-eval, backward isolation, host optimizer selection), and the production-MRO proofs that a frozen arm is registered yet dual-excluded live in the host suites: test_controlnet_module_training.py::test_base_is_registered_but_dual_excluded, test_grpo.py::test_frozen_arms_registered_but_dual_excluded (plus its wrapper-prefix, strict-load and train-mode tests), and test_reward.py::test_module_backward_updates_discriminator_only.",
+      "evidence": [
+        {
+          "resource": "repo://tests/test_controlnet_module_training.py#L87-L118",
+          "version": "repo-lines-v1:sha256:d9689f825990947f8a2caea679fb6e360ca5f09261a5ea80f2bc8fa534d2e543:eyJzZWxlY3RlZExpbmVDb3VudCI6MzIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImVjNmRmZDU2MWQzNzM1MjAwY2VhOGQ5NTk3ZDY3ZTVlZWU1ZGY1MGFkYmUyMmY3NGZkZDcwOWY0ZjVmZGQ0MGQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjYyNmFkNjU5Y2UxNDE2ZmQ4YTQ3OWFhMjU4NzgxMzRhM2VjNTA4MzBmNWQyNTFlNGU5ZmQ0ZmNiNWEzNmYyNTQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjU5OGJhM2MzNjRlNjU1YWE4YzY2NzY4ODQ2MzAyMTdmYjQyYWM5ZGZmMDc4M2I3NTliNjA0MzNmMjMyN2M0MWIifQ"
+        },
+        {
+          "resource": "repo://tests/test_frozen_arm_mixin.py#L57-L177",
+          "version": "repo-lines-v1:sha256:d3675c01d8061f41f7db8df9410fe1d36ed8654c1c1d1f027416e29fa2f66da8:eyJzZWxlY3RlZExpbmVDb3VudCI6MTIxLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiIyZDYxNDE2NTk5OWU3MzQxZTVhZDdiZTA2NGRhYjc1YTM2MGM4N2ZmMjRiYzFhNTFhNWJiNThhNzgwNTdhODBjIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI4YTljNDllNDMxMTFjMDVlMzk2NGJlMjBhNWI2MWYzZDViY2Q2ZTFlNGI1OTI5MTMwOTBjYTI5ZjE3OGQ3YzI2IiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiJhMDNmODhmMWU5ZmNhNmVjMTZmMTUxODFhMTllMDE1Y2FmM2UyNWEwMDI1YTZlMTJhNjE3MDc2MTVhZTRlYjFmIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MCwiZm9sbG93aW5nQ29udGV4dEhhc2giOiJlM2IwYzQ0Mjk4ZmMxYzE0OWFmYmY0Yzg5OTZmYjkyNDI3YWU0MWU0NjQ5YjkzNGNhNDk1OTkxYjc4NTJiODU1In0"
+        },
+        {
+          "resource": "repo://tests/test_grpo.py#L378-L420",
+          "version": "repo-lines-v1:sha256:8c939b97b79ce455d328936c8b412a7fe2bfc4f8d09374b93a8d225e60526424:eyJzZWxlY3RlZExpbmVDb3VudCI6NDMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImU3NDcyNjcxYWVlNThjMTU5N2QzOWIwOWY1YmYzNGI5NmVhYTk2N2Y4Njk2NGUzMmYzYWI5NzYzM2FlNGU0MDUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjMyZDZlNWU5NTEwNDRiYmViMjEzOTU3OWU3MTAxODM2NmE1ZGY1NDYwNzA3MzFjZDE4MzMxM2MwYmNkYTNmNTMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjEzMGRkZTZkZjFhOWY5MmI3ZWM5NDIyNGE0ZjM5N2U5Y2U0ZDhiY2YwZmZlOTNkZTU3NzdlOWZlMTAyZjFkYTIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6Ijk1ZTYzZDhiMzgxY2E2MDg5NWZiMjkwNGQ3ZjQ1NGNkYTkxN2RlODZhYzA0MTFlMmUwYmJkMzAzNDNmMmRkMzkifQ"
+        },
+        {
+          "resource": "repo://tests/test_reward.py#L160-L184",
+          "version": "repo-lines-v1:sha256:9d03a20adf4fceadad6cb95c2dbec57158de6c3f115b535fb6f40f82dec84f66:eyJzZWxlY3RlZExpbmVDb3VudCI6MjUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImJlNzdkYzM1ZmVmOTU0NjE3OWJiMTAxMjM3MTI1NmY4M2I2MGUwYzZiNjIwNTQ5YjU1YTcyOGQ0YmQ3ZmI2ZmEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjI0NDYzMjc0N2U0MDgwYzdlZmUxOWJlZmY3MTJiMzlmMWUwNDFmOWEwNjJjMjQ4MmFhYTkxZjllYjg5M2M2MjAiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjUxMGFlZDBlMTkyZWNlOGZhMjM2Yjg0MzNlMWI0NTRmNWQxYWE1ODNmMzRjM2ZhZTg5N2JhMjhmNzg3YWY3ZDgifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_40bfa0cfc20a4a66ab32b4659527c2b3",
+      "statement": "DevicePolicy construction is side-effect free: __init__ reads os.environ LOCAL_RANK once (missing defaults to 0), stores it, and touches neither CUDA nor the process group; the snapshot is taken at construction, so post-process-group callers never re-resolve the rank via dist.get_rank().",
+      "evidence": [
+        {
+          "resource": "repo://src/manifold/training/device_policy.py#L38-L44",
+          "version": "repo-lines-v1:sha256:3f794df26df910da1499ac74b64803253519701382816dd03e355195c698f25c:eyJzZWxlY3RlZExpbmVDb3VudCI6NywiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiOGU4NWVmMDBkYmQyODJjNzdkNThiMWM0MjVjZGZkOWJiZWI3ZmZlOWRmYzc2ZjNkMzY2ZjVhYjI3ZTJmODJjMiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiYWUxOTE3NWZlNzZkMGU2MGE0MTlhZWE2ZDBjZWJiOGIzY2QxNWZiZTIwNDIzYjQxMzFjMTdiMDUzNjM3YmEwNyIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiZjE5ZmY1YjBmOTJjOWRlMzlkOWFhY2E1MTE2YmRmMjA2NmYzZjAyYjg5NGUwZjcwYTVhY2Q2NjkxNThlZTgxMSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiNDI3MDY2OGE0ZGE0NWZhNGFlMmFkZmM0ZjRiMzQ2ZTY0NjNjOThjYWUyOTE2ZjY4OWQ4MjBmY2YyNzE3ZWQwNyJ9"
+        }
+      ]
+    },
+    {
+      "id": "claim_78c4fa869c4a43ca84848a3a6a5edeba",
+      "statement": "DevicePolicy.pin() is the single pre-process-group side effect: when CUDA is available it calls torch.cuda.set_device(local_rank) only if local_rank is below torch.cuda.device_count() (an out-of-range LOCAL_RANK skips the call but still returns cuda:{local_rank}), and when CUDA is unavailable it returns cpu with no side effect at all.",
+      "evidence": [
+        {
+          "resource": "repo://src/manifold/training/device_policy.py#L46-L54",
+          "version": "repo-lines-v1:sha256:fc40b8a41be09bdbb1adbe332ac4376cef4283303408dae21a0ee1f6180c3718:eyJzZWxlY3RlZExpbmVDb3VudCI6OSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiMDFiYTQ3MTljODBiNmZlOTExYjA5MWE3YzA1MTI0YjY0ZWVlY2U5NjRlMDljMDU4ZWY4Zjk4MDVkYWNhNTQ2YiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiNGZmZjY1YzgzY2ZhZmE0NTIwYmM2ZWIxZWI5Mzc5OGQwMjc5MDg4YTNiMWY0YzMyNmYwOWU5NDYzNThmYjE3NCIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiZjJkZTNiNDVhZjBmMzY3ZGFkNjUxNjk0Yjg0OGExMGQxZjRkZWVmNjI5ZTJjYzU4NzkzYzUyOTBjMzk5NTJlZSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiYjQwOGNiNjNiN2QyN2E5OTgyYzU3ODQ0ZDAxNjE2NmUzZmExMzVjYzg0YzJjZDM2NDRiOTRmYjJlNDc1ZmY0MyJ9"
+        }
+      ]
+    },
+    {
+      "id": "claim_a6bd8d4ca80d4e47b1ee178b2f0f4509",
+      "statement": "DevicePolicy.device() returns the same cuda:{local_rank} or cpu value as pin() but never calls set_device; it exists for read-only/debug paths and currently has no production call site — pin() and warm_device() are the only methods used by the training shells.",
+      "evidence": [
+        {
+          "resource": "repo://src/manifold/training/controlnet_cli.py#L276-L290",
+          "version": "repo-lines-v1:sha256:a6ee1c93307936ba23ba765f5b24be02728a1d406cceccd585452bf1f8c9368f:eyJzZWxlY3RlZExpbmVDb3VudCI6MTUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjdiZTcxN2UyOWZkZTAwYTUxNzE3MzUzYzlhZTE0ZTE3ZTk3ZGI5OGU1MzA1YTY1Nzc3ZjlmZTQwMDFiNDdlMzMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjhkZjk3NjFkZDMzM2FjZGRjOGEwNzE4YTc0ZjRiMTg5NmU2ZGFkNmI1Y2JmYTg4MGM3YzJlNWM2ZWU4MzI2Y2EiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImJhZmM2MjM0NmM1MmM4ZWYwOWYxZDc1OWU2ZmJjZDI2MGJhYTNhMzRmMjY5ZmE1N2ZhZTZjNjIxZWRmNDU5YjIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjFhOWE2YjQ2ZTJjOTE3ZjQwZDk4YTg5MTBlNWNmODc3NjRmM2Y4NmIzNzBlODdlOTlmY2I2N2EwOTdiMTdhNzYifQ"
+        },
+        {
+          "resource": "repo://src/manifold/training/device_policy.py#L56-L61",
+          "version": "repo-lines-v1:sha256:e3b37ba726c60c727a97be9e67b7b03d90a126f8ea5faee0db1f1934b587dd04:eyJzZWxlY3RlZExpbmVDb3VudCI6NiwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiMDFiYTQ3MTljODBiNmZlOTExYjA5MWE3YzA1MTI0YjY0ZWVlY2U5NjRlMDljMDU4ZWY4Zjk4MDVkYWNhNTQ2YiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMzUyOGNlOWNlYmEzZGU2ODM1ODQ4YWNkMDMzNmQzMzQ4N2YwNDlmNDY4MzQ0NGNjZDQ1N2Y1ZGExYWE2YjI1MyIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiNWFkNzRiMDA0MGYyMTE4NmQxNzM0NDc4NjBjNjZkZDVhOTJkZDg1ZTA1MzZkZDUwZDg0ZTUxN2ZmYjRmN2I2MyIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiYjE5NzQ5YTZkNGFlYzEwZGUyM2FhMDFlYzY0NjM4NmY0OGRiMmUwMWJhNGJhN2YzNzk2MGRjNTljNzk0OWE4YyJ9"
+        },
+        {
+          "resource": "repo://src/manifold/training/grpo_cli.py#L364-L380",
+          "version": "repo-lines-v1:sha256:6e9610084104bbd1bd2327fd727e11126298be570c254e14598b6489d73fa452:eyJzZWxlY3RlZExpbmVDb3VudCI6MTcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjdiZTcxN2UyOWZkZTAwYTUxNzE3MzUzYzlhZTE0ZTE3ZTk3ZGI5OGU1MzA1YTY1Nzc3ZjlmZTQwMDFiNDdlMzMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjlmYTM4ZjFhY2I4NjA5MjNmMDQ3OTU2ZWI2YjA3MjEzMGIyMjRhNmQ5ZmE2YTI5YzYwNWNiMGNiNjU1MjFhNzMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImJhZmM2MjM0NmM1MmM4ZWYwOWYxZDc1OWU2ZmJjZDI2MGJhYTNhMzRmMjY5ZmE1N2ZhZTZjNjIxZWRmNDU5YjIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6Ijc3ZmY5NTlhYWY5NjJhYzFiNDM2YjAzYTk2MWI4Y2IxNjUxZTY2Zjg1YWNmNGQxZTZhYzBkZTM0OWQ0NTM1NTcifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_a9dca5b862e34c0dbd59a1680972219d",
+      "statement": "DevicePolicy.warm_device(fallback) imports torch.distributed lazily inside the method body (importing the module never touches the process group) and resolves cuda:{local_rank} only when the fallback's type is 'cuda' and the process group is initialized; otherwise it returns the fallback unchanged, and there is no torch.cuda.is_available() gate, so a CUDA fallback under a live process group still resolves to the per-rank device on a CPU-only box.",
+      "evidence": [
+        {
+          "resource": "repo://src/manifold/training/device_policy.py#L63-L85",
+          "version": "repo-lines-v1:sha256:6ce84c877348fa0a2003f10d3eb2ddb81325d80da74e1806f8775ee8dfef72f5:eyJzZWxlY3RlZExpbmVDb3VudCI6MjMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjUyMzJlZWU3OTg3ODNjNDY5YmNiMzI5ODc4MTBlNGY1N2E2YmQxYThhODYwN2NhYjBjZjgzNmIyMTMwMGIwYTUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjM5MjdiMTAwZDMyYzdhYTA5NjI5ZGIxMTg0ZDlhN2Y5OGY4NDJjM2ExZWU0ZjE5ODhjY2U2YzI0YTcxYmJmMzUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImFmYzQzNzEyZTMzYTdiYWFlMTQ4YjA2ZDg4OGMyMDhkMTRkY2Y2MjUwY2I1M2E2MmQ0ZGZhOWZmOTc0YjkzOWQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_d6d5887197214ab086f3335997f377c6",
+      "statement": "The GRPO, reward and controlnet training shells resolve their pre-process-group device through DevicePolicy().pin() on the real path, while the injected data_provider smoke seam stays on torch.device('cpu') and never constructs a DevicePolicy — the smoke remains GPU-free and launcher-env-free.",
+      "evidence": [
+        {
+          "resource": "repo://src/manifold/training/controlnet_cli.py#L276-L290",
+          "version": "repo-lines-v1:sha256:a6ee1c93307936ba23ba765f5b24be02728a1d406cceccd585452bf1f8c9368f:eyJzZWxlY3RlZExpbmVDb3VudCI6MTUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjdiZTcxN2UyOWZkZTAwYTUxNzE3MzUzYzlhZTE0ZTE3ZTk3ZGI5OGU1MzA1YTY1Nzc3ZjlmZTQwMDFiNDdlMzMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjhkZjk3NjFkZDMzM2FjZGRjOGEwNzE4YTc0ZjRiMTg5NmU2ZGFkNmI1Y2JmYTg4MGM3YzJlNWM2ZWU4MzI2Y2EiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImJhZmM2MjM0NmM1MmM4ZWYwOWYxZDc1OWU2ZmJjZDI2MGJhYTNhMzRmMjY5ZmE1N2ZhZTZjNjIxZWRmNDU5YjIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjFhOWE2YjQ2ZTJjOTE3ZjQwZDk4YTg5MTBlNWNmODc3NjRmM2Y4NmIzNzBlODdlOTlmY2I2N2EwOTdiMTdhNzYifQ"
+        },
+        {
+          "resource": "repo://src/manifold/training/grpo_cli.py#L364-L380",
+          "version": "repo-lines-v1:sha256:6e9610084104bbd1bd2327fd727e11126298be570c254e14598b6489d73fa452:eyJzZWxlY3RlZExpbmVDb3VudCI6MTcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjdiZTcxN2UyOWZkZTAwYTUxNzE3MzUzYzlhZTE0ZTE3ZTk3ZGI5OGU1MzA1YTY1Nzc3ZjlmZTQwMDFiNDdlMzMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjlmYTM4ZjFhY2I4NjA5MjNmMDQ3OTU2ZWI2YjA3MjEzMGIyMjRhNmQ5ZmE2YTI5YzYwNWNiMGNiNjU1MjFhNzMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImJhZmM2MjM0NmM1MmM4ZWYwOWYxZDc1OWU2ZmJjZDI2MGJhYTNhMzRmMjY5ZmE1N2ZhZTZjNjIxZWRmNDU5YjIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6Ijc3ZmY5NTlhYWY5NjJhYzFiNDM2YjAzYTk2MWI4Y2IxNjUxZTY2Zjg1YWNmNGQxZTZhYzBkZTM0OWQ0NTM1NTcifQ"
+        },
+        {
+          "resource": "repo://src/manifold/training/reward_cli.py#L265-L280",
+          "version": "repo-lines-v1:sha256:1fac55e2ad6de92389fa0650d174d71ae797581b2763cacf43c152baa7209f91:eyJzZWxlY3RlZExpbmVDb3VudCI6MTYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjdiZTcxN2UyOWZkZTAwYTUxNzE3MzUzYzlhZTE0ZTE3ZTk3ZGI5OGU1MzA1YTY1Nzc3ZjlmZTQwMDFiNDdlMzMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImI2YjJkOThjNWU1YjRhZDlhYWQzYzY3NWZlODBlMjQ4ZDcxZDc3Y2JmOGFkOTRiMzA5NjRkNjc2ZjczYWU4OWUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImJhZmM2MjM0NmM1MmM4ZWYwOWYxZDc1OWU2ZmJjZDI2MGJhYTNhMzRmMjY5ZmE1N2ZhZTZjNjIxZWRmNDU5YjIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImI5ZDA1ZTIwZjY1MTNkMDk2YTU4NDg1MzJjYzIyMTUyYWVhMjVkMzY2MGZlNmEzOWM0OTk2OTY3M2M0OTk5MjYifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_91c69cdcb5cd4724b30987e532765ad3",
+      "statement": "The JiT shell does not pin: it keeps a bare launch-time torch.device('cuda' if torch.cuda.is_available() else 'cpu'), builds the VAE on CPU before the process group exists so nothing is staged on a GPU, and resolves the per-rank device only in the post-process-group warm closure via DevicePolicy().warm_device(device); the controlnet _real_inputs warm closure resolves it the same way.",
+      "evidence": [
+        {
+          "resource": "repo://src/manifold/training/cli.py#L388-L392",
+          "version": "repo-lines-v1:sha256:5ef628da22301d2ce8729696e48da11dd8ab9e2f4964be4ee4c37a9fbce34cc0:eyJzZWxlY3RlZExpbmVDb3VudCI6NSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiZDFlMGJlNWI2ZmI4Yzc5OTYzOTI2ZjQ5ZWYyMjRiNDEzYThkY2E5MjNiZDUxNzAwNzRmMzE2MmRkNGRiYzVkZiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiYzk2ZDkwZGNjMmQzMDE1Njk5MWQ5M2Q5ZWU3MGYzNDQ5NDU4MGM1Y2QxOTQzNzljMjVkMjE2MzRhMTVmYjVhNiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiZTcyNDE2ODg0ZjhkMjM4ZTkwYTI3Zjk2OTgxNDY3ODMzMGY2YjU1NDc5MzRmNzAxMGQ0MTkzNDFlYzk2NWMzNCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiNGIxY2JlNzlmNTNmNWNlZjlmMTkwN2NiZTNhYWYzYmM2OWY1MDNlYzUwMmIwOTk1Y2NmNDVlNDE3YjQ0OTI0ZiJ9"
+        },
+        {
+          "resource": "repo://src/manifold/training/cli.py#L536-L552",
+          "version": "repo-lines-v1:sha256:75acaca6992cee3aad3fa4a260a5b90a66a2226f7027ab590bfb06fc1ac3aed0:eyJzZWxlY3RlZExpbmVDb3VudCI6MTcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjBjNGU5Nzc3N2ZjOGNhYTI4NTY3OTY0ZTY3ZmQ1MDNmYzYwY2NhMDEyMWIwOTg5YTI3YTQwMjI1MjFiNTYyYWIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ5OWY4OGM4ODk2NTdmZjZhZjU5NDQ5OGQ1MzE3OTM4MWY4YzI4ZTQ0ZDZlZTJkMzk4ZGVlNzUxYWQyNWJkYjQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImE0ZTg2MTBlNWU4NTFkM2Q1MDlhMGY4ZmNkNDMwOGIwMWMzYWUzNTYzMGExOWM1YTgzZjIwMjgyNmVmZGYyYWEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjVlMGZiN2FmMzIzMjhlMzgyNmNkMzdiYzc4ZDJkNjc5OGJhMjI0MTI3NGE5ZmE5MjE4MzYwNTdhYzA5ZWNiYjYifQ"
+        },
+        {
+          "resource": "repo://src/manifold/training/controlnet_cli.py#L433-L445",
+          "version": "repo-lines-v1:sha256:1578662c7bfb7240f037602c31b8c3ccaa212f7c0f8c910e1cd988b481af3f06:eyJzZWxlY3RlZExpbmVDb3VudCI6MTMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ0YWY4NGY1ZDdlMTg2NTExMWNhNjhlOTZlNmEwYWM1YjRhMDc5MjNkMTM2OTY3Y2RjZWQ2NGE0N2U0YmNkNjIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImYzZTI1Njc4NDVlN2NkMzYxZGM3NGQ4Njk3N2Y4MzhkODUxNGFkN2EyZWEzNWJiYzY1YTA0NTJhNmViOGQwYTciLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjQ2ZDdkODFkODAyMjgwZDZmZmY1MDIxNDZkMzY5MTA4NzY0ODJiMzMzM2Y0ZjBjMTg0YWNhYjU4MjFmNDU3ODQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjI0MGE3ZTNlNmZlYWZjZGJhZmIxZGNlMDBmZWEwOWFhNWYzMzU2NzVkMWQwYWU0ZTBhOTFlYzI4YzY0ZGIyY2YifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_7d3ab78c68554f7b81d6173664c4d24b",
+      "statement": "The latent_pipeline.resolve_warm_device free function was deleted when DevicePolicy landed; the only remaining references to the name are docstring provenance notes and the regression-guard assertion strings that keep it from returning.",
+      "evidence": [
+        {
+          "resource": "repo://docs/adr/0035-devicepolicy-per-rank-device.md#L106-L110",
+          "version": "repo-lines-v1:sha256:45cd3c59a57555e8c374f49ff4af0cf36b584229070d1e6ca2fe1d18646845f0:eyJzZWxlY3RlZExpbmVDb3VudCI6NSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiOWQyZDYxZWMwNTJlNGFmZTg3NmM2MWM5MzZjMDQ1NmY5NmQ0NGQ4ZWFhNDJmOTVkNzlmNGJjYTc4NjQ3ZmIxYiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMzQ4ZDFkYzUzMGUyMzkxYTNlZTZjNjljM2Y3MmQ5M2I1ZGIzMWY4OWYyYmUwNWZlYmYxZTgzZGU2Nzc1NmQzMCIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiYjE1OWYzOTA4NzI0OGEyM2RjYjU4ZTc1MjI4N2NmNDU1MWRmMDNkOTAwNGFkNTY5MjA5YzA5NjcyMGFmZjA1NSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiZWIwYjE1M2E0OTQ3ZGZmNjViMzE4MTk1MGJiYTk3MzFkMGZiOTFjOWMyOGY5ODU1NDNiMGJhMzVmYzNkYzgwNCJ9"
+        },
+        {
+          "resource": "repo://src/manifold/training/device_policy.py#L20-L27",
+          "version": "repo-lines-v1:sha256:82b82a88e5877e17b1949c00a10e418cad97dee30ffb9ac76f138037c9277903:eyJzZWxlY3RlZExpbmVDb3VudCI6OCwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiYjVlNzBmYTg1NWVkNGU4ZWY5Yjg5ODJkOGUzMDIyNDY5YmRiMDUxODViMzI5MDBiNWM0OWU1NjkxNTQxMjEwYyIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiYTMwM2VjZGQ0YTRkMTBmMTljNzNmZDQyZmQxMjQzN2ZkMzM1NGE4MjY4MTYwNWRhNTI1NWE5N2EzOTA2OGRiYiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiZDUyYzFjMTFlYWIzYzE1YzQ1ZjU2YmZhZDA4YjQzODU1NTI2ZGVhNGU5Y2M2MWJjMDRkYmU3N2ZlZTA2NTFhNyIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiNTViNmU4NzA2YjQzMDQ3ZjJhNmRiNjdmMTMyNjM4NTk1NjA0ZTY3ZjM2OTY2ODc2Y2UwMTU4ZjAwNTNlNmJkMSJ9"
+        }
+      ]
+    },
+    {
+      "id": "claim_f9314965b2fb49d885f266fc642fffcd",
+      "statement": "The DevicePolicy wiring is locked by inspect.getsource guards: three in tests/test_device_policy.py assert that grpo_cli.main, reward_cli.main and controlnet_cli.main construct a DevicePolicy and call .pin() and no longer inline set_device or resolve a bare torch.device('cuda'), and two in tests/test_ddp_warm.py assert the JiT and controlnet warm closures use DevicePolicy.warm_device rather than the deleted free function; a 2-rank spawn smoke (test_controlnet_cli.py::test_main_real_path_pins_each_rank_to_local_gpu) additionally locks that the two ranks receive different per-rank devices instead of collapsing onto cuda:0.",
+      "evidence": [
+        {
+          "resource": "repo://tests/test_controlnet_cli.py#L387-L428",
+          "version": "repo-lines-v1:sha256:dacecdc04afa8524fd69d1bff596cbbc01745d7161f48c6f7e05e7ce7695f6dc:eyJzZWxlY3RlZExpbmVDb3VudCI6NDIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjlmNGQ3ZDJkYzg2MzYxY2JkNjg0Y2U3MDE3NmY3NzljZDAxNWRiMjNlMzY5OGY1OTZlYjJmMGJhZjlmMjIyNDciLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjU3NTg3MjI4MDMyMjFkZjM3NjVmZGYwYjUxZmJiYzE3ZGZhNGNlM2FkZTJkYTViYTcwNTliODhkYWEzZDg1ZWIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
+        },
+        {
+          "resource": "repo://tests/test_ddp_warm.py#L184-L232",
+          "version": "repo-lines-v1:sha256:4da0c9069b0a03054d9afdf62c1a366ad6ec2dfb099e7761c1b869ded7303d0e:eyJzZWxlY3RlZExpbmVDb3VudCI6NDksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAwOTkzMjc0NWFhMGYxMDUxMWYzNzQ3ZDRkZGJmODhmOTdjNTNhOGQ3NWJlZTM1NjllYzc3N2VkOTE2MGQ0MzkiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImFkNjUyYmRhMzg2NzBkNTI3NzZhN2M2NzNkMGI5Njc1ZWI3MjdhYjRkMDZlYjE5N2QxOTdiMDBiN2QwMzVlNmQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjkwNzE1MzIzMWU1MWM4MmYwNDUyMWJjNTk5MGQwMWYzMGRiYmZmNTM4MDhhOGI3ZGM2ZDBhNzllNmE5OTUwYjIifQ"
+        },
+        {
+          "resource": "repo://tests/test_device_policy.py#L143-L195",
+          "version": "repo-lines-v1:sha256:cce499aebf7b72aa7b22bde0a5fa8212a6bec7128cc253034fa7eb3296c7e8f9:eyJzZWxlY3RlZExpbmVDb3VudCI6NTMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjgwNmFkNTVkZTZlNDBhN2MwOGM3MWEyNmMxM2E0OTQ3NmFjY2Q3MmRjYjJlZGFlMDdmMzZmNGYxYWNkM2NkM2YiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjMwYzFmMTg4ZjE0MmVkN2E4MjQ2ODBiMjA3MTcyYzU1MTliYzYxNGE0OGZkYTdjZjE2N2VkYjhkZGY3OTk1NmMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjhlMTM2ZThhM2FmODlhZjFjYjRiMzFmNjcwNDk2ZmE0N2NlZWE1NThlMDhhZGYwNzY3MjU3YmFmNjI3NDJjMTYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_8baf51ac9b924b329f55be82acb0c00a",
+      "statement": "Registering the frozen arms gives up one invariant the old object.__setattr__ bypass had: at DistributedDataParallel construction every registered parameter, including the requires_grad=False frozen arms, is broadcast from rank 0 — a one-time startup cost GRPO pays several times (base + reward + reference UNet + reference ControlNet) that can compound DDP-init timeout pressure; the documented mitigation is to construct the arms identically on every rank rather than adding a DDP exclusion hack, and DDP keeps the default broadcast_buffers=True with find_unused_parameters=True unchanged.",
+      "evidence": [
+        {
+          "resource": "repo://docs/adr/0031-device-ownership.md#L152-L165",
+          "version": "repo-lines-v1:sha256:ab4775d9622ac2ee0a21cf40bb8dee35a0a1e1a72bd33760b1f0337e5b6582c2:eyJzZWxlY3RlZExpbmVDb3VudCI6MTQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImNiNzlkMWUwZGNlNmUxZDVjYzc2OTgwZTA5Yjk4NTViNWU0YTU2ZTc0NWI2NzgwOGRhODhiODAwMzYzNzFmNjIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImYwMjAzNGNjNmY1NDQwMDIxNjY5ZTM0ZjhkZGI5ZTI2NjYxNTJiNzIzYzMyMGM0YjhlNjA0NTM1ODJhMTI2NWYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijk2ZjliM2RmZmUzNDM3NGNkNWNlYjc3YjY1MDJiOTM3NGIzYjY1MGY4Zjc5ZjJhNTBiZmI5NGNjM2NjMWYyMmMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImMyZDQxY2E1MGE4NjBjYTEzZDhlNDQ4MmIyOGI1Y2UyY2YxNWJmMTUxZjhiMjdkZGZkNmZlODc5ZTYyNGFkMDYifQ"
+        },
+        {
+          "resource": "repo://docs/adr/0031-device-ownership.md#L63-L71",
+          "version": "repo-lines-v1:sha256:4e602f10a06e161be30f274ac6f0aca97102642e1cb84e5747c1da1f728a2900:eyJzZWxlY3RlZExpbmVDb3VudCI6OSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiYzYxZmM4YWQzYTk3OWQwZDNkMDg2OTJjZmY4OTNlYTJiMDc3YzQ5YTQzOGUxNzY5NGEwNmFhY2U2MzE5ZmZjOCIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiZDE1MDUyYmNiNWU2ZDQ5ZWNlZDA0MzFlNDJhYjM1M2I2OWE0NTY3N2ZkOGFhZDE0NGY0YWFkYjU4NTRjMGM2NyIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiODUyNzMyMTg5MWMxMDkxNGEyODE5MWFiMzM3NzVhNmUyOGJmNGRlNjRlMTI2MGE1MjUwMWZhNzBiNmRlNWVmMiIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiZWFlOGVhNzE0OTVkMDQ3YjdlMGM0NzJlMzlkODcxYWI0ZTM4MmE1Y2M0MmFmMGRkZmUyOTE4NTkwZWJmZDMyMyJ9"
+        },
+        {
+          "resource": "repo://src/manifold/training/trainer.py#L75-L85",
+          "version": "repo-lines-v1:sha256:f80086a14afea55843e28d80525e1fab9b5ecef68d06c45b0712c856eba9c64c:eyJzZWxlY3RlZExpbmVDb3VudCI6MTEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImY0YjhmNDc5N2Y4OWIzZjUwZTZjNGVhMjMwZTI0NTZmZDQ5MTM1M2NmYTMzNGFmZmVmMzI4ZGMxYzhiMzIzNmEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjA4MGFlMmQwZTRjNDllYTBmY2I1ZWYzZTlmMTQyZDRiZGFkNTE1NTFkNTRkOWIyYzliODdjMjMzNmQyYzI4YTgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjU3NDIwYjZlODJiNTc4MTQ0NTdhOWMyY2Y2ODE3ODBkNWU4NWQyYTM5Njk1ZDRhMDEwZjJiNWRhNzFjZWQyZDQifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_4ace399b5b7f4dd8aa588f11ff558cda",
+      "statement": "The vocabulary of record is stale on this point: CONTEXT.md still calls the reward Module's frozen denoiser and the GRPO Module's frozen reward model 'unregistered' (the retired object.__setattr__ bypass), and the same pre-ADR-0031 qualifier survives in source comments in export.py, export_cli.py, controlnet_cli.py and grpo_cli.py — the implemented mixin registers those arms as normal submodules and dual-excludes them, so that wording must not be copied.",
+      "evidence": [
+        {
+          "resource": "repo://CONTEXT.md#L247-L252",
+          "version": "repo-lines-v1:sha256:c83c934621371af8496f22c6ce703a93a47ebb6cbd43bf4954c6306f2ec140b0:eyJzZWxlY3RlZExpbmVDb3VudCI6NiwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiODEyNzQzZGVhNzA0MjU1ZTg1MTEwMDBhNDEyMjFiMjg4MmEwYzcwN2NmYTU5ZjE4Y2YyNDhhZGE5MzdhMGUyZSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMjY3ZTNlOGFiMDkxOWQyNTQyZGY0NTE2NTNmODgxZGYxZTgyYmI0NDBjMWY3NGFmYzE1Mjg0NWY1MTg5ZTM4NyIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiODE5YzRhZDY0Yzg0ODIzNGVjZThmYTcwNWU2N2Q3YWE4N2FlMTA1NGFjMjJmNjY3ZWVkNmJhNmQ1NTlmNGNlOSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiMjJhM2Y3MmNkZjZjNjRiMjdhNmNhNjgzODJiNTZlNDVkYWY3ZDM0MDg4ZTFiYjNhNjUzYzNkMWUwNGQ2ZjIxNSJ9"
+        },
+        {
+          "resource": "repo://CONTEXT.md#L336-L341",
+          "version": "repo-lines-v1:sha256:17693eb4fc7fe0d385029ce57ecf8524fb6589aab478996d59a60faa17833239:eyJzZWxlY3RlZExpbmVDb3VudCI6NiwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiYTEyODNhNDNiYjU3OGY1NmUzOGQ0NGU1ZTNkNjc0NjIzZmFiOGVmMmI5YTczYjc5MjUwZWU0MGMxMDMyZTA5MiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiYjM2ODA1YzdmODYxMWVmZGJiNzRmMGE3ZWU4NTdkMTE3MDY5NTBmZjRiZGI4ZDhkZmVjM2U4MWQ2YjM0YmY0ZCIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiYTk0OWIxY2IzMGZkNDIzN2M5NTFkMjA5NTc3Y2ZmOGI4MWI1N2JmNTZlODVhNjdlZDMxNTdjNDBmNjg5Mzk1NiIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiNzc4YTE0NjQxMTRhMDliYjQ0NDgzN2E3MmU3YWFlZjY0ODdhMjZjN2IzMWJjY2ZiMmI5ZDk1ZGJkMWQwOTczOSJ9"
+        },
+        {
+          "resource": "repo://src/manifold/training/controlnet_cli.py#L61-L70",
+          "version": "repo-lines-v1:sha256:bef77da580811b6d121723b93185d6721d123bd046eb88200af4ff2e5e27b6c2:eyJzZWxlY3RlZExpbmVDb3VudCI6MTAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUyZDcxMjdkYjI3OTllZDY4N2MyOWFhNzE5ZDEyMTg0MTM1YWE1MzJkZDk5NjNjOTllNDE4MTc1ZGYwYzE0MjQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjBiOTgzNzAxOThkZTU0NGExZmI3ZGYzN2YyNDFlNzEwNGUzMjIyZjlmNjRkNWY0MDljZTViMWY4OTY1MWVjZWEifQ"
+        },
+        {
+          "resource": "repo://src/manifold/training/grpo_cli.py#L760-L770",
+          "version": "repo-lines-v1:sha256:68960ba77d23acea2a3d7b25c078e8bf2adf333ba94fea2b86bf071b022c5993:eyJzZWxlY3RlZExpbmVDb3VudCI6MTEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjYzMjg5MDJlMzI4MWI5MWQyZDlhYmJiNWEyMzc3YTRlZjRjYTFiNDg0MzRlMTdlODYwZTBlNzYzMWUzMTRiZjAiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ4NGNiM2QxMTczNDIzZmJjMmM4N2ZjZTA4NWE5NjdjYmZkNWZhMzJkM2RhMTZlNmZjYWM4ZWUyYzgyMGNiYTYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjU0OWJkM2JjYWU5NDAzZjEyMmI1ZjU1ZGNiNTY2M2QzOGQ2YTViYzZiNjYyNDNhZDQyYjYzYzBjYzhkMjJlZDIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjM0Y2QxYTJiMWYyYzA2ZWYzZDJkYjczOGUyNDQ5MWFlM2NkZjBkMDgxOTljMjE5MWI4OTJiNWY0ZjE1OGEzMDgifQ"
+        }
+      ]
+    }
+  ],
+  "verification": {
+    "by": "openwiki/0.9.0",
+    "at": "2026-11-13T16:00:22.072Z"
+  }
+}

@@ -1,0 +1,230 @@
+{
+  "schemaVersion": 1,
+  "pageVersion": "sha256:a6c084de0c163bb535d429f688d287d9bd30236c95fa5b45655d5bc2d6fda8d5",
+  "claims": [
+    {
+      "id": "claim_2f100e8dfdce4f698acc9301566b8b27",
+      "statement": "CallbackRegistry maps a callback name to a spec dataclass class: register() rejects anything that is not a @dataclass with a TypeError, and resolve() fails fast at config time — an unknown name raises KeyError listing the registered names, and an unknown knob for a known name raises ValueError listing that spec's allowed fields — before any Lightning callback is constructed.",
+      "evidence": [
+        {
+          "resource": "repo://src/manifold/training/callbacks/registry.py#L58-L108",
+          "version": "repo-lines-v1:sha256:f9da9224e75a3da64cdc16a420ccecf983dcb8047e19b4c67ef331cfc726ac68:eyJzZWxlY3RlZExpbmVDb3VudCI6NTEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImYwMjE3YzM3MzQ5MWQxOTI0OWNjYWUxNzFhNDEzYzgxNjZiNmNjODA1ZjhiZTZhYjU4M2E4MWU4ZjkyMWRlYjAiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU2MjJiNzc0YjExYTI1NGRlOTU1MmMyMWIxOTYxMWE3MTg1NzY1YTIxMDZmY2QzOTJkZTQ1YWZjYWMwMzk5ODgiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjE1NjZmMGM3MjZiZDdhMmJiZjkxOWJjNTA2YWQwZGYwNzJiMDcyNGNlZjEwOTgzOTY4YTRlMmUxZmE5ZmQ1NzQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImI3YWJjZGI5ODA2YWFiZGEzM2E4ZWRjZDQ1ZjY0MGJhY2FlNjZiYWQ5Y2JjMmE3OTNjMTVlZGJhMjk4ZDJiNzYifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_cd3cbe17501041a28dc29c832bf66d5a",
+      "statement": "A callback spec is a dataclass whose fields are the callback's config knobs and whose build(ctx) method constructs the pl.Callback from the runtime CallbackContext; specs match the CallbackSpec Protocol structurally without inheriting it, and logged_metrics is declared as a ClassVar so it never enters the knob allow-list that resolve() validates against.",
+      "evidence": [
+        {
+          "resource": "repo://src/manifold/training/callbacks/fid.py#L27-L66",
+          "version": "repo-lines-v1:sha256:49d523d9cf2670334cba0ca9c135af8fffd93f8141f0bb14c98d70f932d9e944:eyJzZWxlY3RlZExpbmVDb3VudCI6NDAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImIzOGQyMzVlZjNhYzRlNmRlNjdmOWY1Zjk1YTU4MjZiYjIwNmE1MDNjYzM0ZmE4Yzk1MWIxMDJkZDkyYzEwN2YiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU5MDlhNTNhNjE4ZDAyOGUxZDMwMDBjMGE3YWJjZWVjYmU1ZmIzN2Y0ZTUxMWVmZTQ2NjQzZmFkNmU2Njg3MmYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjcwY2UzZjI0YWI0N2MyZjVhOWQzMzdmMzc3ZWQ4NTczZmE1NjU4NDA3NjQwMmYxYWYwNTRhM2RlZDYxOTQ2MmYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
+        },
+        {
+          "resource": "repo://src/manifold/training/callbacks/paired_fidelity.py#L37-L75",
+          "version": "repo-lines-v1:sha256:f2c1ea738cb913432c8fc19ed929cc447fc6b8195dbf2e0a98c356ed65fd0e8b:eyJzZWxlY3RlZExpbmVDb3VudCI6MzksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAwY2Y2YjJhNjRkYWUyNmViZGZiNWY5NmJmZWZmMWY4YzA1ODE4MmM1MDhhN2IzNjU4M2VmZTE1YzRmM2FmMmUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU5MDlhNTNhNjE4ZDAyOGUxZDMwMDBjMGE3YWJjZWVjYmU1ZmIzN2Y0ZTUxMWVmZTQ2NjQzZmFkNmU2Njg3MmYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjcwY2UzZjI0YWI0N2MyZjVhOWQzMzdmMzc3ZWQ4NTczZmE1NjU4NDA3NjQwMmYxYWYwNTRhM2RlZDYxOTQ2MmYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
+        },
+        {
+          "resource": "repo://src/manifold/training/callbacks/registry.py#L30-L56",
+          "version": "repo-lines-v1:sha256:b398ea2cd6d90c3e801a276eec06d5d16f0875f85eb8ce461288d0c7d13f6246:eyJzZWxlY3RlZExpbmVDb3VudCI6MjcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImE1NGYwZWU2NmI4Zjk4ZjUwNWYxYzM4YWE2MGEwZjRmZDMxM2I2N2MwMjA4ZjY3MmI0MmM0MDA5MmZkZWI3NzgiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImI5ZTY3ZjVmOTdmMjI1ZjExZWFjMTY1ZGExN2FkYTk2YzFmM2YwZmM0ZmE5ZDJjMTI2ZjA4MTVlMTkwOGRkMGIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjRlY2YwYmE5ZmI2YzQzNWUxODJlMGJmNjRlZjQyYzdhNzg3MmI1OGE0NWYxOGY3NmQ2MmQ0YWIxN2UwM2VkMWIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImFmNzQ5YjY0NjEzZGMxYmQ0MTcyZWQzZmM2ZGQ2MDQ5Yjg3YWRmNTQ1MzE2NzE4NWNmYzYzMDFlYTgyNGU5NmYifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_7be6993a3e8a4ecabd216cce057c61c0",
+      "statement": "CallbackContext is the frozen runtime-objects bag injected at build time (module, vae, datamodule, inference_recipe, model_dir, seed, feature_net, feature_net_factory, real_latents); it exists so a spec needing runtime objects that do not exist at config resolution can still be constructed in the second phase.",
+      "evidence": [
+        {
+          "resource": "repo://src/manifold/training/callbacks/context.py#L16-L48",
+          "version": "repo-lines-v1:sha256:2d3731bccf2fbe41eda0d03c90d3577800d9831cfef1cf6722313fcd73e9f8fe:eyJzZWxlY3RlZExpbmVDb3VudCI6MzMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImRiMzdlYzZmMDk0MmY3ZGUyNDJhM2EyNTc3NzFiNzg2ZDY5OTQ1YWExZDE4NzYwMjI3YjZlMjY4NTBhNTI2MzAiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImIzZDBhNzllYzlhZWU4MzgwZWY0NWZkMDg3MTcwZmI3NWJiZjg1YTVlN2VjNTA4OGFkNGM4ODk0YTRlMzliZmUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
+        },
+        {
+          "resource": "repo://src/manifold/training/callbacks/registry.py#L110-L111",
+          "version": "repo-lines-v1:sha256:8e36c2a1d5ec3790ef2f08662082f60693c93ffc6ba81e083159b6582cb6a43c:eyJzZWxlY3RlZExpbmVDb3VudCI6MiwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiZWJhOTZjNTAzYzIxMjBkNThiNDI3Y2I2M2FmY2IwZGNlYjIyM2I4OTA1NDQwNGI3ZWVlOGFlMGRkNjE5N2VjZCIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiZmNmOWU3NTcwZWE4NTQwOGVjYzRhMzkzOTYxY2NmNWVmNThjZjkyOTRjNjI4ZmZkNDA2OGE4ZGUwMjRlMGQ5ZiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiMTgzODYyNzE3NTA0MWI4OGRjOWE5MTk3M2EyZTU5NzhkYmQxZjFlZmY2MTE5ZDkwMjA4ZGE4NTkyMzM0NmY3MiIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiNDcwZjYxZDhkZmEzN2Y0ZTM4NWY0MThkNDg2MDk0NjMzZDc3ODA3MjI5OTY3MWYyMDE3YzEwZTYwNzkyMzU5YyJ9"
+        }
+      ]
+    },
+    {
+      "id": "claim_0853d1481c4149f695a579114df4f4d5",
+      "statement": "resolve() returns the constructed spec instances in the requested names order, and the requested list must be rank-symmetric: every DDP rank has to request the identical list because torchrun and Lightning hand every rank the same CLI arguments, so an asymmetric list is a never-observed manual-scripting failure.",
+      "evidence": [
+        {
+          "resource": "repo://src/manifold/training/callbacks/registry.py#L73-L108",
+          "version": "repo-lines-v1:sha256:4b2443053e896efe4a367a1e257a081625d88a47057e11c5419312bacb7dd091:eyJzZWxlY3RlZExpbmVDb3VudCI6MzYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjM1NGU4MTU0OTIwNTIwZWEwNDBmYmU4YjA5ZjJkM2JmYjg5ZmRjZDI0ZGNmZGRmYzdlNDRkMDczYTQ3NDE2MDIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU2MjJiNzc0YjExYTI1NGRlOTU1MmMyMWIxOTYxMWE3MTg1NzY1YTIxMDZmY2QzOTJkZTQ1YWZjYWMwMzk5ODgiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImU5MDM5MzM1YWU1YmZiMmY1Y2JmNzI3NDE1MjlmM2YyOWQ0NWU4ZDYwOWJkNWVkZTZmMWVkYzA5MWEyNDMwMjIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImI3YWJjZGI5ODA2YWFiZGEzM2E4ZWRjZDQ1ZjY0MGJhY2FlNjZiYWQ5Y2JjMmE3OTNjMTVlZGJhMjk4ZDJiNzYifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_61e2e5ea518944a3ad912f98494c1ca2",
+      "statement": "validate_monitor runs after resolve/build and before the trainer is built: it is a no-op when no checkpoint spec is present or the monitor_metric is None, and otherwise the monitor must appear in the union of every spec's logged_metrics, the module's logged_metrics, and every extra callback's logged_metrics, raising ValueError with the available set when nobody logs it.",
+      "evidence": [
+        {
+          "resource": "repo://src/manifold/training/callbacks/registry.py#L114-L154",
+          "version": "repo-lines-v1:sha256:af95f5276d1be7a22b7e75a5b7011bdbe4161b0dcf37dda3ba850149d5855b7e:eyJzZWxlY3RlZExpbmVDb3VudCI6NDEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjMyMjg1YzZmNTk1YjNjNzlhMjUyZjYyZjNiYjAyNGU2MmEyODUzNjA4NDc1ODE1OTQ4NzQwNTQ2NjU4YWM1OTAiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU1MDMyZTk2NGQwOTMyMzUxZTVkMTg1MjY5MjgxYjE3MWEzYTA5YjA4YjI4NmU2NjFlYTQ3MDMyM2M4MmViNGQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImQzMGFhNjgyMDE4OWFkZDA2ODVjOWU4MTJmNTFiZmU0YzlmY2Q4MGUyZjczY2MxYmI0ZjFmMDFhNmY1MjA2YzUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_60a4371a00c245029b7dad1627836615",
+      "statement": "TrainingSpine.run is the single caller of the registry and merges in this order: default names (or the callback_names_override that replaces them) → forbidden_callbacks force-removal after the merge → forbidden_monitors rejection of a forbidden checkpoint monitor before resolution → resolve → build → extra callbacks appended → validate_monitor → ModelCheckpoint presence check → build_trainer → trainer.fit.",
+      "evidence": [
+        {
+          "resource": "repo://src/manifold/training/core.py#L42-L162",
+          "version": "repo-lines-v1:sha256:1dd42fd3ea9705af9c779b202fadfc2e98f98f7fb61f231634d6540dc59a9535:eyJzZWxlY3RlZExpbmVDb3VudCI6MTIxLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiIwMDhjZDk3OTY5Yjk0ZjdjYWJkOWFiODUyY2RlY2RjOWNlOTllNTJkNzJlYzFjZDE4YjhhZWNhMjlhOWUyYmUyIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI1NTA0NDMyNmUzZDQ3YTM0NWE1Nzc1MDUyMGFkYzA1YzllMmI0YWM1NTQ3ZjllZjc4MWYyNmI2NDllZDY2ZjljIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiJhN2JmYmFhODlmNThlOWJjZWE1Nzk1MzkyNGRiZWNjOWZlMWU5OTE1Y2ZkMDUzZmE3OThmZmJjYTM3ZGZmMjI2IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MCwiZm9sbG93aW5nQ29udGV4dEhhc2giOiJlM2IwYzQ0Mjk4ZmMxYzE0OWFmYmY0Yzg5OTZmYjkyNDI3YWU0MWU0NjQ5YjkzNGNhNDk1OTkxYjc4NTJiODU1In0"
+        }
+      ]
+    },
+    {
+      "id": "claim_a36a1647693841e7b909cda3aa74e35d",
+      "statement": "Each training shell derives its own default callback-name list: JiT ['train_loss', 'fid', 'checkpoint'] (fid only when FID is attached), reward ['checkpoint'], GRPO ['checkpoint'] plus 'fid' when the FID triple is active, and the supervised ControlNet shell ['train_loss', 'checkpoint', 'paired_fidelity'].",
+      "evidence": [
+        {
+          "resource": "repo://src/manifold/training/cli.py#L221-L240",
+          "version": "repo-lines-v1:sha256:470e08968077a47f6d932ad8afa09d4861560012de7b393ceabd628bfb9d71b8:eyJzZWxlY3RlZExpbmVDb3VudCI6MjAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQxNDY3NzExZGVmNzE4MTU5YjIwOGYyNGJmZTdhOTMwMzVmMThkZGU4NjZiZDg2MGQwYjkzODc3MTNlYTI3OGMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjI0NjdjMDY4ZDQ2NDBmOWUzZDkxMTc0OTU4YjhjMmFhZTNlYWMwYjJkNTE5YmYzZTFhMjE1Mzc3ZDIxNmZkOWYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjUwZmZkZDgzODk2MjZlYTA5NmJlYTA2OWM4OTM0OGRjOGIxNTM1MzJmZWVhNjMxNDc5ODQzMWJiOWMxYmU2MTQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjMzZjZkODllNjE0NDlmMjMzMDBlOGEyZGRhMTZlYjUzNGUyNTMxY2Q3MjllYTAzYWRhM2U0NDA5Y2ZlNDYzM2MifQ"
+        },
+        {
+          "resource": "repo://src/manifold/training/controlnet_cli.py#L169-L190",
+          "version": "repo-lines-v1:sha256:731b580ed2ed773a5a0a7f2382bfcefcdfc4a82d89f912e24f594227ff6fa8ae:eyJzZWxlY3RlZExpbmVDb3VudCI6MjIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImMwOTEwMmIwZDlkMTA2NjFmNGYwYjkxMzZkYmMxNTBjMzYwZWZjZGQzNmM4NTJhNWUyZjMyZTY5MGI1ZDc0NDQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjljYzZiMTkzMDUyMGYxYTRlMzIxMjE2YzIyYWMyNzgzMTVhOGJkZmQ4Mjk3MTg3ZGNkY2FkOGM0YjY3YTRmMGYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImIzMTRiYTg4ZWRkOTFkMTY5ODg2ZGU5OTZlNDI4ZDQ0YjZlNjY2N2NiNTZmZDVhN2Y5ZDUzM2I1OWVjYzViZDMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjUwZGQwOTc5MWQyZjQ1OWFkOWI4YjdiNmNhMzBiMmY1M2UwZmViNmQzYWRlOTY3ODgzMmRiZTg0NWY3NzhkOGIifQ"
+        },
+        {
+          "resource": "repo://src/manifold/training/grpo_cli.py#L174-L180",
+          "version": "repo-lines-v1:sha256:63700d84ac8e18baf523474661af59bf581b53bcd7328844db19fd495088a144:eyJzZWxlY3RlZExpbmVDb3VudCI6NywiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiMmIxNmIzMzE4YTNiOTU0YTVkMjIwZjY3YTU0YWM5NTAzYzM1MDFhZTQyZmE4ZTJmZThlYzllMmFkN2M1N2I2ZiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiZDE1OGY2ZjA4ZmQ4NTNjZjJiYTk5ZWU5MDViNGVhNWFmYzU4MTkzYjE3MWE5ODBhZTMyYjA0YzNiMWMxM2E2MSIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiNmYwM2UzZmE3YWVmZGJlZmJjNGMwZTk2ZGQ0MjdhMTNlYzYzMjdjNzdhY2IxNDUyZGY1YTk0ODkzYTQ0ZDEyZSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiNWEwMzA1NmM5OWUwNmIyOTY1ZDMzNGJjNjQ3YWI3ZmFhYzZkYjUwY2U3YTc1YjliYTNjOTRkNTVjZjA5ZWJhOSJ9"
+        },
+        {
+          "resource": "repo://src/manifold/training/reward_cli.py#L170-L190",
+          "version": "repo-lines-v1:sha256:9ac709b82773b8a8ee53c8989a66d4532b7ea419253fee8ae79078b64184d859:eyJzZWxlY3RlZExpbmVDb3VudCI6MjEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjgyOTBhMTZiZjNhMWU0NjFlMzlhNTI5ZGYxODRlYTJmY2E1ZWIzMTlmZTc0OWFhZWI5OWZhZDIxZmU2YjQ5MDUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImRlYjVjYTI2MTU4MGY3YjA1Y2MzNTIyNjQwMWU3NDc3YzIzYjIxYjliOWYwMGNiYTc2NDJiN2JkZjg2NmE4N2MiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImI2MDlkZjJiMDUxM2NjN2YxZWJiYjQ3YTlkYjVjZDRjNTQxZDI0YjMzYmVhZDRiODM5Yzc5NzkyNGVhMDAzZmIifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_4c0cbf2b288541e69d1c08f06c3574cf",
+      "statement": "PairedFidelitySpec is the registry's second generative spec alongside FIDSpec: its knobs are subset_size (8), every_n_epochs (1), num_inference_steps (None) and seed (0), it declares logged_metrics {'val/psnr', 'val/ssim'}, and its build() constructs PairedFidelityCallback from the same CallbackContext runtime objects (module, vae, datamodule).",
+      "evidence": [
+        {
+          "resource": "repo://src/manifold/training/callbacks/__init__.py#L14-L29",
+          "version": "repo-lines-v1:sha256:64c3a8aa31289e593919d410a09dc2addd0f8f51e1caead5b1efb9e3c6369453:eyJzZWxlY3RlZExpbmVDb3VudCI6MTYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjI1YWIwNmMxNDRhZjdkYjI2OWQwMWQzZTJmNDQxZjFlZjhiMzYzODA1Y2QzMmYzNmVkMTg4OGMxNWIzYTNiOGMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImY5NDE2ZTA5Zjc4YmEzMTZjMDMyNTY4MjEzYjg1NWVlNzU2ZTQxNTY1ZDkxOGYwOTUxOWM4MWZkNjIwZjQwNjAiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjBlNjZiOTVmMjQ2NDgzNTQwYTExMDI2NDJlMTlmMWIzNjc1ZTAwZDhmYTYzZjA0MGI5ZTZhMTM2NDk1ZGEzN2YiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
+        },
+        {
+          "resource": "repo://src/manifold/training/callbacks/paired_fidelity.py#L37-L75",
+          "version": "repo-lines-v1:sha256:f2c1ea738cb913432c8fc19ed929cc447fc6b8195dbf2e0a98c356ed65fd0e8b:eyJzZWxlY3RlZExpbmVDb3VudCI6MzksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAwY2Y2YjJhNjRkYWUyNmViZGZiNWY5NmJmZWZmMWY4YzA1ODE4MmM1MDhhN2IzNjU4M2VmZTE1YzRmM2FmMmUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU5MDlhNTNhNjE4ZDAyOGUxZDMwMDBjMGE3YWJjZWVjYmU1ZmIzN2Y0ZTUxMWVmZTQ2NjQzZmFkNmU2Njg3MmYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjcwY2UzZjI0YWI0N2MyZjVhOWQzMzdmMzc3ZWQ4NTczZmE1NjU4NDA3NjQwMmYxYWYwNTRhM2RlZDYxOTQ2MmYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_e8d51d74cdff4cb7874786b5a9633f56",
+      "statement": "The paired-fidelity rollout step count is recipe-primary: with its own num_inference_steps knob unset (None), build() reads ctx.inference_recipe['num_inference_steps']; an explicit per-callback value overrides the recipe; with neither present the callback's own default of 15 applies.",
+      "evidence": [
+        {
+          "resource": "repo://src/manifold/training/callbacks/paired_fidelity.py#L60-L75",
+          "version": "repo-lines-v1:sha256:b5cabe1d649b61b7958b349cb634d08c7fb42c581abc270a43cdb90c8a5aa08f:eyJzZWxlY3RlZExpbmVDb3VudCI6MTYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImI3NDY4MmQzOTY0NDAwZjA0NDIwZmI5YTE2MjYwMTk3OTE2MDUwMTcyMmI4YzQ2ODk1NTQ0NzY4ODg3OGRlMDUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU5MDlhNTNhNjE4ZDAyOGUxZDMwMDBjMGE3YWJjZWVjYmU1ZmIzN2Y0ZTUxMWVmZTQ2NjQzZmFkNmU2Njg3MmYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImRlZWRjN2QxN2IxZWIzY2E1YTA1NTdhMjU4Y2QzODE0N2Y4NzE0MzcyOGI3NmYwOTMwZGY3ZDhlY2UwMWVhNjgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
+        },
+        {
+          "resource": "repo://tests/test_callback_registry.py#L268-L295",
+          "version": "repo-lines-v1:sha256:e34bcb0a1d2124bbf0fd881666195825e23fad9996334880438937763f88f245:eyJzZWxlY3RlZExpbmVDb3VudCI6MjgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjFiMzdiOGY2NjczZTA5MThlYTY4ODZmM2Y5OGM5NTE2MDFjM2JlMzE1NzBmZjQxNGM4OGI1YTNkZTAxODIxMjUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijk2NmQ3ODBhZDk0MzFjYzJiZGVmOWViNDI2MjMxOThhY2Q5MTk3MTE1OWVkN2ZmMjg5NGUyMjBkMjQ5YzkyNDMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjVlZjViNjY1ZDNjZDZhMDdlZGYyMWMwMGM2NTg1MTM5Y2E2YTEwMThlYjRjMTM0YzkxMzBmYjY3YTk2YzZkMmMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImQ5YWNkMTVlZjRjZTU3ZDg0Mzg1YjIzMWM3ODI0ZDUyZWE4YWVlOWQxMWJlNTQzNDUwNDQ5NDNjNTM4MDk0MTUifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_196940cc38ca4030a22ce9fba6d2f2e7",
+      "statement": "The supervised ControlNet shell registers paired_fidelity by default and fills CallbackContext.inference_recipe — previously None on that path — with the controlnet.num_inference_steps rollout count, so the observe-only monitor runs without any opt-in.",
+      "evidence": [
+        {
+          "resource": "repo://src/manifold/training/controlnet_cli.py#L169-L190",
+          "version": "repo-lines-v1:sha256:731b580ed2ed773a5a0a7f2382bfcefcdfc4a82d89f912e24f594227ff6fa8ae:eyJzZWxlY3RlZExpbmVDb3VudCI6MjIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImMwOTEwMmIwZDlkMTA2NjFmNGYwYjkxMzZkYmMxNTBjMzYwZWZjZGQzNmM4NTJhNWUyZjMyZTY5MGI1ZDc0NDQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjljYzZiMTkzMDUyMGYxYTRlMzIxMjE2YzIyYWMyNzgzMTVhOGJkZmQ4Mjk3MTg3ZGNkY2FkOGM0YjY3YTRmMGYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImIzMTRiYTg4ZWRkOTFkMTY5ODg2ZGU5OTZlNDI4ZDQ0YjZlNjY2N2NiNTZmZDVhN2Y5ZDUzM2I1OWVjYzViZDMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjUwZGQwOTc5MWQyZjQ1OWFkOWI4YjdiNmNhMzBiMmY1M2UwZmViNmQzYWRlOTY3ODgzMmRiZTg0NWY3NzhkOGIifQ"
+        },
+        {
+          "resource": "repo://src/manifold/training/controlnet_cli.py#L330-L340",
+          "version": "repo-lines-v1:sha256:d8a73c0aa3a815d4b32d40bf8e93bfeb7318ad862495aca1f80d6f39f90b1b59:eyJzZWxlY3RlZExpbmVDb3VudCI6MTEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjNiNTU4NGNhYmQ4Mzk4MzcwMGNiNTJjNDE3OWQ3ZjgxNzQ0YjY0MTBlOTU4ZjAxNDI2NDZiMTIyZWUwZDExNDIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImRmZDhlYzljODIxY2RkYWY0NDBlNGVkOGJlNDk3ZDQ3OGM2Y2RhNDQxYmI4ZTM5MTAzZDA3NzE0Y2I0ZDA0ODciLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjZjMDNiNmQ4ZmE1M2JmYmViOWJhMjhlYTVjMGNmNDE3NDQwNTNlZDBiYTYxMWZlOWNiOTU2YmY2YTYzNDdmMjUifQ"
+        },
+        {
+          "resource": "repo://tests/test_controlnet_cli.py#L302-L334",
+          "version": "repo-lines-v1:sha256:1810b35bab0894063e9d195fd441a33cc7611df216ddd9924e6102839158b7c8:eyJzZWxlY3RlZExpbmVDb3VudCI6MzMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjA0NzA2Mjc1MDEyNTBjNGQ0YjFiODFmYjJiN2ZkYjk4NGZiYjg3MzFmMzc2ZjUyNGUyNDU2Y2YyMjk0YTljM2QiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjkwZDI3NGM0NmY1ZTZjOWZlYWY5M2NiODMwZDU3ZjI5NDVmM2ZjMGZmMTE1YmY0MjIwMjFmMzA1ODhhMTUzODIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjU4NDc1YTQxMjNmYTZmZDU3MjVjNmQ0NDJjMTcwNzQ0ZmFiNThkZWZhMjM3ZmU1ZWI5NzJiNDkyN2RhMDEyNzcifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_f3414ad6df5644819b88382ccebd4cef",
+      "statement": "Declaring val/psnr and val/ssim in PairedFidelitySpec.logged_metrics only makes them validatable checkpoint monitors: the supervised shell's default checkpoint monitor stays val/x0_mae, and the monitor never enters the loss, the optimizer, EMA, or checkpoint selection.",
+      "evidence": [
+        {
+          "resource": "repo://src/manifold/training/callbacks/paired_fidelity.py#L1-L20",
+          "version": "repo-lines-v1:sha256:73015f8f83164b7cc3d7acc31af26b8413e0a580dd887b50b98f097b2012117f:eyJzZWxlY3RlZExpbmVDb3VudCI6MjAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImEyOGU0YTc5N2Y4ODRhNDRjMzA4ZWI1MmEyNWM3OTgwNTEzOTg3ZTkyM2E3YzVhNGQ2ZjdiMjc4ODFhZTJjNTgiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjM2OWJkODNiOGEwOGFjOGE3ZDUwOWNhYzMwYzMzMDhmZDNjZWZjYWUzYjg2NDQwNTRjOTFhODVhMDMzNDZjM2UiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjI5ZjQwODY1MmI1YzU0MzljZmJhZGQ2MjdiMTY3MTNjYTdlNDNmYzZiMjhjMTYyMDhhYzI5OWY1MzY1YmIxZTgifQ"
+        },
+        {
+          "resource": "repo://src/manifold/training/controlnet_cli.py#L150-L160",
+          "version": "repo-lines-v1:sha256:552b3a8b347563b23876406dd1a66c38e1de862ca0a75569176de4eea12f72c7:eyJzZWxlY3RlZExpbmVDb3VudCI6MTEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjgwZDBjNjUwNWVkZmQ3NThiZDc2ZTYzYTJmMDJlY2Y5YjIxZWFmNjNhZTU0ODRiYjdlNjE2NGExZWNhYjU2ZDgiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImNkYWM0YTFhNTk3Y2ZiYjliYzlkNGI0NWRiYzBjMGYwMTYxZjY4NTc3NGY1YWQzMmJjYmZiZTc0NDAzNzY1Y2UiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjlhZDMwMGRiZTg5NGE0NGVjZDU0ZWJiZjA0Mzc3M2I2YTBhZmQzMjM4MmMxMzUzYTU1Nzg3ZjdiMzM3YjU1MGIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjBlMzUzYTZmMTFjZmUwYzZkNzNjOTBjZjUyODRmNDk5N2I2MDBjZDU2ODhjMDRmNzEyNzc1NjE5M2FkYTk4MjEifQ"
+        },
+        {
+          "resource": "repo://tests/test_callback_registry.py#L255-L266",
+          "version": "repo-lines-v1:sha256:6a264bd939a84438481e88d19a21b54ba75bd318eed5cac01d1321d6cbdb520c:eyJzZWxlY3RlZExpbmVDb3VudCI6MTIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImM3ZDUwYmMxZDY2MGRlOTYwYzZlNzUzZWRhMjZkMmIyOGRiNmQ5ODcxNjQ0NjAwZWJiMGRjOTgzNzM2MjM5OGEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImVjN2VhOWI3ZGQzNzE2YTUyMGI5ZDczMTJmOGI0MzMxZDY1NDc0NjQzNjg4NDE0YTg5YjZkNDgzZGZkOThjNmEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6Ijc3NGFkZTk1ZTBhZjFiODM5NDVmYTlkYzYzMzY5YThhODk1Y2EyZGJhODEzODkxZGNkZDQzOGE5MWU2ZjdjZjUifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_9d77a22b889f4f19a04448a2551f9f80",
+      "statement": "The GRPO shell still registers only train_loss, fid and checkpoint — paired_fidelity is deliberately not registered on the ControlNet-GRPO stage, which ADR-0037 treats as a separate follow-up — and on the ControlNet policy path it force-drops fid after the merge through forbidden_callbacks while forbidden_monitors rejects a val/fid checkpoint monitor before resolution.",
+      "evidence": [
+        {
+          "resource": "repo://src/manifold/training/core.py#L110-L133",
+          "version": "repo-lines-v1:sha256:d9216232f55492139f95296b3d72fbc431ef63d7739b89d2b4096c24a55df4cd:eyJzZWxlY3RlZExpbmVDb3VudCI6MjQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjdiZTc5NTM5ZDI5MWU0ZTc4NzlkOGM5N2VlYjA3NzhhNzM5ZmFlOWRmODYyMzVkN2I5ODBjZmI3NTlhZDJkZDciLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjMzZmJmNjY5MDZlNGRkZTM1YzFiZmQ1NWFkNGU1NWQwYjEyNmEyYjMzMzIyZDg1MzNhZmFkODc0YjI0NDNlMmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImM3NzlmZDQ0YTNlYzdlY2MzYzRjODg1ZTM1YzUzMmFiNWJkMDA5MmU3MTEzY2YwOWQ0MzcyNTVlNjBkZTIxZjciLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjhmNDY0ZTE4NTViNjU5M2QzOTg0OWU2ZGUzYThlN2I3YjI3NDAwOTk2NWE3N2E5NjBlOWI0NTEzODU2ODVmMjgifQ"
+        },
+        {
+          "resource": "repo://src/manifold/training/grpo_cli.py#L226-L258",
+          "version": "repo-lines-v1:sha256:8139d8477b81b1edf65248c319783db4f5be960d2b8a0c0cacc1a8760a690b90:eyJzZWxlY3RlZExpbmVDb3VudCI6MzMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImMwODVjY2RhYTQ1ZTBkZjcyYmIwNmU4YWU5OWM3YWIxNTk1NDNjM2RiMDkwOTU1ZmJmYWY0NjAyYmQ5YzRhZmUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImM4NzE1MmQ4OThjNTAwZTU0MDUwZTc2Y2FkZDMwMzIyMjgzM2ViMDQzYmEzYTkzZTkyOTNkNjdlYmZjNjViY2UiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImNkNzJlNTIzMjE2MTdjMjZmMWJmMGIzMDdhZTRlZDdjMGI0ZWVjZWI4MzMxZTkzYmFhYmM2NTY1ODU5YWU2MWEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImVkOTc0YTJhNDc0N2FlMjJkNDU5NjkwMTg3M2Y2MzVlZmEzZDRiODg0NGM4OTI0ZGM4ODI2YWQ5ODkyZmNhNWEifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_59e04912e8b04d838e505b8fd8cd0391",
+      "statement": "If the merged callback list contains no ModelCheckpoint — for example a --callbacks override that drops 'checkpoint' — TrainingSpine.run raises a ValueError naming the resolved names instead of letting next() raise StopIteration deeper in the call.",
+      "evidence": [
+        {
+          "resource": "repo://src/manifold/training/core.py#L140-L152",
+          "version": "repo-lines-v1:sha256:cbac3ca300e7ef96efce6ab4b39a7d44f5fcf826269e1be68f12ae84ae7740f6:eyJzZWxlY3RlZExpbmVDb3VudCI6MTMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjNlOTM2MzVlN2M2ZWIxOTI1NTI0Yjk0NDU4MTU1MDM0YWJkODFjODgwN2Q4YTlkOGJjZjgzMGEyYzAxMGFkYTciLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjRjNWUwNmE0OTdhZDBhODNlNGZkMTkwOGUzZjEwYjIzOGVjZGQ5NWE2N2M3M2MzMDEwNTY3NWJiNDM3YmRmMzIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjY4MGFjYzZhYTU3Y2UyNzNmNzFiMTZlOGQ3N2JlMWU2MDk0OGZhODNiYjM2ZjMyYjU2M2U3MjMxOTI4YTg0Y2UiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImZiNGExZmU5MDcwYmM1ZmZhZDZiMDBhNmFlYmE0NDM4NGM4ZTAxNzJmMzBkOTMyMjFjNDFkYzlmNzJkYzViYjcifQ"
+        },
+        {
+          "resource": "repo://tests/test_callback_registry.py#L298-L330",
+          "version": "repo-lines-v1:sha256:8dfe8cd411050e75bb79f8d93cd0114a10e80b33be3aa2d33910a336b50178d7:eyJzZWxlY3RlZExpbmVDb3VudCI6MzMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjcwYzkzMDYwYjNmY2U1MGNkY2NlMDZiYzRlNmRmMzE5ZjJjMmRlYTQ5MjE4MTRiNTkyYTUzOTg2ZWE4N2NlNWQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImZmMDk5NmVhY2RlOGM4YmQyN2UzNGY0ZGYzMzdlZjIzZTNhMGMzOTEzZTk4ZmNiZmI0OTY1YWU2ZjEyNjU2ODMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjEyMmY5Nzg3NzZjMzYwOTNiZWFiY2ViMmNhYmQ1OGRhNTEyNDc1ZDMzNjViMWVlODk5OTNlZDdiOTcxMzc0ZTYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjM3MDU2YjYwNDIxZDYwYjYzNTIyYWNmYzBlNjlmYzM5M2Y2YmU1ZDEwYzM0MTBiMTZkYzVjMzM0ZmY2MzU3YjkifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_ccce25f21c874d8dbb23ad9c99d73035",
+      "statement": "resolve_callback_names gives the CLI --callbacks string precedence over the YAML callbacks: name list and returns None when neither is supplied, so a shell's derived default callback-name list is used unchanged.",
+      "evidence": [
+        {
+          "resource": "repo://src/manifold/config/loader.py#L155-L167",
+          "version": "repo-lines-v1:sha256:236cc0aaeca209a4be379584db38dbf4585067a49256aad247c1b00baf3088b2:eyJzZWxlY3RlZExpbmVDb3VudCI6MTMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImY1MTE5MzIxYjZmMDU5NDQ5ZDc3YWMyNzI1ZGNkZDlmZDIzZDA2MDk2MTZkYTU1NDcxODVkMThjMTM0YmVlMDEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImY0YTY3MThmNDZkYjc4MjM1NDM3OTczYjE3NDM4Y2M3NWIwNDhmNWZhNjhjYjhlNjdmOWExZDYzZjY0YTg0YTciLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjQzN2NiN2E3NGJiYzFkMjZlMjE5ODBkNjFmYjczNDg3ZDE2YjY3OGVmZjE0NzA4MDY5NWI2YTRkYjg0ZTE3MmIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_4c637849af4b41cc85909b5dcbb2f0b3",
+      "statement": "CheckpointSpec.build reproduces the prior two-branch checkpoint construction: monitor_metric=None keeps save_top_k=1 plus last.ckpt at the every_n_epochs cadence, while the monitored branch tracks the monitor top-k plus last, with filename templates unet3d-{epoch:03d}-{step} and unet3d-{epoch:03d}-{step}-{monitor:.3f}.",
+      "evidence": [
+        {
+          "resource": "repo://src/manifold/training/callbacks/checkpoint.py#L42-L64",
+          "version": "repo-lines-v1:sha256:d2c33beb89b47b3d9556ee790d31610d241a54ae2f21f84daa7a5bd6197b2adc:eyJzZWxlY3RlZExpbmVDb3VudCI6MjMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImI3NDY4MmQzOTY0NDAwZjA0NDIwZmI5YTE2MjYwMTk3OTE2MDUwMTcyMmI4YzQ2ODk1NTQ0NzY4ODg3OGRlMDUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU5MDlhNTNhNjE4ZDAyOGUxZDMwMDBjMGE3YWJjZWVjYmU1ZmIzN2Y0ZTUxMWVmZTQ2NjQzZmFkNmU2Njg3MmYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjdmNWZjNzA2MmUzYmI0ZTdlN2Q2ZWI2ZWMzZjQ1ZTlkMmI5OWViNTk3YjAwOGNiYzYxY2RjYjY5ZmQzNjU3ZDQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_e790bf175437470ea3c0aff47e0bdd9e",
+      "statement": "The paired-fidelity monitor is redundant under DDP rather than sharded: every rank evaluates the same fixed subset under the same seeded noise on DDP-synchronized weights, so the only cross-rank interaction is Lightning's torchmetrics sync, and the 2-rank gate asserts no deadlock and identical per-rank scores.",
+      "evidence": [
+        {
+          "resource": "repo://src/manifold/metrics/paired_callback.py#L18-L30",
+          "version": "repo-lines-v1:sha256:2b2fd2252e0d5af17c6438aeffe29fe2e8e722c9625fdf748c18d704d3c16da3:eyJzZWxlY3RlZExpbmVDb3VudCI6MTMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImI0MWExNTI0YTViODU1NzI3OTMzODQ0MTEzYjZkNzQyYWQwY2JhM2IwZjMwNDYyM2U3NDU4ZThmN2Q5ODI5NTkiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijg3NTM4Njg5MjM3ZDdiYmRkYjFkN2YwZjU3NTRlMGVjYTk0YWE2NjJlOWY2NzRmMjIwYjQ3YTQ0YzQyMDE3MzEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjZhZjgyNjZhNjI2MWUxOGE1ZWIyZjRkNDhkOWQ3MTI5MGEwYTI5NmIwMzY5NjdlY2Q5ZGViYTYxNzA4ZWZkYWEifQ"
+        },
+        {
+          "resource": "repo://tests/test_paired_fidelity_ddp.py#L19-L70",
+          "version": "repo-lines-v1:sha256:bb1a558ae1294084763ac1a15733c0dc9035300d5a32efe9a6fbb4cd3506d73c:eyJzZWxlY3RlZExpbmVDb3VudCI6NTIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImRhMWJkMDBkZTBiZTJiNmUwMGJkMmNhOTE4MDMzMjgzMWVmMzE1Y2M2ZmZkZmVlMjQzNDM3NjFiY2Q3MTZkNzYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjYxYzg4NDc5Y2U3MGEyYTZlZGQwOGZhOTcwOTAzMGZhMTc5NTExN2Y0OTNmNTVkNzMyNzc5NWI5NmJmZjQxYTQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijg5ZTk0NDRjOWRhN2MxMGM0NjdhMzQ0MzMxMWQxYTAxYmJhNTRiYTFjYzQwZTQ0ZDA5MjY2ZmViYWE2NzlmMTQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
+        }
+      ]
+    }
+  ],
+  "verification": {
+    "by": "openwiki/0.9.0",
+    "at": "2026-11-13T16:00:22.072Z"
+  }
+}
